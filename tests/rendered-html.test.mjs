@@ -53,6 +53,8 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /历史数据表/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
+  const historyTable = html.match(/<table class="history-table">[\s\S]*?<\/table>/)?.[0] ?? "";
+  assert.ok(historyTable.indexOf("热点板块") < historyTable.indexOf("日期"), "历史表应将热点板块放在日期之前，方便优先选择");
   assert.match(html, /固定表头/);
   assert.match(html, /查看120日新高股票/);
   assert.match(html, /查看历史新高股票/);

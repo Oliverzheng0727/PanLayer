@@ -8,13 +8,14 @@ import type { HighDetailType } from "../../../lib/history/high-details";
 const pct = (value: number | null) => value === null ? "暂缺" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
 const columns: Array<{ field?: HistorySortField; label: string; className?: string }> = [
+  { label: "热点板块", className: "history-sector-cell" },
   { field: "date", label: "日期", className: "history-date" },
   { field: "rising", label: "上涨" }, { field: "falling", label: "下跌" }, { label: "平盘" },
   { field: "limitUp", label: "涨停" }, { field: "limitDown", label: "跌停" }, { label: "大涨股" },
   { field: "consecutive", label: "连板" }, { field: "maxStreak", label: "最高板" },
   { field: "openPremium", label: "连板开盘溢价" }, { field: "closePremium", label: "连板收盘溢价" },
   { field: "high120", label: "120日新高" }, { field: "allTimeHigh", label: "历史新高" },
-  { label: "热点板块" }, { label: "状态" },
+  { label: "状态" },
 ];
 
 export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, onNearEnd, onOpenHighs }: {
@@ -36,6 +37,7 @@ export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, on
         <thead><tr>{columns.map((column) => <th key={column.label} className={column.className}>{column.field ? <button type="button" onClick={() => onSort(column.field!)} className={sort === column.field ? "is-sorted" : ""}>{column.label}{sort !== column.field ? <ChevronsUpDown size={11} /> : order === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />}</button> : column.label}</th>)}</tr></thead>
         <tbody>{rows.map((row) => (
           <tr key={row.date} data-history-date={row.date} className={selected === row.date ? "selected" : ""} onClick={() => onSelect(row.date)}>
+            <td className="history-sector-cell"><span className="history-sector">{row.topSector}</span></td>
             <td className="history-date"><Link href={`/dashboard?date=${row.date}`} title={`查看 ${row.date} 完整复盘`}>{row.date}</Link></td>
             <td className="rise">{row.rising}</td><td className="fall">{row.falling}</td><td>{row.flat}</td>
             <td className="rise">{row.limitUp}</td><td className="fall">{row.limitDown}</td><td>{row.largeRise}</td>
@@ -44,7 +46,6 @@ export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, on
             <td className={(row.closePremium ?? 0) >= 0 ? "rise" : "fall"}>{pct(row.closePremium)}</td>
             <td><button type="button" className="history-drilldown" disabled={row.high120 === null} onClick={(event) => { event.stopPropagation(); onOpenHighs(row.date, "120d"); }} aria-label={`查看120日新高股票 ${row.date}`}>{row.high120 ?? "暂缺"}</button></td>
             <td><button type="button" className="history-drilldown" disabled={row.allTimeHigh === null} onClick={(event) => { event.stopPropagation(); onOpenHighs(row.date, "all-time"); }} aria-label={`查看历史新高股票 ${row.date}`}>{row.allTimeHigh ?? "暂缺"}</button></td>
-            <td><span className="history-sector">{row.topSector}</span></td>
             <td><span className={`history-status ${row.status}`}>{row.status === "complete" ? "完整" : row.status === "partial" ? "部分" : row.status === "demo" ? "演示" : "失败"}</span></td>
           </tr>
         ))}</tbody>

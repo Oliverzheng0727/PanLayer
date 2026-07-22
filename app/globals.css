@@ -131,10 +131,14 @@ button, input { font: inherit; }
 .history-table tr { cursor:pointer; }
 .history-table tbody tr:hover td { background:rgba(255,255,255,.025); }
 .history-table tbody tr.selected td { background:rgba(232,112,42,.075); }
-.history-table .history-date { position:sticky; left:0; z-index:3; min-width:102px; border-right:1px solid rgba(255,255,255,.06); background:#121314; }
+.history-table .history-sector-cell { position:sticky; left:0; z-index:3; width:170px; min-width:170px; background:#121314; }
+.history-table th.history-sector-cell { z-index:8; }
+.history-table .history-date { position:sticky; left:170px; z-index:3; min-width:102px; border-right:1px solid rgba(255,255,255,.06); background:#121314; }
 .history-table th.history-date { z-index:7; }
 .history-table td.history-date a { color:rgba(255,255,255,.82); font-weight:600; }
+.history-table tbody tr:hover td.history-sector-cell,
 .history-table tbody tr:hover td.history-date { background:#171819; }
+.history-table tbody tr.selected td.history-sector-cell,
 .history-table tbody tr.selected td.history-date { background:#251710; color:#f29a64; }
 .history-sector { display:inline-flex; max-width:150px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.04); padding:5px 8px; text-overflow:ellipsis; }
 .history-status { display:inline-flex; border-radius:999px; padding:4px 7px; background:rgba(255,255,255,.04); color:rgba(255,255,255,.35); }
