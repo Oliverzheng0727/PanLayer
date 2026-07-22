@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fetchAlphaVantageQuote } from "../lib/data/global/alpha-vantage";
 import { fetchEiaSeries } from "../lib/data/global/eia";
 import { fetchFredSeries } from "../lib/data/global/fred";
+import { isGlobalSnapshotDate } from "../lib/data/global/query";
 import { GLOBAL_MARKET_INSTRUMENTS, loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import { reconcileGlobalPoints } from "../lib/data/global/reconcile";
 import { fetchTwelveDataQuotes } from "../lib/data/global/twelve-data";
@@ -10,6 +11,12 @@ import type { GlobalInstrument, GlobalPoint } from "../lib/data/global/types";
 const instrument = (key: string, symbol: string): GlobalInstrument => ({ key, symbol, label: key.toUpperCase(), period: "daily" });
 
 describe("global data providers", () => {
+  it("accepts only real ISO calendar dates for the protected snapshot route", () => {
+    expect(isGlobalSnapshotDate("2026-07-23")).toBe(true);
+    expect(isGlobalSnapshotDate("2026-02-30")).toBe(false);
+    expect(isGlobalSnapshotDate("not-a-date")).toBe(false);
+  });
+
   it("keeps the primary overseas batch within the free eight-credit minute budget", async () => {
     let called = false;
     const fetcher = (async () => { called = true; return Response.json({}); }) as typeof fetch;

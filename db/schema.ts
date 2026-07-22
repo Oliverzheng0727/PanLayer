@@ -78,3 +78,35 @@ export const newHighDetails = sqliteTable("new_high_details", {
   highDate: text("high_date").notNull(),
   isAllTime: integer("is_all_time", { mode: "boolean" }).notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.type, table.symbol] }), index("new_high_date_idx").on(table.tradeDate, table.type)]);
+
+export const marketSourceAudits = sqliteTable("market_source_audits", {
+  tradeDate: text("trade_date").notNull(),
+  snapshotTime: text("snapshot_time").notNull(),
+  source: text("source").notNull(),
+  marketTime: text("market_time"),
+  receivedAt: text("received_at").notNull(),
+  rawCount: integer("raw_count").notNull(),
+  validCount: integer("valid_count").notNull(),
+  invalidCount: integer("invalid_count").notNull(),
+  coveragePct: real("coverage_pct").notNull(),
+  directionAgreementPct: real("direction_agreement_pct"),
+  priceAgreementPct: real("price_agreement_pct"),
+  breadthDifference: integer("breadth_difference"),
+  status: text("status").notNull(),
+  message: text("message").notNull().default(""),
+}, (table) => [primaryKey({ columns: [table.tradeDate, table.snapshotTime, table.source] }), index("market_audit_date_idx").on(table.tradeDate, table.snapshotTime)]);
+
+export const globalMarketSnapshots = sqliteTable("global_market_snapshots", {
+  tradeDate: text("trade_date").notNull(),
+  symbol: text("symbol").notNull(),
+  label: text("label").notNull(),
+  provider: text("provider").notNull(),
+  marketTime: text("market_time"),
+  receivedAt: text("received_at").notNull(),
+  value: real("value"),
+  previousClose: real("previous_close"),
+  pctChange: real("pct_change"),
+  period: text("period").notNull(),
+  status: text("status").notNull(),
+  message: text("message").notNull().default(""),
+}, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol, table.provider] }), index("global_snapshot_date_idx").on(table.tradeDate)]);

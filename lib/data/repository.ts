@@ -2,6 +2,45 @@ import type { MorningBrief } from "../ai/morning-brief";
 import type { DailyReview } from "../domain/types";
 import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
+import { reconcileGlobalPoints } from "./global/reconcile";
+import type { GlobalPoint } from "./global/types";
+
+interface HealthJob { job: string; trade_date: string; status: string; message: string; started_at: string; finished_at: string | null }
+interface HealthSource { source?: string; provider?: string; status: string; received_at: string; message: string }
+
+const healthSection = (status: string, message: string, updatedAt: string | null) => ({ status, message, updatedAt });
+
+export function summarizeDataHealth({
+  jobs,
+  audits,
+  globalPoints,
+}: {
+  jobs: HealthJob[];
+  audits: HealthSource[];
+  globalPoints: HealthSource[];
+}) {
+  const latestAudit = audits[0];
+  const marketPoints = globalPoints.filter((point) => point.provider !== "FRED" && point.provider !== "EIA");
+  const macroPoints = globalPoints.filter((point) => point.provider === "FRED" || point.provider === "EIA");
+  const aiJob = jobs.find((job) => job.job === "morning-brief");
+  const domesticStatus = latestAudit?.status === "complete" ? "complete" : latestAudit ? "partial" : "demo";
+  const globalStatus = marketPoints.some((point) => point.status === "ok") ? "complete" : marketPoints.length ? "partial" : "demo";
+  const macroStatus = macroPoints.length > 0 && macroPoints.every((point) => point.status === "ok") ? "complete" : macroPoints.length ? "partial" : "demo";
+  const aiStatus = aiJob?.status === "complete" ? "complete" : aiJob ? "partial" : "demo";
+  const sections = {
+    domestic: healthSection(domesticStatus, latestAudit?.message ?? "尚无国内行情审计", latestAudit?.received_at ?? null),
+    global: healthSection(globalStatus, marketPoints.find((point) => point.message)?.message ?? (marketPoints.length ? "海外行情已采集" : "尚无海外行情"), marketPoints[0]?.received_at ?? null),
+    macro: healthSection(macroStatus, macroPoints.find((point) => point.message)?.message ?? (macroPoints.length ? "宏观数据已采集" : "尚无宏观数据"), macroPoints[0]?.received_at ?? null),
+    ai: healthSection(aiStatus, aiJob?.message || (aiJob ? "早参已生成" : "尚无早参任务"), aiJob?.finished_at ?? aiJob?.started_at ?? null),
+  };
+  const statuses = Object.values(sections).map((section) => section.status);
+  return {
+    status: statuses.every((status) => status === "complete") ? "complete" : statuses.every((status) => status === "demo") ? "demo" : "partial",
+    lastRun: jobs[0] ?? null,
+    jobs,
+    ...sections,
+  };
+}
 
 async function getD1(): Promise<D1Database | null> {
   try {
@@ -59,10 +98,29 @@ export async function readHighDetails(date: string): Promise<HighDetail[]> {
   } catch { return []; }
 }
 
+export async function readGlobalSnapshot(date: string) {
+  const db = await getD1();
+  if (!db) return { raw: [], reconciled: [] };
+  try {
+    const result = await db.prepare("SELECT symbol, label, provider, market_time, received_at, value, previous_close, pct_change, period, status, message FROM global_market_snapshots WHERE trade_date = ? ORDER BY symbol, provider").bind(date).all<{
+      symbol: string; label: string; provider: string; market_time: string | null; received_at: string;
+      value: number | null; previous_close: number | null; pct_change: number | null; period: string; status: GlobalPoint["status"]; message: string;
+    }>();
+    const raw: GlobalPoint[] = (result.results ?? []).map((row) => ({
+      key: row.symbol, label: row.label, provider: row.provider, marketTime: row.market_time, receivedAt: row.received_at,
+      value: row.value, previousClose: row.previous_close, pctChange: row.pct_change, period: row.period, status: row.status, message: row.message,
+    }));
+    return { raw, reconciled: reconcileGlobalPoints(raw) };
+  } catch { return { raw: [], reconciled: [] }; }
+}
+
 export async function readDataHealth() {
   const db = await getD1();
-  if (!db) return { status: "demo", lastRun: null, jobs: [] };
-  const result = await db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<{ status: string }>();
-  const jobs = result.results ?? [];
-  return { status: jobs.some((job) => job.status === "failed") ? "partial" : "complete", lastRun: jobs[0] ?? null, jobs };
+  if (!db) return summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] });
+  const [jobResult, auditResult, globalResult] = await Promise.all([
+    db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
+    db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
+    db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
+  ]);
+  return summarizeDataHealth({ jobs: jobResult.results ?? [], audits: auditResult.results ?? [], globalPoints: globalResult.results ?? [] });
 }

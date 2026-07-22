@@ -93,13 +93,19 @@ export async function generateMorningBrief({
   date,
   apiKey,
   fetcher = fetch,
+  globalSnapshot = [],
 }: {
   date: string;
   apiKey: string;
   fetcher?: typeof fetch;
+  globalSnapshot?: ReconciledGlobalPoint[];
 }): Promise<MorningBrief> {
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
+  const numericContext = JSON.stringify(globalSnapshot);
   const prompt = `生成 ${date} 北京时间 07:15 的A股隔夜早参。主动检索从上一交易日收盘至当前的全球与国内可靠来源。
+
+以下是服务端行情适配层已校验的全球数值快照：${numericContext}
+指数、股票、汇率、利率和商品的数值只能使用以上结构化快照。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果另行猜测数值。
 
 严格输出五个固定模块：全球外围市场全景；全球产业重大催化；国内隔夜重磅信息；板块利好、利空与内需映射；盘前情绪、观察方向与风险。
 逐项覆盖美股三大指数、费城半导体、英伟达/美光、中概/A50、人民币、美债、原油黄金工业金属、地缘与美联储；重点拆解 Kimi、DeepSeek、GPT、存储芯片、人形机器人、算力/光模块、钠离子电池，并兼顾新能源车、医药与前沿技术；覆盖国内政策、公告、流动性与风险。
@@ -129,3 +135,4 @@ export async function generateMorningBrief({
   if (!validation.ok) throw new Error(`Morning brief validation failed: ${validation.errors.join("; ")}`);
   return brief;
 }
+import type { ReconciledGlobalPoint } from "../data/global/types";

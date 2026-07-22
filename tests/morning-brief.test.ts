@@ -44,6 +44,7 @@ describe("OpenAI morning brief generation", () => {
       model?: string;
       reasoning?: unknown;
       tools?: unknown[];
+      input?: string;
       text?: { format?: unknown };
     } = {};
     const fetcher: typeof fetch = async (_input, init) => {
@@ -52,11 +53,23 @@ describe("OpenAI morning brief generation", () => {
         output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(validBrief) }] }],
       }));
     };
-    const result = await generateMorningBrief({ date: "2026-07-22", apiKey: "test-key", fetcher });
+    const result = await generateMorningBrief({
+      date: "2026-07-22",
+      apiKey: "test-key",
+      fetcher,
+      globalSnapshot: [{
+        key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: .8159,
+        marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily",
+        providers: ["Twelve Data", "Alpha Vantage"], status: "cross-checked", message: "双源一致",
+      }],
+    });
     expect(result.date).toBe("2026-07-22");
     expect(requestBody.model).toBe("gpt-5.6-terra");
     expect(requestBody.reasoning).toEqual({ effort: "medium" });
     expect(requestBody.tools).toContainEqual({ type: "web_search", search_context_size: "medium" });
     expect(requestBody.text?.format).toMatchObject({ type: "json_schema", name: "panlayer_morning_brief", strict: true });
+    expect(requestBody.input).toContain('"key":"sp500"');
+    expect(requestBody.input).toContain("数值只能使用以上结构化快照");
+    expect(requestBody.input).not.toContain("test-key");
   });
 });
