@@ -77,7 +77,7 @@ export function Dashboard({ review, brief, etfs, userName }: { review: DailyRevi
               <Metric label="上涨家数" value={String(total.rising)} trend={+2.8} note={`下跌 ${total.falling}`} />
               <Metric label="涨停数量" value={String(review.metrics.limitUp)} trend={+10.3} note={`跌停 ${review.metrics.limitDown}`} />
               <Metric label="连板家数" value={String(review.metrics.consecutive)} trend={+4.1} note="梯队高度 6板" />
-              <Metric label="历史新高" value={String(review.metrics.allTimeHigh)} trend={-12.5} note={`120日新高 ${review.metrics.high120}`} />
+              <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} trend={-12.5} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
               <Metric label="连板收盘溢价" value={pct(review.premium.closePct)} trend={review.premium.closePct ?? 0} note={`开盘 ${pct(review.premium.openPct)}`} accent />
               <Metric label="两融余额" value={`${review.metrics.marginBalance?.toLocaleString()}亿`} trend={-1.04} note="沪深京融资余额" />
             </div>

@@ -17,8 +17,8 @@ export function buildDailyReview({
   limitPool: Quote[];
   breadth: Array<Breadth & { time: string }>;
   marginBalance: number | null;
-  high120: number;
-  allTimeHigh: number;
+  high120: number | null;
+  allTimeHigh: number | null;
   source: string;
 }): DailyReview {
   const pool = new Map(limitPool.map((item) => [item.symbol, item]));
@@ -35,7 +35,7 @@ export function buildDailyReview({
   const limitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
   return {
     date,
-    status: "complete",
+    status: high120 === null || allTimeHigh === null ? "partial" : "complete",
     source,
     updatedAt: `${date} 16:10`,
     breadth,
@@ -90,7 +90,7 @@ export async function runPanLayerJob(job: ScheduledJob, now: Date, env: PanLayer
       const [quotes, limitPool, marginBalance] = await Promise.all([provider.getQuotes("16:10"), provider.getLimitPool(date), provider.getMarginBalance(date).catch(() => null)]);
       if (quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
       const breadth = await loadBreadth(db, date);
-      const review = buildDailyReview({ date, quotes, limitPool, breadth, marginBalance, high120: 0, allTimeHigh: 0, source: provider.name });
+      const review = buildDailyReview({ date, quotes, limitPool, breadth, marginBalance, high120: null, allTimeHigh: null, source: provider.name });
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), provider.name, review.status, new Date().toISOString()).run();
     } else {
       const brief = await generateMorningBrief({ date, apiKey: env.OPENAI_API_KEY ?? "" });

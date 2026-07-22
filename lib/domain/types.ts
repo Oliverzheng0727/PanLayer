@@ -48,8 +48,8 @@ export interface DailyReview {
     limitDown: number;
     consecutive: number;
     largeRise: number;
-    high120: number;
-    allTimeHigh: number;
+    high120: number | null;
+    allTimeHigh: number | null;
     marginBalance: number | null;
   };
   premium: { openPct: number | null; closePct: number | null; sampleSize: number };

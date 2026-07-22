@@ -27,4 +27,14 @@ describe("close review aggregation", () => {
     expect(review.leaders[0].symbol).toBe("A");
     expect(review.status).toBe("complete");
   });
+
+  it("marks unavailable new-high data partial instead of inventing zero values", () => {
+    const review = buildDailyReview({
+      date: "2026-07-22", quotes: [], limitPool: [], breadth: [], marginBalance: null,
+      high120: null, allTimeHigh: null, source: "东方财富",
+    });
+    expect(review.status).toBe("partial");
+    expect(review.metrics.high120).toBeNull();
+    expect(review.metrics.allTimeHigh).toBeNull();
+  });
 });
