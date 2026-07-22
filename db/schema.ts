@@ -48,6 +48,19 @@ export const etfSnapshots = sqliteTable("etf_snapshots", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol] }), index("etf_trade_date_idx").on(table.tradeDate)]);
 
+export const userEtfWatchlist = sqliteTable("user_etf_watchlist", {
+  userEmail: text("user_email").notNull(),
+  symbol: text("symbol").notNull(),
+  name: text("name").notNull(),
+  exchange: text("exchange").notNull(),
+  category: text("category").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.userEmail, table.symbol] }),
+  index("user_etf_watchlist_email_idx").on(table.userEmail, table.createdAt),
+]);
+
 export const jobRuns = sqliteTable("job_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   job: text("job").notNull(),

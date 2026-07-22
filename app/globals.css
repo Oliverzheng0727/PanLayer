@@ -92,8 +92,14 @@ button, input { font: inherit; }
 .etf-list-head > div { display:flex; min-width:90px; flex-direction:column; gap:3px; }
 .etf-list-head strong { font-size:11px; }
 .etf-list-head span { color:rgba(255,255,255,.24); font-size:8px; }
+.etf-code-form { display:flex; min-width:0; align-items:center; gap:6px; }
 .etf-list-head label { display:flex; min-width:0; align-items:center; gap:6px; border:1px solid rgba(255,255,255,.07); border-radius:999px; padding:7px 10px; color:rgba(255,255,255,.24); }
 .etf-list-head input { width:115px; min-width:0; border:0; outline:0; background:transparent; color:rgba(255,255,255,.7); font-size:8px; }
+.etf-add-button { display:flex; height:28px; flex:none; align-items:center; gap:3px; border-radius:999px; background:#e8702a; padding:0 9px; color:white; font-size:8px; }
+.etf-add-button:disabled { cursor:wait; opacity:.62; }
+.etf-inline-message { min-height:27px; border-bottom:1px solid rgba(255,255,255,.045); background:rgba(232,112,42,.035); padding:8px 12px 7px; color:#df8c58; font-size:8px; }
+.spin { animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
 .etf-table-scroll { position:relative; max-height:548px; overflow:auto; }
 .etf-table { width:100%; min-width:670px; border-collapse:separate; border-spacing:0; font-size:8px; }
 .etf-table th { position:sticky; top:0; z-index:2; height:38px; background:#141618; padding:0 9px; color:rgba(255,255,255,.26); font-weight:500; text-align:left; white-space:nowrap; }
@@ -105,6 +111,10 @@ button, input { font: inherit; }
 .etf-table tbody tr.selected td { background:rgba(232,112,42,.075); }
 .etf-table td strong { display:block; max-width:125px; overflow:hidden; color:rgba(255,255,255,.8); font-size:9px; text-overflow:ellipsis; }
 .etf-table td span { display:block; margin-top:3px; color:rgba(255,255,255,.22); }
+.etf-name-cell { display:flex; align-items:center; justify-content:space-between; gap:7px; }
+.etf-name-cell > div { min-width:0; }
+.etf-name-cell > button { display:grid; width:23px; height:23px; flex:none; place-items:center; border-radius:7px; color:rgba(255,255,255,.22); }
+.etf-name-cell > button:hover { background:rgba(239,91,88,.1); color:#ef7774; }
 .etf-empty { display:grid; min-height:180px; place-items:center; color:rgba(255,255,255,.25); font-size:10px; }
 .etf-chart-panel { min-width:0; background:#0e1012; }
 .etf-chart-head { display:flex; height:62px; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid rgba(255,255,255,.06); padding:0 14px; }
@@ -118,6 +128,11 @@ button, input { font: inherit; }
 .etf-chart-controls > div { display:flex; gap:4px; }
 .etf-chart-controls button { border-radius:8px; padding:6px 9px; background:rgba(255,255,255,.035); color:rgba(255,255,255,.34); font-size:8px; }
 .etf-chart-controls button.active { background:rgba(232,112,42,.13); color:#f09a65; }
+.etf-chart-controls .etf-chart-actions { align-items:center; gap:5px; }
+.etf-chart-actions label { display:flex; align-items:center; gap:5px; color:rgba(255,255,255,.25); font-size:8px; }
+.etf-chart-actions select { max-width:104px; border:1px solid rgba(255,255,255,.07); border-radius:8px; outline:0; background:#17191b; padding:5px 7px; color:rgba(255,255,255,.55); font-size:8px; }
+.etf-chart-actions .etf-remove-button { display:flex; align-items:center; gap:4px; color:rgba(239,91,88,.62); }
+.etf-chart-actions .etf-remove-button:hover { background:rgba(239,91,88,.09); color:#ef7774; }
 .etf-chart-canvas { width:100%; height:440px; }
 .etf-chart-foot { display:flex; justify-content:space-between; gap:10px; padding:12px 14px; color:rgba(255,255,255,.2); font-size:7px; }
 .calendar-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
@@ -219,6 +234,6 @@ button, input { font: inherit; }
 @media (max-width:1280px) { .metric-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .brief-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:1180px) { .etf-workspace { grid-template-columns:178px minmax(0,1fr); min-height:0; overflow:hidden; } .etf-category-rail { grid-column:1; grid-row:1; } .etf-list-panel { grid-column:2; grid-row:1; border-right:0; } .etf-category-rail nav,.etf-table-scroll { max-height:460px; } .etf-chart-panel { grid-column:1/-1; grid-row:2; border-top:1px solid rgba(255,255,255,.07); } .etf-chart-canvas { height:500px; } }
 @media (max-width:1023px) { .dashboard-shell { display:block; } .dashboard-sidebar { transform:translateX(-100%); box-shadow:30px 0 80px rgba(0,0,0,.45); transition:transform .35s cubic-bezier(.16,1,.3,1); } .dashboard-sidebar.is-open { transform:translateX(0); } .dashboard-main { width:100%; } }
-@media (max-width:760px) { .history-toolbar { align-items:flex-start; flex-wrap:wrap; } .history-toolbar label { order:3; width:100%; margin-left:0; } .history-toolbar input { width:100%; } .history-count { margin-left:auto; } .history-layout { grid-template-columns:1fr; } .history-calendar { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .history-table-scroll { max-height:510px; } .high-drawer,.brief-drawer { width:100vw; border-left:0; } .brief-drawer-header { min-height:90px; padding:15px 17px; } .brief-drawer-body { padding:6px 17px 20px; } .brief-detail-item { padding-left:34px; } .brief-source-list a { align-items:flex-start; flex-direction:column; } .brief-drawer-footer { padding:12px 17px; } .etf-workspace { display:block; overflow:hidden; } .etf-category-rail { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .etf-category-title { height:54px; } .etf-category-rail nav { display:flex; max-height:none; gap:5px; overflow-x:auto; padding:8px; } .etf-category-rail nav button { width:auto; flex:none; gap:6px; white-space:nowrap; } .etf-list-panel { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .etf-table-scroll { max-height:390px; } .etf-chart-canvas { height:400px; } }
+@media (max-width:760px) { .history-toolbar { align-items:flex-start; flex-wrap:wrap; } .history-toolbar label { order:3; width:100%; margin-left:0; } .history-toolbar input { width:100%; } .history-count { margin-left:auto; } .history-layout { grid-template-columns:1fr; } .history-calendar { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .history-table-scroll { max-height:510px; } .high-drawer,.brief-drawer { width:100vw; border-left:0; } .brief-drawer-header { min-height:90px; padding:15px 17px; } .brief-drawer-body { padding:6px 17px 20px; } .brief-detail-item { padding-left:34px; } .brief-source-list a { align-items:flex-start; flex-direction:column; } .brief-drawer-footer { padding:12px 17px; } .etf-workspace { display:block; overflow:hidden; } .etf-category-rail { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .etf-category-title { height:54px; } .etf-category-rail nav { display:flex; max-height:none; gap:5px; overflow-x:auto; padding:8px; } .etf-category-rail nav button { width:auto; flex:none; gap:6px; white-space:nowrap; } .etf-list-panel { border-right:0; border-bottom:1px solid rgba(255,255,255,.06); } .etf-list-head { height:auto; min-height:70px; flex-wrap:wrap; padding-block:9px; } .etf-code-form { width:100%; } .etf-code-form label { flex:1; } .etf-code-form input { width:100%; } .etf-table-scroll { max-height:390px; } .etf-chart-controls { align-items:flex-start; flex-direction:column; } .etf-chart-controls .etf-chart-actions { width:100%; flex-wrap:wrap; } .etf-chart-canvas { height:400px; } }
 @media (max-width:640px) { .dashboard-topbar { height:64px; padding:0 18px; } .dashboard-content { padding:30px 16px 16px; } .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .metric-card { min-height:132px; padding:15px; } .brief-grid { grid-template-columns:1fr; } .brief-card-featured { grid-column:auto; } .dashboard-section { margin-top:40px; } .ladder-row { grid-template-columns:70px 1fr; } .ladder-items { padding:10px; } .stock-chip { min-width:100%; } }
 @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .hero-anim,.hero-zoom { animation:none; opacity:1; } * { transition-duration:.01ms !important; } }

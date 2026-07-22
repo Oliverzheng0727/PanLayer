@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, Trash2 } from "lucide-react";
 import type { EtfSnapshot } from "../../../lib/data/provider";
 import type { EtfSortField } from "../../../lib/etf/catalog";
 
@@ -12,13 +12,15 @@ const columns: Array<{ field?: EtfSortField; label: string }> = [
   { field: "scale", label: "规模" }, { field: "turnoverRate", label: "换手" },
 ];
 
-export function EtfTable({ items, selected, sort, order, onSelect, onSort }: {
+export function EtfTable({ items, selected, sort, order, watchedSymbols, onSelect, onSort, onRemove }: {
   items: EtfSnapshot[];
   selected: string;
   sort: EtfSortField;
   order: "asc" | "desc";
+  watchedSymbols: Set<string>;
   onSelect: (etf: EtfSnapshot) => void;
   onSort: (field: EtfSortField) => void;
+  onRemove: (symbol: string) => void;
 }) {
-  return <div className="etf-table-scroll"><table className="etf-table"><thead><tr>{columns.map((column) => <th key={column.label}>{column.field ? <button type="button" className={sort === column.field ? "active" : ""} onClick={() => onSort(column.field!)}>{column.label}{sort !== column.field ? <ChevronsUpDown size={10} /> : order === "desc" ? <ArrowDown size={10} /> : <ArrowUp size={10} />}</button> : column.label}</th>)}</tr></thead><tbody>{items.map((item) => <tr key={item.symbol} className={selected === item.symbol ? "selected" : ""} onClick={() => onSelect(item)}><td><strong>{item.name}</strong><span>{item.symbol} · {item.exchange}</span></td><td>{item.price.toFixed(3)}</td><td className={item.pctChange >= 0 ? "rise" : "fall"}>{item.pctChange > 0 ? "+" : ""}{item.pctChange.toFixed(2)}%</td><td>{amount(item.amount)}</td><td>{amount(item.averageAmount20)}</td><td>{amount(item.scale)}</td><td>{item.turnoverRate === null ? "暂缺" : `${item.turnoverRate.toFixed(2)}%`}</td></tr>)}</tbody></table>{!items.length && <div className="etf-empty">当前分类没有匹配的 ETF</div>}</div>;
+  return <div className="etf-table-scroll"><table className="etf-table"><thead><tr>{columns.map((column) => <th key={column.label}>{column.field ? <button type="button" className={sort === column.field ? "active" : ""} onClick={() => onSort(column.field!)}>{column.label}{sort !== column.field ? <ChevronsUpDown size={10} /> : order === "desc" ? <ArrowDown size={10} /> : <ArrowUp size={10} />}</button> : column.label}</th>)}</tr></thead><tbody>{items.map((item) => <tr key={item.symbol} className={selected === item.symbol ? "selected" : ""} onClick={() => onSelect(item)}><td><div className="etf-name-cell"><div><strong>{item.name}</strong><span>{item.symbol} · {item.exchange}{watchedSymbols.has(item.symbol) ? " · 自选" : ""}</span></div>{watchedSymbols.has(item.symbol) && <button type="button" aria-label={`移除 ${item.name}`} title="移出自选" onClick={(event) => { event.stopPropagation(); onRemove(item.symbol); }}><Trash2 size={11} /></button>}</div></td><td>{item.price.toFixed(3)}</td><td className={item.pctChange >= 0 ? "rise" : "fall"}>{item.pctChange > 0 ? "+" : ""}{item.pctChange.toFixed(2)}%</td><td>{amount(item.amount)}</td><td>{amount(item.averageAmount20)}</td><td>{amount(item.scale)}</td><td>{item.turnoverRate === null ? "暂缺" : `${item.turnoverRate.toFixed(2)}%`}</td></tr>)}</tbody></table>{!items.length && <div className="etf-empty">当前分类没有匹配的 ETF</div>}</div>;
 }

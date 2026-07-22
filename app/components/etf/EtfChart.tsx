@@ -1,8 +1,10 @@
 "use client";
 
 import { CandlestickSeries, ColorType, HistogramSeries, createChart, type Time, type UTCTimestamp } from "lightweight-charts";
+import { Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createDemoBars, type Adjustment, type BarPeriod, type MarketBar } from "../../../lib/etf/bars";
+import { ETF_CATEGORIES } from "../../../lib/etf/catalog";
 import type { EtfSnapshot } from "../../../lib/data/provider";
 
 const periods: Array<{ value: BarPeriod; label: string }> = [{ value: "minute", label: "分时" }, { value: "day", label: "日K" }, { value: "week", label: "周K" }, { value: "month", label: "月K" }];
@@ -11,7 +13,12 @@ const chartTime = (time: string): Time => time.includes(" ")
   ? Math.floor(new Date(`${time.replace(" ", "T")}:00+08:00`).getTime() / 1000) as UTCTimestamp
   : time.slice(0, 10) as Time;
 
-export function EtfChart({ etf }: { etf: EtfSnapshot }) {
+export function EtfChart({ etf, isWatched, onCategoryChange, onRemove }: {
+  etf: EtfSnapshot;
+  isWatched: boolean;
+  onCategoryChange: (category: string) => void;
+  onRemove: () => void;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const [period, setPeriod] = useState<BarPeriod>("day");
   const [adjustment, setAdjustment] = useState<Adjustment>("forward");
@@ -57,7 +64,13 @@ export function EtfChart({ etf }: { etf: EtfSnapshot }) {
         <div><p>{etf.category} · {etf.exchange}</p><h3>{etf.name} <span>{etf.symbol}</span></h3></div>
         <div className="etf-chart-price"><strong>{etf.price.toFixed(3)}</strong><span className={etf.pctChange >= 0 ? "rise" : "fall"}>{etf.pctChange > 0 ? "+" : ""}{etf.pctChange.toFixed(2)}%</span></div>
       </div>
-      <div className="etf-chart-controls"><div>{periods.map((item) => <button key={item.value} type="button" className={period === item.value ? "active" : ""} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div><button type="button" className={adjustment === "forward" ? "active" : ""} onClick={() => setAdjustment((value) => value === "forward" ? "none" : "forward")}>{adjustment === "forward" ? "前复权" : "不复权"}</button></div>
+      <div className="etf-chart-controls">
+        <div>{periods.map((item) => <button key={item.value} type="button" className={period === item.value ? "active" : ""} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>
+        <div className="etf-chart-actions">
+          {isWatched && <><label>分类<select value={etf.category} onChange={(event) => onCategoryChange(event.target.value)}>{ETF_CATEGORIES.filter((item) => item !== "全部").map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" className="etf-remove-button" onClick={onRemove} title="移出我的自选"><Trash2 size={11} />移除</button></>}
+          <button type="button" className={adjustment === "forward" ? "active" : ""} onClick={() => setAdjustment((value) => value === "forward" ? "none" : "forward")}>{adjustment === "forward" ? "前复权" : "不复权"}</button>
+        </div>
+      </div>
       <div ref={container} className="etf-chart-canvas" />
       <div className="etf-chart-foot"><span>十字光标 · 缩放浏览</span><span>{source} · 成交量同步显示</span></div>
     </div>

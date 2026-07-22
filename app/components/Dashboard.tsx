@@ -124,7 +124,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           </section>
 
           <section id="etfs" className="dashboard-section scroll-mt-24">
-            <SectionHeading eyebrow="ETF TERMINAL" title="ETF 专业工作台" description="全行业、跨境与商品 ETF，支持排序和四周期 K 线。" />
+            <SectionHeading eyebrow="ETF TERMINAL" title="ETF 专业工作台" description="输入六位代码加入个人自选，支持分类、排序和四周期 K 线。" />
             <EtfWorkspace initialEtfs={etfs} />
           </section>
 
