@@ -9,6 +9,7 @@ import type { DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import type { HistoryRow } from "../../lib/history/query";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
+import type { HighDetail } from "../../lib/history/high-details";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -23,7 +24,7 @@ const nav = [
 const formatAmount = (value: number | null) => value == null ? "—" : value >= 1e8 ? `${(value / 1e8).toFixed(1)}亿` : `${(value / 1e4).toFixed(0)}万`;
 const pct = (value: number | null) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
-export function Dashboard({ review, brief, etfs, history, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; userName: string }) {
+export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const total = useMemo(() => review.breadth.at(-1)!, [review]);
@@ -117,7 +118,7 @@ export function Dashboard({ review, brief, etfs, history, userName }: { review: 
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
             <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="像 Excel 一样排序、滚动并回看每个交易日。" />
-            <HistoryWorkspace initialRows={history} />
+            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

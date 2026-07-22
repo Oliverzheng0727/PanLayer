@@ -3,6 +3,7 @@
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import Link from "next/link";
 import type { HistoryRow, HistorySortField, SortOrder } from "../../../lib/history/query";
+import type { HighDetailType } from "../../../lib/history/high-details";
 
 const pct = (value: number | null) => value === null ? "暂缺" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
@@ -16,7 +17,7 @@ const columns: Array<{ field?: HistorySortField; label: string; className?: stri
   { label: "热点板块" }, { label: "状态" },
 ];
 
-export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, onNearEnd }: {
+export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, onNearEnd, onOpenHighs }: {
   rows: HistoryRow[];
   selected: string;
   sort: HistorySortField;
@@ -24,6 +25,7 @@ export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, on
   onSelect: (date: string) => void;
   onSort: (field: HistorySortField) => void;
   onNearEnd: () => void;
+  onOpenHighs: (date: string, type: HighDetailType) => void;
 }) {
   return (
     <div className="history-table-scroll" onScroll={(event) => {
@@ -40,7 +42,8 @@ export function HistoryTable({ rows, selected, sort, order, onSelect, onSort, on
             <td>{row.consecutive}</td><td>{row.maxStreak}板</td>
             <td className={(row.openPremium ?? 0) >= 0 ? "rise" : "fall"}>{pct(row.openPremium)}</td>
             <td className={(row.closePremium ?? 0) >= 0 ? "rise" : "fall"}>{pct(row.closePremium)}</td>
-            <td>{row.high120 ?? "暂缺"}</td><td>{row.allTimeHigh ?? "暂缺"}</td>
+            <td><button type="button" className="history-drilldown" disabled={row.high120 === null} onClick={(event) => { event.stopPropagation(); onOpenHighs(row.date, "120d"); }} aria-label={`查看120日新高股票 ${row.date}`}>{row.high120 ?? "暂缺"}</button></td>
+            <td><button type="button" className="history-drilldown" disabled={row.allTimeHigh === null} onClick={(event) => { event.stopPropagation(); onOpenHighs(row.date, "all-time"); }} aria-label={`查看历史新高股票 ${row.date}`}>{row.allTimeHigh ?? "暂缺"}</button></td>
             <td><span className="history-sector">{row.topSector}</span></td>
             <td><span className={`history-status ${row.status}`}>{row.status === "complete" ? "完整" : row.status === "partial" ? "部分" : row.status === "demo" ? "演示" : "失败"}</span></td>
           </tr>

@@ -2,6 +2,7 @@ import type { DailyReview, Quote } from "../domain/types";
 import type { MorningBrief } from "../ai/morning-brief";
 import type { EtfSnapshot } from "./provider";
 import type { HistoryRow } from "../history/query";
+import type { HighDetail } from "../history/high-details";
 
 const makeLeader = (symbol: string, name: string, sector: string, streak: number, pctChange = 10.01): Quote => ({
   symbol, name, sector, limitStreak: streak, pctChange,
@@ -78,6 +79,38 @@ export const demoHistory: HistoryRow[] = historyDates.map((date, index) => ({
   status: "demo",
   source: "演示历史 · 正式上线后由每日任务替换",
   updatedAt: `${date} 16:10`,
+}));
+
+const detailSectors = ["半导体", "医药", "机器人", "汽车", "新能源", "算力", "消费", "通信", "军工", "有色"];
+
+export const demoHighDetailsByDate: Record<string, HighDetail[]> = Object.fromEntries(demoHistory.map((row, rowIndex) => {
+  const total120 = row.high120 ?? 0;
+  const totalAllTime = row.allTimeHigh ?? 0;
+  const base = Array.from({ length: total120 }, (_, index): HighDetail => {
+    const code = String(600001 + rowIndex * 100 + index).padStart(6, "0");
+    const sector = detailSectors[index % detailSectors.length];
+    return {
+      date: row.date,
+      type: "120d",
+      symbol: `${code}.SH`,
+      name: `${sector}演示标的${String(index + 1).padStart(2, "0")}`,
+      sector,
+      pctChange: Number((1.2 + (index * 1.37) % 8.5).toFixed(2)),
+      close: Number((12 + index * 1.83).toFixed(2)),
+      highPrice: Number((12 + index * 1.83).toFixed(2)),
+      amount: 260_000_000 + index * 137_000_000,
+      intervalPct: Number((18 + (index * 7.3) % 64).toFixed(2)),
+      highDate: row.date,
+      isAllTime: index < totalAllTime,
+    };
+  });
+  const allTime = base.slice(0, totalAllTime).map((item, index): HighDetail => ({
+    ...item,
+    type: "all-time",
+    intervalPct: Number((72 + index * 18.6).toFixed(2)),
+    isAllTime: true,
+  }));
+  return [row.date, [...base, ...allTime]];
 }));
 
 export const demoBrief: MorningBrief = {

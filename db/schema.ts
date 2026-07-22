@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const stocks = sqliteTable("stocks", {
   symbol: text("symbol").primaryKey(),
@@ -63,3 +63,18 @@ export const bootstrapState = sqliteTable("bootstrap_state", {
   value: text("value").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const newHighDetails = sqliteTable("new_high_details", {
+  tradeDate: text("trade_date").notNull(),
+  type: text("type").notNull(),
+  symbol: text("symbol").notNull(),
+  name: text("name").notNull(),
+  sector: text("sector").notNull(),
+  pctChange: real("pct_change").notNull(),
+  close: real("close").notNull(),
+  highPrice: real("high_price").notNull(),
+  amount: real("amount").notNull(),
+  intervalPct: real("interval_pct").notNull(),
+  highDate: text("high_date").notNull(),
+  isAllTime: integer("is_all_time", { mode: "boolean" }).notNull(),
+}, (table) => [primaryKey({ columns: [table.tradeDate, table.type, table.symbol] }), index("new_high_date_idx").on(table.tradeDate, table.type)]);

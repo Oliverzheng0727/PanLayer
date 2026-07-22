@@ -49,6 +49,8 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
   assert.match(html, /固定表头/);
+  assert.match(html, /查看120日新高股票/);
+  assert.match(html, /查看历史新高股票/);
   assert.doesNotMatch(html, /市场情绪震荡修复/);
   assert.match(html, /仅供市场复盘，不构成投资建议/);
 });
