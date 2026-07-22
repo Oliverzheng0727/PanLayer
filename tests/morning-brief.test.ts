@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateMorningBrief, validateMorningBrief } from "../lib/ai/morning-brief";
+import { generateMorningBrief, generateQwenMorningBrief, resolveBriefSources, validateMorningBrief } from "../lib/ai/morning-brief";
 
 const validBrief = {
   date: "2026-07-22",
@@ -35,6 +35,11 @@ describe("morning brief contract", () => {
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toContain("来源");
     expect(result.errors.join(" ")).toContain("投资建议");
+  });
+
+  it("maps each brief item to its real sources in citation order", () => {
+    const item = { text: "内容", sourceIds: ["s3", "missing", "s1", "s3"] };
+    expect(resolveBriefSources(validBrief, item).map((source) => source.id)).toEqual(["s3", "s1"]);
   });
 });
 
@@ -72,4 +77,77 @@ describe("OpenAI morning brief generation", () => {
     expect(requestBody.input).toContain("数值只能使用以上结构化快照");
     expect(requestBody.input).not.toContain("test-key");
   });
+});
+
+describe("Qwen morning brief generation", () => {
+  it("uses DashScope native search with citations and JSON output", async () => {
+    let requestUrl = "";
+    let requestBody: {
+      model?: string;
+      input?: { messages?: Array<{ role?: string; content?: string }> };
+      parameters?: {
+        enable_search?: boolean;
+        search_options?: Record<string, unknown>;
+        response_format?: unknown;
+      };
+    } = {};
+    const qwenBrief = structuredClone(validBrief);
+    qwenBrief.sections.forEach((section, index) => {
+      section.items[0].sourceIds = [`ref_${index + 1}`];
+    });
+    const fetcher: typeof fetch = async (input, init) => {
+      requestUrl = String(input);
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        output: {
+          choices: [{ message: { content: JSON.stringify(qwenBrief) }, finish_reason: "stop" }],
+          search_info: {
+            search_results: Array.from({ length: 5 }, (_, index) => ({
+              index: index + 1,
+              title: `来源${index}`,
+              url: `https://example.com/${index}`,
+              published_time: "2026-07-22T06:00:00+08:00",
+            })),
+          },
+        },
+      }));
+    };
+
+    const result = await generateQwenMorningBrief({
+      date: "2026-07-22",
+      apiKey: "qwen-test-key",
+      fetcher,
+      globalSnapshot: [],
+    });
+
+    expect(requestUrl).toBe("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation");
+    expect(requestBody.model).toBe("qwen-plus");
+    expect(requestBody.parameters?.enable_search).toBe(true);
+    expect(requestBody.parameters?.search_options).toMatchObject({
+      search_strategy: "turbo",
+      forced_search: true,
+      enable_source: true,
+      enable_citation: true,
+      citation_format: "[ref_<number>]",
+    });
+    expect(requestBody.parameters?.response_format).toEqual({ type: "json_object" });
+    expect(requestBody.input?.messages?.map((message) => message.content).join(" ")).toContain("JSON");
+    expect(requestBody.input?.messages?.map((message) => message.content).join(" ")).not.toContain("qwen-test-key");
+    expect(result.sources[0]).toMatchObject({
+      id: "ref_1",
+      title: "来源0",
+      url: "https://example.com/0",
+      publishedAt: "2026-07-22T06:00:00+08:00",
+    });
+  });
+
+  it.runIf(process.env.RUN_LIVE_QWEN_TEST === "1")("accepts a live sourced Qwen response", async () => {
+    const result = await generateQwenMorningBrief({
+      date: new Date().toISOString().slice(0, 10),
+      apiKey: process.env.DASHSCOPE_API_KEY ?? "",
+      globalSnapshot: [],
+    });
+    expect(validateMorningBrief(result)).toEqual({ ok: true, errors: [] });
+    expect(result.sources.length).toBeGreaterThan(0);
+  }, 120_000);
 });

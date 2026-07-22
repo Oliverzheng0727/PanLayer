@@ -63,11 +63,18 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /数据来源/);
   assert.match(html, /更新时间/);
   assert.match(html, /状态口径/);
+  assert.match(html, /打开早参详情/);
   assert.match(html, /完整/);
   assert.match(html, /部分/);
   assert.match(html, /失败/);
   assert.match(html, /演示/);
   assert.doesNotMatch(html, /OPENAI_API_KEY|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
+});
+
+test("binds morning brief cards to source-aware details instead of a placeholder URL", async () => {
+  const dashboard = await readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8");
+  assert.match(dashboard, /BriefDetailDrawer/);
+  assert.doesNotMatch(dashboard, /href="https:\/\/example\.com"/);
 });
 
 test("removes the disposable starter preview", async () => {

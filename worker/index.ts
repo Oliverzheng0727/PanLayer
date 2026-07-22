@@ -7,6 +7,7 @@ import { runPanLayerJob, scheduledJobFromDate } from "../lib/jobs/runner";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  DASHSCOPE_API_KEY?: string;
   OPENAI_API_KEY?: string;
   IMAGES: {
     input(stream: ReadableStream): {

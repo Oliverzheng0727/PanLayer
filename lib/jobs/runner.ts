@@ -1,4 +1,4 @@
-import { generateMorningBrief } from "../ai/morning-brief";
+import { generateMorningBrief, generateQwenMorningBrief, QWEN_MORNING_BRIEF_MODEL } from "../ai/morning-brief";
 import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
@@ -11,11 +11,26 @@ import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedu
 
 export interface PanLayerEnv {
   DB?: D1Database;
+  DASHSCOPE_API_KEY?: string;
   OPENAI_API_KEY?: string;
   TWELVE_DATA_API_KEY?: string;
   ALPHA_VANTAGE_API_KEY?: string;
   FRED_API_KEY?: string;
   EIA_API_KEY?: string;
+}
+
+export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_API_KEY" | "OPENAI_API_KEY">): {
+  provider: "qwen" | "openai";
+  apiKey: string;
+  model: string;
+} {
+  if (env.DASHSCOPE_API_KEY) {
+    return { provider: "qwen", apiKey: env.DASHSCOPE_API_KEY, model: QWEN_MORNING_BRIEF_MODEL };
+  }
+  if (env.OPENAI_API_KEY) {
+    return { provider: "openai", apiKey: env.OPENAI_API_KEY, model: "gpt-5.6-terra" };
+  }
+  throw new Error("DASHSCOPE_API_KEY is not configured and OPENAI_API_KEY fallback is unavailable");
 }
 
 export function shouldSkipMorningBrief(existingStatus: string | null | undefined, force: boolean): boolean {
@@ -168,8 +183,11 @@ export async function runPanLayerJob(
       }
       const global = await loadGlobalOvernightSnapshot(env, fetcher);
       await persistGlobalPoints(db, date, global.raw);
-      const brief = await generateMorningBrief({ date, apiKey: env.OPENAI_API_KEY ?? "", fetcher, globalSnapshot: global.reconciled });
-      await db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, 'gpt-5.6-terra', ?, 'complete', ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(brief), new Date().toISOString()).run();
+      const ai = resolveMorningBriefProvider(env);
+      const brief = ai.provider === "qwen"
+        ? await generateQwenMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled })
+        : await generateMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled });
+      await db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, 'complete', ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`).bind(date, ai.model, JSON.stringify(brief), new Date().toISOString()).run();
     }
     await db.prepare("UPDATE job_runs SET status='complete', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
     return { ok: true, message: `${label} complete` };

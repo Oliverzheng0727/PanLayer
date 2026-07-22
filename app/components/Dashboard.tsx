@@ -11,6 +11,7 @@ import type { HistoryRow } from "../../lib/history/query";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
+import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -34,6 +35,7 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
 export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
   const statusView = statusViews[review.status];
   const total = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
   const maxBreadth = Math.max(1, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
@@ -107,7 +109,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
           <section id="brief" className="dashboard-section scroll-mt-24">
             <SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" />
-            <div className="brief-grid">{brief.sections.map((section, index) => <article key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<a href="https://example.com" target="_blank" rel="noreferrer" className="mt-5 inline-flex items-center gap-1 text-[11px] text-white/30 hover:text-white/60">查看来源 <ArrowUpRight size={11}/></a></article>)}</div>
+            <div className="brief-grid">{brief.sections.map((section, index) => <button type="button" key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.slice(0, 2).map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<span className="brief-card-action">打开详情 · {new Set(section.items.flatMap((item) => item.sourceIds)).size} 个来源 <ArrowUpRight size={11}/></span></button>)}</div>
+            <BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} />
           </section>
 
           <section id="ladder" className="dashboard-section scroll-mt-24">

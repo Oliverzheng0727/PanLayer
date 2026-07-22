@@ -19,7 +19,7 @@ npm run dev
 - A 股交叉校验与降级：腾讯行情公开接口，每批最多 60 只、并发最多 4 批。
 - 海外收盘行情：Twelve Data 免费档主源，Alpha Vantage 免费档抽样复核。
 - 官方宏观：FRED 与 EIA。
-- 隔夜新闻与结构化早参：OpenAI Responses API Web Search。
+- 隔夜新闻与结构化早参：阿里云百炼 Qwen 原生联网搜索；OpenAI 仅作可选降级。
 - 首版不使用 Tushare。
 
 东方财富和腾讯属于无需付费的公开接口，不承诺正式行情授权或 SLA。当前项目只适合个人内部复盘；公开运营或商业化前必须更换为有授权的数据源。
@@ -29,7 +29,7 @@ npm run dev
 - Twelve Data：主批次固定最多 8 个标的，每日早参运行一次。
 - Alpha Vantage：只复核标普 500 与半导体两个核心标的，远低于每日 25 次免费请求上限。
 - FRED/EIA：每日各请求一次并缓存。
-- OpenAI API 单独计费；同一日期早参完成后自动跳过，只有管理接口显式传入 `?force=true` 才重新生成。
+- 百炼 API 按量计费；同一日期早参完成后自动跳过，只有管理接口显式传入 `?force=true` 才重新生成。
 
 ## 服务端 Secrets
 
@@ -37,12 +37,15 @@ npm run dev
 
 ```text
 ALLOWED_USER_EMAIL
+DASHSCOPE_API_KEY
 OPENAI_API_KEY
 TWELVE_DATA_API_KEY
 ALPHA_VANTAGE_API_KEY
 FRED_API_KEY
 EIA_API_KEY
 ```
+
+早参优先使用 `DASHSCOPE_API_KEY` 调用北京地域的 `qwen-plus`，强制启用 turbo 联网搜索、来源返回和 JSON 输出。未配置百炼但配置了 `OPENAI_API_KEY` 时，才使用 OpenAI 回退。选择 `qwen-plus` 是因为其可在一次非流式请求中同时返回结构化 JSON 与可核验搜索来源；当前 `qwen3.7-plus` 的搜索 Agent 与 JSON Mode 不能组合使用。
 
 不得把实际密钥写入 `.env.example`、`.openai/hosting.json`、客户端组件、日志或 Git。没有配置某个免费数据源时，网站会显示“未配置/部分”，不会用旧值冒充最新值。
 

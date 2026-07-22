@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDailyReview, persistGlobalPoints, persistSourceAudits, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
 
@@ -12,10 +12,24 @@ const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
 });
 
 describe("close review aggregation", () => {
-  it("does not bill OpenAI twice for a completed date unless force is explicit", () => {
+  it("does not bill the AI provider twice for a completed date unless force is explicit", () => {
     expect(shouldSkipMorningBrief("complete", false)).toBe(true);
     expect(shouldSkipMorningBrief("complete", true)).toBe(false);
     expect(shouldSkipMorningBrief("failed", false)).toBe(false);
+  });
+
+  it("prefers Qwen and keeps OpenAI as an optional fallback", () => {
+    expect(resolveMorningBriefProvider({ DASHSCOPE_API_KEY: "qwen", OPENAI_API_KEY: "openai" })).toMatchObject({
+      provider: "qwen",
+      apiKey: "qwen",
+      model: "qwen-plus",
+    });
+    expect(resolveMorningBriefProvider({ OPENAI_API_KEY: "openai" })).toMatchObject({
+      provider: "openai",
+      apiKey: "openai",
+      model: "gpt-5.6-terra",
+    });
+    expect(() => resolveMorningBriefProvider({})).toThrow("DASHSCOPE_API_KEY");
   });
 
   it("upserts domestic audits and global points by their unique keys", async () => {
