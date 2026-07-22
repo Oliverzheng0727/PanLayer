@@ -35,8 +35,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const statusView = statusViews[review.status];
-  const total = useMemo(() => review.breadth.at(-1)!, [review]);
-  const maxBreadth = Math.max(...review.breadth.flatMap((item) => [item.rising, item.falling]));
+  const total = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
+  const maxBreadth = Math.max(1, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
   const ladder = [
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;

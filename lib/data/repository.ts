@@ -56,6 +56,15 @@ export async function readReview(date: string): Promise<DailyReview | null> {
   return row?.payload ? JSON.parse(row.payload) : null;
 }
 
+export async function readLatestReview(onOrBefore: string): Promise<DailyReview | null> {
+  const db = await getD1();
+  if (!db) return null;
+  const row = await db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1").bind(onOrBefore).first<{ payload: string }>();
+  if (!row?.payload) return null;
+  try { return JSON.parse(row.payload) as DailyReview; }
+  catch { return null; }
+}
+
 export async function readBrief(date: string): Promise<MorningBrief | null> {
   const db = await getD1();
   if (!db) return null;

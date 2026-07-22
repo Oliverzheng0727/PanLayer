@@ -68,4 +68,12 @@ describe("close review aggregation", () => {
     expect(review.metrics.high120).toBeNull();
     expect(review.metrics.allTimeHigh).toBeNull();
   });
+
+  it("derives a 15:00 breadth snapshot when close review has no intraday rows", () => {
+    const review = buildDailyReview({
+      date: "2026-07-23", quotes: [q("A", 1), q("B", -1), q("C", 0)], limitPool: [], breadth: [],
+      marginBalance: null, high120: null, allTimeHigh: null, source: "东方财富",
+    });
+    expect(review.breadth).toEqual([{ time: "15:00", rising: 1, falling: 1, flat: 1 }]);
+  });
 });

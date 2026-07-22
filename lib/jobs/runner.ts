@@ -56,12 +56,13 @@ export function buildDailyReview({
     maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
   }));
   const limitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
+  const resolvedBreadth = breadth.length > 0 ? breadth : [{ time: "15:00", ...calculateBreadth(quotes) }];
   return {
     date,
     status: high120 === null || allTimeHigh === null ? "partial" : "complete",
     source,
     updatedAt: `${date} 16:10`,
-    breadth,
+    breadth: resolvedBreadth,
     metrics: {
       limitUp: limitUps.length,
       limitDown: merged.filter((item) => classifyLimitStatus(item) === "limit-down").length,

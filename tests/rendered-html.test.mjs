@@ -94,3 +94,12 @@ test("infers chart time from each bar instead of the selected period", async () 
   assert.match(chart, /time\.includes\(" "\)/);
   assert.doesNotMatch(chart, /chartTime\s*=\s*\(time:\s*string,\s*period:/);
 });
+
+test("loads persisted review, brief, and history before using demo fallbacks", async () => {
+  const page = await readFile(new URL("../app/dashboard/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /readLatestReview/);
+  assert.match(page, /readBrief/);
+  assert.match(page, /readHistory/);
+  assert.match(page, /storedReview\s*\?\?/);
+  assert.match(page, /storedBrief\s*\?\?/);
+});
