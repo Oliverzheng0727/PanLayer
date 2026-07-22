@@ -73,3 +73,16 @@ test("removes the disposable starter preview", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(new URL("../app/_sites-preview", templateRoot)));
 });
+
+test("expands the ETF K-line into a full-width row on medium screens", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const responsiveRule = css.match(/@media \(max-width:1180px\) \{[^}]+(?:\}[^@]*)*/)?.[0] ?? "";
+  assert.match(responsiveRule, /\.etf-chart-panel \{ grid-column:1\/-1;/);
+  assert.match(responsiveRule, /\.etf-chart-canvas \{ height:500px;/);
+});
+
+test("infers chart time from each bar instead of the selected period", async () => {
+  const chart = await readFile(new URL("../app/components/etf/EtfChart.tsx", import.meta.url), "utf8");
+  assert.match(chart, /time\.includes\(" "\)/);
+  assert.doesNotMatch(chart, /chartTime\s*=\s*\(time:\s*string,\s*period:/);
+});

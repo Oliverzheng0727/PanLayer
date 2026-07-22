@@ -7,7 +7,7 @@ import type { EtfSnapshot } from "../../../lib/data/provider";
 
 const periods: Array<{ value: BarPeriod; label: string }> = [{ value: "minute", label: "分时" }, { value: "day", label: "日K" }, { value: "week", label: "周K" }, { value: "month", label: "月K" }];
 
-const chartTime = (time: string, period: BarPeriod): Time => period === "minute"
+const chartTime = (time: string): Time => time.includes(" ")
   ? Math.floor(new Date(`${time.replace(" ", "T")}:00+08:00`).getTime() / 1000) as UTCTimestamp
   : time.slice(0, 10) as Time;
 
@@ -31,9 +31,9 @@ export function EtfChart({ etf }: { etf: EtfSnapshot }) {
 
   useEffect(() => {
     if (!container.current) return;
+    const chartSize = () => ({ width: container.current?.clientWidth ?? 0, height: container.current?.clientHeight || 440 });
     const chart = createChart(container.current, {
-      width: container.current.clientWidth,
-      height: 322,
+      ...chartSize(),
       layout: { background: { type: ColorType.Solid, color: "#0e1012" }, textColor: "rgba(255,255,255,.34)", fontSize: 10 },
       grid: { vertLines: { color: "rgba(255,255,255,.04)" }, horzLines: { color: "rgba(255,255,255,.04)" } },
       rightPriceScale: { borderColor: "rgba(255,255,255,.06)" },
@@ -41,12 +41,12 @@ export function EtfChart({ etf }: { etf: EtfSnapshot }) {
       crosshair: { vertLine: { color: "rgba(232,112,42,.35)" }, horzLine: { color: "rgba(232,112,42,.35)" } },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: "#ef5b58", downColor: "#3bc987", borderUpColor: "#ef5b58", borderDownColor: "#3bc987", wickUpColor: "#ef5b58", wickDownColor: "#3bc987" });
-    candles.setData(bars.map((bar) => ({ time: chartTime(bar.time, period), open: bar.open, high: bar.high, low: bar.low, close: bar.close })));
+    candles.setData(bars.map((bar) => ({ time: chartTime(bar.time), open: bar.open, high: bar.high, low: bar.low, close: bar.close })));
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "", color: "rgba(232,112,42,.24)" });
     volume.priceScale().applyOptions({ scaleMargins: { top: .82, bottom: 0 } });
-    volume.setData(bars.map((bar) => ({ time: chartTime(bar.time, period), value: bar.volume, color: bar.close >= bar.open ? "rgba(239,91,88,.28)" : "rgba(59,201,135,.24)" })));
+    volume.setData(bars.map((bar) => ({ time: chartTime(bar.time), value: bar.volume, color: bar.close >= bar.open ? "rgba(239,91,88,.28)" : "rgba(59,201,135,.24)" })));
     chart.timeScale().fitContent();
-    const observer = new ResizeObserver(() => { if (container.current) chart.applyOptions({ width: container.current.clientWidth }); });
+    const observer = new ResizeObserver(() => { if (container.current) chart.applyOptions(chartSize()); });
     observer.observe(container.current);
     return () => { observer.disconnect(); chart.remove(); };
   }, [bars, period]);

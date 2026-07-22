@@ -66,9 +66,9 @@ export async function fetchEastmoneyMinuteBars(symbol: string, fetcher: typeof f
   const url = `https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=${secidFor(symbol)}&ndays=1&iscr=0&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57,f58`;
   const payload = await fetchJson<{ data?: { trends?: string[] } }>(url, fetcher);
   return (payload.data?.trends ?? []).flatMap((line) => {
-    const [time, price, , volume, amount] = line.split(",");
-    const close = numberValue(price);
-    return time && close > 0 ? [{ time, open: close, high: close, low: close, close, volume: numberValue(volume), amount: numberValue(amount) }] : [];
+    const [time, open, close, high, low, volume, amount] = line.split(",");
+    const bar = { time, open: numberValue(open), high: numberValue(high), low: numberValue(low), close: numberValue(close), volume: numberValue(volume), amount: numberValue(amount) };
+    return bar.time && bar.close > 0 ? [bar] : [];
   });
 }
 
