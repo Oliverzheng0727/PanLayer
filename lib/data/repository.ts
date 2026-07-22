@@ -1,5 +1,6 @@
 import type { MorningBrief } from "../ai/morning-brief";
 import type { DailyReview } from "../domain/types";
+import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 
 async function getD1(): Promise<D1Database | null> {
   try {
@@ -22,11 +23,14 @@ export async function readBrief(date: string): Promise<MorningBrief | null> {
   return row?.payload ? JSON.parse(row.payload) : null;
 }
 
-export async function readHistory(from: string, to: string) {
+export async function readHistory(from: string, to: string): Promise<HistoryRow[]> {
   const db = await getD1();
   if (!db) return [];
-  const result = await db.prepare("SELECT trade_date, source, status, updated_at FROM daily_reviews WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date DESC LIMIT 400").bind(from, to).all();
-  return result.results ?? [];
+  const result = await db.prepare("SELECT payload FROM daily_reviews WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date DESC LIMIT 2000").bind(from, to).all<{ payload: string }>();
+  return (result.results ?? []).flatMap((row) => {
+    try { return [reviewToHistoryRow(JSON.parse(row.payload) as DailyReview)]; }
+    catch { return []; }
+  });
 }
 
 export async function readDataHealth() {

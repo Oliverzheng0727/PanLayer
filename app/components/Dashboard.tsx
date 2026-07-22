@@ -7,6 +7,8 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import type { MorningBrief } from "../../lib/ai/morning-brief";
 import type { DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
+import type { HistoryRow } from "../../lib/history/query";
+import { HistoryWorkspace } from "./history/HistoryWorkspace";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -21,7 +23,7 @@ const nav = [
 const formatAmount = (value: number | null) => value == null ? "—" : value >= 1e8 ? `${(value / 1e8).toFixed(1)}亿` : `${(value / 1e4).toFixed(0)}万`;
 const pct = (value: number | null) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
-export function Dashboard({ review, brief, etfs, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; userName: string }) {
+export function Dashboard({ review, brief, etfs, history, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; userName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const total = useMemo(() => review.breadth.at(-1)!, [review]);
@@ -114,8 +116,8 @@ export function Dashboard({ review, brief, etfs, userName }: { review: DailyRevi
           </section>
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
-            <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="从正式上线当天开始，保存每一个完整交易日切片。" />
-            <div className="panel grid gap-6 p-5 md:grid-cols-[280px_1fr]"><div className="rounded-2xl border border-white/[0.06] bg-black/20 p-4"><div className="mb-5 flex items-center justify-between"><button className="text-white/30">‹</button><strong className="text-sm">2026年 7月</strong><button className="text-white/30">›</button></div><div className="calendar-grid">{["一","二","三","四","五","六","日"].map((d)=><span key={d} className="calendar-week">{d}</span>)}{Array.from({length:31},(_,i)=>i+1).map((day)=><button key={day} className={`calendar-day ${day===22?"selected":""} ${[6,7,13,14,20,21,27,28].includes(day)?"weekend":""}`}>{day}</button>)}</div></div><div className="flex flex-col justify-between p-2"><div><p className="text-xs text-[#e8702a]">2026-07-22 · 周三</p><h3 className="mt-3 text-2xl font-medium">市场情绪震荡修复</h3><p className="mt-4 max-w-xl text-sm leading-7 text-white/42">收盘上涨家数 {total.rising}，涨停 {review.metrics.limitUp} 家，连板梯队最高 {Math.max(...review.leaders.map((i)=>i.limitStreak))} 板。算力、机器人和存储方向热度靠前。</p></div><a href="#overview" className="mt-6 inline-flex items-center gap-2 text-sm text-white/60">查看完整切片 <ArrowUpRight size={14}/></a></div></div>
+            <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="像 Excel 一样排序、滚动并回看每个交易日。" />
+            <HistoryWorkspace initialRows={history} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

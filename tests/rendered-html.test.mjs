@@ -45,6 +45,11 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /市场温度/);
   assert.match(html, /连板梯队/);
   assert.match(html, /行业 ETF/);
+  assert.match(html, /历史数据表/);
+  assert.match(html, /120日新高/);
+  assert.match(html, /连板收盘溢价/);
+  assert.match(html, /固定表头/);
+  assert.doesNotMatch(html, /市场情绪震荡修复/);
   assert.match(html, /仅供市场复盘，不构成投资建议/);
 });
 
