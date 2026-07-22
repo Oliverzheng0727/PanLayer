@@ -1,18 +1,12 @@
 import { getChatGPTUser, requireChatGPTUser } from "./chatgpt-auth";
+import { canAccessDashboard, canRunAdminJob } from "../lib/auth/access-policy";
 
 export async function requireAllowedUser(returnTo: string) {
   if (process.env.NODE_ENV === "development") {
     return (await getChatGPTUser()) ?? { displayName: "本地预览", email: "local@panlayer.dev", fullName: "本地预览" };
   }
   const user = await requireChatGPTUser(returnTo);
-  let allowed = String(process.env.ALLOWED_USER_EMAIL ?? "").trim().toLowerCase();
-  if (!allowed) {
-    try {
-      const { env } = await import("cloudflare:workers");
-      allowed = String((env as unknown as Record<string, unknown>).ALLOWED_USER_EMAIL ?? "").trim().toLowerCase();
-    } catch { /* Node render tests do not expose cloudflare: imports. */ }
-  }
-  if (allowed && user.email.toLowerCase() !== allowed) throw new Error("当前账号不在 PanLayer 访问白名单中");
+  if (!canAccessDashboard(user.email)) throw new Error("无法识别当前 ChatGPT 账号");
   return user;
 }
 
@@ -20,14 +14,31 @@ export async function authorizeApi(): Promise<Response | null> {
   if (process.env.NODE_ENV === "development") return null;
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "authentication required" }, { status: 401 });
-  let allowed = String(process.env.ALLOWED_USER_EMAIL ?? "").trim().toLowerCase();
-  if (!allowed) {
-    try {
-      const { env } = await import("cloudflare:workers");
-      allowed = String((env as unknown as Record<string, unknown>).ALLOWED_USER_EMAIL ?? "").trim().toLowerCase();
-    } catch { /* ignored */ }
+  return canAccessDashboard(user.email)
+    ? null
+    : Response.json({ error: "forbidden" }, { status: 403 });
+}
+
+export async function authorizeAdminApi(): Promise<Response | null> {
+  if (process.env.NODE_ENV === "development") return null;
+  const user = await getChatGPTUser();
+  if (!user) return Response.json({ error: "authentication required" }, { status: 401 });
+  const adminEmail = await resolveAdminEmail();
+  return canRunAdminJob(user.email, adminEmail)
+    ? null
+    : Response.json({ error: "administrator required" }, { status: 403 });
+}
+
+async function resolveAdminEmail(): Promise<string> {
+  const configured = String(
+    process.env.ADMIN_USER_EMAIL ?? process.env.ALLOWED_USER_EMAIL ?? "",
+  ).trim();
+  if (configured) return configured;
+  try {
+    const { env } = await import("cloudflare:workers");
+    const runtimeEnv = env as unknown as Record<string, unknown>;
+    return String(runtimeEnv.ADMIN_USER_EMAIL ?? runtimeEnv.ALLOWED_USER_EMAIL ?? "").trim();
+  } catch {
+    return "";
   }
-  return allowed && user.email.toLowerCase() !== allowed
-    ? Response.json({ error: "forbidden" }, { status: 403 })
-    : null;
 }

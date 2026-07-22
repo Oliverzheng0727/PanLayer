@@ -37,6 +37,7 @@ npm run dev
 
 ```text
 ALLOWED_USER_EMAIL
+ADMIN_USER_EMAIL
 DASHSCOPE_API_KEY
 OPENAI_API_KEY
 TWELVE_DATA_API_KEY
@@ -60,4 +61,4 @@ npm run build
 
 ## OpenAI Sites
 
-`.openai/hosting.json` 只保存 Sites 项目标识和 D1/R2 绑定，不保存密钥。用户身份由 OpenAI 托管环境注入，页面和 API 仍会在服务端校验 `ALLOWED_USER_EMAIL`。
+`.openai/hosting.json` 只保存 Sites 项目标识和 D1/R2 绑定，不保存密钥。用户身份由 OpenAI 托管环境注入；任何已登录 ChatGPT 账号都能查看工作台，管理任务仅允许 `ADMIN_USER_EMAIL`（兼容旧配置 `ALLOWED_USER_EMAIL`）执行。

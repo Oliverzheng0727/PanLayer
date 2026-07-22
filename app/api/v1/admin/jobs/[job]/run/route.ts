@@ -1,9 +1,9 @@
-import { authorizeApi } from "../../../../../../auth-guard";
+import { authorizeAdminApi } from "../../../../../../auth-guard";
 import { runPanLayerJob } from "../../../../../../../lib/jobs/runner";
 import type { ScheduledJob } from "../../../../../../../lib/jobs/schedule";
 
 export async function POST(request: Request, context: { params: Promise<{ job: string }> }) {
-  const denied = await authorizeApi();
+  const denied = await authorizeAdminApi();
   if (denied) return denied;
   const { job } = await context.params;
   const mapped: ScheduledJob | null = job === "morning-brief" ? { type: "morning-brief" } : job === "close-review" ? { type: "close-review" } : job.startsWith("breadth-") ? { type: "breadth", time: job.slice(8) } : null;
