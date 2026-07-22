@@ -1,98 +1,60 @@
-# vinext-starter
+# PanLayer 盘层
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+个人私密使用的 A 股复盘网站，记录涨跌家数、涨跌停、连板梯队、新高股票、热点板块、ETF K 线和带来源的隔夜早参。
 
-## Prerequisites
+## 本机运行
 
-- Node.js `>=22.13.0`
-
-## Quick Start
+要求 Node.js `>=22.13.0`。
 
 ```bash
 npm install
 npm run dev
+```
+
+本机默认展示演示数据。访问 `http://localhost:3000/dashboard` 查看工作台。
+
+## 数据源
+
+- A 股盘中主源：东方财富公开行情接口。
+- A 股交叉校验与降级：腾讯行情公开接口，每批最多 60 只、并发最多 4 批。
+- 海外收盘行情：Twelve Data 免费档主源，Alpha Vantage 免费档抽样复核。
+- 官方宏观：FRED 与 EIA。
+- 隔夜新闻与结构化早参：OpenAI Responses API Web Search。
+- 首版不使用 Tushare。
+
+东方财富和腾讯属于无需付费的公开接口，不承诺正式行情授权或 SLA。当前项目只适合个人内部复盘；公开运营或商业化前必须更换为有授权的数据源。
+
+## 免费额度控制
+
+- Twelve Data：主批次固定最多 8 个标的，每日早参运行一次。
+- Alpha Vantage：只复核标普 500 与半导体两个核心标的，远低于每日 25 次免费请求上限。
+- FRED/EIA：每日各请求一次并缓存。
+- OpenAI API 单独计费；同一日期早参完成后自动跳过，只有管理接口显式传入 `?force=true` 才重新生成。
+
+## 服务端 Secrets
+
+复制 `.env.example` 的变量名到本机 `.dev.vars`，或在 OpenAI Sites 项目中配置对应 Runtime Secrets：
+
+```text
+ALLOWED_USER_EMAIL
+OPENAI_API_KEY
+TWELVE_DATA_API_KEY
+ALPHA_VANTAGE_API_KEY
+FRED_API_KEY
+EIA_API_KEY
+```
+
+不得把实际密钥写入 `.env.example`、`.openai/hosting.json`、客户端组件、日志或 Git。没有配置某个免费数据源时，网站会显示“未配置/部分”，不会用旧值冒充最新值。
+
+## 验证命令
+
+```bash
+npm test
+npm run lint
+npm run test:render
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## OpenAI Sites
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+`.openai/hosting.json` 只保存 Sites 项目标识和 D1/R2 绑定，不保存密钥。用户身份由 OpenAI 托管环境注入，页面和 API 仍会在服务端校验 `ALLOWED_USER_EMAIL`。

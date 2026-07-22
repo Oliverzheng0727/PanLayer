@@ -24,9 +24,17 @@ const nav = [
 
 const pct = (value: number | null) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
+const statusViews: Record<DailyReview["status"], { label: string; detail: string; dot: string; pill: string }> = {
+  complete: { label: "完整", detail: "国内行情已完成双源交叉校验", dot: "bg-emerald-400 shadow-[0_0_10px_#34d399]", pill: "border-emerald-400/15 bg-emerald-400/[0.07] text-emerald-300" },
+  partial: { label: "部分", detail: "部分数据待交叉校验，请查看来源与时间", dot: "bg-amber-400 shadow-[0_0_10px_#f59e0b]", pill: "border-amber-400/15 bg-amber-400/[0.07] text-amber-300" },
+  failed: { label: "失败", detail: "本次采集失败，数据暂缺且未使用旧值", dot: "bg-red-400 shadow-[0_0_10px_#f87171]", pill: "border-red-400/15 bg-red-400/[0.07] text-red-300" },
+  demo: { label: "演示", detail: "演示模式，定时任务采集后自动替换", dot: "bg-orange-400 shadow-[0_0_10px_#fb923c]", pill: "border-orange-400/15 bg-orange-400/[0.07] text-orange-300" },
+};
+
 export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const statusView = statusViews[review.status];
   const total = useMemo(() => review.breadth.at(-1)!, [review]);
   const maxBreadth = Math.max(...review.breadth.flatMap((item) => [item.rising, item.falling]));
   const ladder = [
@@ -52,8 +60,9 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
         <div className="mt-auto px-4 pb-5">
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.035] p-4">
             <div className="mb-2 flex items-center gap-2 text-xs text-white/45"><Database size={14} /> 数据状态</div>
-            <div className="flex items-center gap-2 text-xs"><span className="size-1.5 rounded-full bg-amber-400 shadow-[0_0_10px_#f59e0b]" /><span>{review.status === "demo" ? "演示数据" : "采集正常"}</span></div>
-            <p className="mt-2 truncate text-[10px] text-white/30">{review.source}</p>
+            <div className="flex items-center gap-2 text-xs"><span className={`size-1.5 rounded-full ${statusView.dot}`} /><span>{statusView.label}</span></div>
+            <p className="mt-2 text-[10px] leading-5 text-white/35">数据来源：{review.source}</p>
+            <p className="text-[10px] leading-5 text-white/25">更新时间：{review.updatedAt}</p>
           </div>
           <div className="mt-4 flex items-center justify-between px-2 text-xs text-white/40"><span className="truncate">{userName}</span><Link href="/signout-with-chatgpt?return_to=/" aria-label="退出"><LogOut size={15} /></Link></div>
         </div>
@@ -72,8 +81,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
         <div className="dashboard-content">
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">最后更新 {review.updatedAt} · 统计范围：沪深京全 A，剔除 ST</p></div>
-              <div className="rounded-full border border-amber-400/15 bg-amber-400/[0.07] px-4 py-2 text-xs text-amber-300">{review.status === "demo" ? "演示模式 · 定时任务上线后自动替换" : "数据完整"}</div>
+              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">更新时间 {review.updatedAt} · 数据来源 {review.source} · 统计范围：沪深京全 A，剔除 ST</p><p className="mt-2 text-[11px] text-white/25">状态口径：完整 / 部分 / 失败 / 演示</p></div>
+              <div className={`rounded-full border px-4 py-2 text-xs ${statusView.pill}`}>{statusView.label} · {statusView.detail}</div>
             </div>
 
             <div className="metric-grid">

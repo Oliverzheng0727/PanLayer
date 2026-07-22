@@ -60,6 +60,14 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /查看历史新高股票/);
   assert.doesNotMatch(html, /市场情绪震荡修复/);
   assert.match(html, /仅供市场复盘，不构成投资建议/);
+  assert.match(html, /数据来源/);
+  assert.match(html, /更新时间/);
+  assert.match(html, /状态口径/);
+  assert.match(html, /完整/);
+  assert.match(html, /部分/);
+  assert.match(html, /失败/);
+  assert.match(html, /演示/);
+  assert.doesNotMatch(html, /OPENAI_API_KEY|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
 });
 
 test("removes the disposable starter preview", async () => {
