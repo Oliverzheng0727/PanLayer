@@ -3,6 +3,8 @@
 import { ArrowDown, ArrowLeft, ArrowUp, ChevronsUpDown, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { queryHighDetails, type HighDetail, type HighDetailOrder, type HighDetailSort, type HighDetailType } from "../../../lib/history/high-details";
+import type { EtfSnapshot } from "../../../lib/data/provider";
+import { EtfChart } from "../etf/EtfChart";
 
 const formatAmount = (value: number) => value >= 1e8 ? `${(value / 1e8).toFixed(1)}亿` : `${(value / 1e4).toFixed(0)}万`;
 const pct = (value: number) => `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
@@ -23,7 +25,6 @@ export function HighDetailDrawer({ date, type, items, onTypeChange, onClose }: {
   const [sort, setSort] = useState<HighDetailSort>("amount");
   const [order, setOrder] = useState<HighDetailOrder>("desc");
   const [selectedStock, setSelectedStock] = useState<HighDetail | null>(null);
-  const [period, setPeriod] = useState<"minute" | "day" | "week" | "month">("day");
 
   useEffect(() => {
     const oldOverflow = document.body.style.overflow;
@@ -56,8 +57,7 @@ export function HighDetailDrawer({ date, type, items, onTypeChange, onClose }: {
         {selectedStock ? (
           <div className="high-stock-view">
             <div className="high-stock-summary"><div><span>收盘价</span><strong>{selectedStock.close.toFixed(2)}</strong></div><div><span>当日涨跌</span><strong className="rise">{pct(selectedStock.pctChange)}</strong></div><div><span>区间涨幅</span><strong className="rise">{pct(selectedStock.intervalPct)}</strong></div></div>
-            <div className="high-period-tabs">{(["minute", "day", "week", "month"] as const).map((item) => <button key={item} type="button" className={period === item ? "active" : ""} onClick={() => setPeriod(item)}>{item === "minute" ? "分时" : item === "day" ? "日K" : item === "week" ? "周K" : "月K"}</button>)}</div>
-            <div className="high-chart-placeholder"><div className="high-chart-grid" /><svg viewBox="0 0 520 260" preserveAspectRatio="none" aria-label={`${selectedStock.name} ${period} K线预览`}><polyline points="0,205 35,191 70,199 105,161 140,172 175,134 210,145 245,109 280,120 315,77 350,96 385,62 420,72 455,39 520,48" fill="none" stroke="#e8702a" strokeWidth="3" /></svg><span>本机演示行情 · 接入实时源后显示完整蜡烛图与成交量</span></div>
+            <div className="mt-4 overflow-hidden rounded-2xl border border-white/[0.06]"><EtfChart etf={{ symbol: selectedStock.symbol, name: selectedStock.name, category: selectedStock.sector, tags: [selectedStock.sector], exchange: selectedStock.symbol.endsWith(".SH") ? "SH" : "SZ", price: selectedStock.close, pctChange: selectedStock.pctChange, amount: selectedStock.amount, averageAmount20: null, scale: null, turnoverRate: null, status: "active", updatedAt: selectedStock.date } satisfies EtfSnapshot} /></div>
           </div>
         ) : (
           <>

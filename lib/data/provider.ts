@@ -9,10 +9,16 @@ export interface EtfSnapshot {
   symbol: string;
   name: string;
   category: string;
+  tags: string[];
+  exchange: "SH" | "SZ" | "OTHER";
   price: number;
   pctChange: number;
   amount: number;
+  averageAmount20: number | null;
   scale: number | null;
+  turnoverRate: number | null;
+  status: "active" | "paused" | "delisted";
+  updatedAt: string;
 }
 
 export interface MarketDataProvider {

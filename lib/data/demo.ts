@@ -3,6 +3,7 @@ import type { MorningBrief } from "../ai/morning-brief";
 import type { EtfSnapshot } from "./provider";
 import type { HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
+import { classifyEtf } from "../etf/catalog";
 
 const makeLeader = (symbol: string, name: string, sector: string, streak: number, pctChange = 10.01): Quote => ({
   symbol, name, sector, limitStreak: streak, pctChange,
@@ -42,13 +43,38 @@ export const demoReview: DailyReview = {
   leaders: [makeLeader("603083.SH", "剑桥科技", "光模块", 6), makeLeader("600589.SH", "大位科技", "算力", 4), makeLeader("002031.SZ", "巨轮智能", "机器人", 3)],
 };
 
+const demoEtf = (symbol: string, name: string, price: number, pctChange: number, amount: number, scale: number): EtfSnapshot => {
+  const classified = classifyEtf(name);
+  return { symbol, name, category: classified.category, tags: classified.tags, exchange: symbol.startsWith("5") ? "SH" : "SZ", price, pctChange, amount, averageAmount20: amount * .86, scale, turnoverRate: Number((1.2 + amount / 3e9).toFixed(2)), status: "active", updatedAt: "2026-07-22 15:00" };
+};
+
 export const demoEtfs: EtfSnapshot[] = [
-  { symbol: "510300", name: "沪深300ETF", category: "宽基", price: 4.12, pctChange: 0.46, amount: 5_420_000_000, scale: 118_600_000_000 },
-  { symbol: "588000", name: "科创50ETF", category: "宽基", price: 1.08, pctChange: 1.24, amount: 3_180_000_000, scale: 69_200_000_000 },
-  { symbol: "159995", name: "芯片ETF", category: "半导体 / 存储", price: 1.29, pctChange: 2.18, amount: 2_860_000_000, scale: 24_600_000_000 },
-  { symbol: "159819", name: "人工智能ETF", category: "AI算力", price: 1.34, pctChange: 1.72, amount: 1_920_000_000, scale: 18_700_000_000 },
-  { symbol: "562500", name: "机器人ETF", category: "机器人", price: 0.94, pctChange: 2.63, amount: 1_460_000_000, scale: 12_900_000_000 },
-  { symbol: "515030", name: "新能源车ETF", category: "新能源", price: 1.08, pctChange: -0.58, amount: 1_120_000_000, scale: 14_800_000_000 },
+  demoEtf("510300", "沪深300ETF", 4.12, .46, 5_420_000_000, 118_600_000_000),
+  demoEtf("588000", "科创50ETF", 1.08, 1.24, 3_180_000_000, 69_200_000_000),
+  demoEtf("159995", "芯片ETF", 1.29, 2.18, 2_860_000_000, 24_600_000_000),
+  demoEtf("512480", "半导体ETF", .936, 1.73, 1_920_000_000, 22_400_000_000),
+  demoEtf("159327", "存储ETF", 1.106, 1.12, 870_000_000, 8_600_000_000),
+  demoEtf("159819", "人工智能ETF", 1.34, 1.72, 1_920_000_000, 18_700_000_000),
+  demoEtf("516510", "云计算ETF", 1.018, .88, 740_000_000, 7_900_000_000),
+  demoEtf("562500", "机器人ETF", .94, 2.63, 1_460_000_000, 12_900_000_000),
+  demoEtf("512010", "医药ETF", .872, -.61, 1_120_000_000, 31_500_000_000),
+  demoEtf("159992", "创新药ETF", .784, 1.34, 960_000_000, 16_200_000_000),
+  demoEtf("560600", "医美ETF", 1.036, .92, 380_000_000, 4_800_000_000),
+  demoEtf("516110", "美容护理ETF", .998, .67, 290_000_000, 3_900_000_000),
+  demoEtf("516160", "新能源ETF", .726, -.42, 820_000_000, 14_200_000_000),
+  demoEtf("515790", "光伏ETF", .684, -.87, 1_050_000_000, 19_300_000_000),
+  demoEtf("159755", "电池ETF", .812, .31, 680_000_000, 9_700_000_000),
+  demoEtf("515030", "新能源车ETF", 1.08, -.58, 1_120_000_000, 14_800_000_000),
+  demoEtf("516590", "汽车ETF", 1.204, 1.11, 520_000_000, 8_200_000_000),
+  demoEtf("512800", "银行ETF", 1.386, .18, 1_580_000_000, 42_600_000_000),
+  demoEtf("159928", "消费ETF", 1.086, .54, 720_000_000, 12_600_000_000),
+  demoEtf("512660", "军工ETF", 1.172, 1.06, 1_260_000_000, 21_800_000_000),
+  demoEtf("515220", "煤炭ETF", 1.492, -.22, 640_000_000, 11_900_000_000),
+  demoEtf("515180", "红利ETF", 1.348, .29, 980_000_000, 24_700_000_000),
+  demoEtf("513100", "纳斯达克100ETF", 1.624, .82, 2_240_000_000, 33_800_000_000),
+  demoEtf("513130", "恒生科技ETF", .736, 1.42, 2_680_000_000, 29_100_000_000),
+  demoEtf("518880", "黄金ETF", 6.42, .35, 1_760_000_000, 52_300_000_000),
+  demoEtf("511010", "国债ETF", 134.62, .03, 460_000_000, 18_400_000_000),
 ];
 
 const historyDates = [

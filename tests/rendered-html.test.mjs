@@ -45,6 +45,11 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /市场温度/);
   assert.match(html, /连板梯队/);
   assert.match(html, /行业 ETF/);
+  assert.match(html, /ETF 全品类/);
+  assert.match(html, /近20日均成交/);
+  assert.match(html, /分时/);
+  assert.match(html, /周K/);
+  assert.match(html, /月K/);
   assert.match(html, /历史数据表/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);

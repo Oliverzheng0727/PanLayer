@@ -1,6 +1,7 @@
 import type { Board, Exchange, Quote } from "../domain/types";
 import { classifyLimitStatus, rankSectors } from "../domain/metrics";
 import type { MarketDataProvider } from "./provider";
+import { classifyEtf } from "../etf/catalog";
 
 export interface EastmoneyQuoteRow {
   f12: string;
@@ -35,6 +36,7 @@ interface EtfRow {
   f3?: number | string;
   f6?: number | string;
   f20?: number | string;
+  f8?: number | string;
 }
 
 const numberValue = (value: number | string | undefined): number => {
@@ -159,18 +161,21 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       })));
     },
     async getEtfs() {
-      const url = "https://88.push2.eastmoney.com/api/qt/clist/get?pn=1&pz=300&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:MK0021,b:MK0022,b:MK0023,b:MK0024&fields=f12,f14,f2,f3,f6,f20";
+      const url = "https://88.push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:MK0021,b:MK0022,b:MK0023,b:MK0024&fields=f12,f14,f2,f3,f6,f8,f20";
       const payload = await fetchJson<{ data?: { diff?: EtfRow[] } }>(fetcher, url);
       const rows = Array.isArray(payload?.data?.diff) ? payload.data.diff : [];
-      return rows.map((row) => ({
-        symbol: String(row.f12 ?? ""),
-        name: String(row.f14 ?? ""),
-        category: "待分类",
-        price: numberValue(row.f2),
-        pctChange: numberValue(row.f3),
-        amount: numberValue(row.f6),
-        scale: numberValue(row.f20) || null,
-      })).filter((item: { symbol: string; price: number }) => item.symbol && item.price > 0);
+      return rows.map((row) => {
+        const symbol = String(row.f12 ?? "");
+        const name = String(row.f14 ?? "");
+        const classified = classifyEtf(name);
+        return {
+          symbol, name, category: classified.category, tags: classified.tags,
+          exchange: (symbol.startsWith("5") ? "SH" : symbol.startsWith("1") ? "SZ" : "OTHER") as "SH" | "SZ" | "OTHER",
+          price: numberValue(row.f2), pctChange: numberValue(row.f3), amount: numberValue(row.f6),
+          averageAmount20: null, scale: numberValue(row.f20) || null, turnoverRate: numberValue(row.f8) || null,
+          status: "active" as const, updatedAt: new Date().toISOString(),
+        };
+      }).filter((item) => item.symbol && item.price > 0);
     },
     async getMarginBalance(date) {
       const filter = encodeURIComponent(`(TRADE_DATE='${date}')`);

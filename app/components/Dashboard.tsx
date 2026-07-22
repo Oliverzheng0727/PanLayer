@@ -10,6 +10,7 @@ import type { EtfSnapshot } from "../../lib/data/provider";
 import type { HistoryRow } from "../../lib/history/query";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
+import { EtfWorkspace } from "./etf/EtfWorkspace";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -21,7 +22,6 @@ const nav = [
   { id: "history", label: "历史日历", icon: CalendarDays },
 ];
 
-const formatAmount = (value: number | null) => value == null ? "—" : value >= 1e8 ? `${(value / 1e8).toFixed(1)}亿` : `${(value / 1e4).toFixed(0)}万`;
 const pct = (value: number | null) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
 export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
@@ -112,8 +112,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           </section>
 
           <section id="etfs" className="dashboard-section scroll-mt-24">
-            <SectionHeading eyebrow="MAINSTREAM ETF" title="主流行业 ETF" description="按分类展示规模与成交活跃度领先产品，只作市场映射。" />
-            <div className="panel overflow-hidden"><DataTable headers={["分类", "ETF", "代码", "最新价", "涨跌幅", "成交额", "规模"]}>{etfs.map((item) => <tr key={item.symbol}><td><span className="rounded-full bg-white/[0.05] px-2.5 py-1 text-[11px]">{item.category}</span></td><td className="font-medium text-white/85">{item.name}</td><td>{item.symbol}</td><td>{item.price.toFixed(3)}</td><td className={item.pctChange >= 0 ? "rise" : "fall"}>{pct(item.pctChange)}</td><td>{formatAmount(item.amount)}</td><td>{formatAmount(item.scale)}</td></tr>)}</DataTable></div>
+            <SectionHeading eyebrow="ETF TERMINAL" title="ETF 专业工作台" description="全行业、跨境与商品 ETF，支持排序和四周期 K 线。" />
+            <EtfWorkspace initialEtfs={etfs} />
           </section>
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
