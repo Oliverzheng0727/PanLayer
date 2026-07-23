@@ -326,7 +326,7 @@ describe("independent morning-brief section providers", () => {
     expect(result.section.blocks.filter((block) => block.type === "table").some((block) => /主线|热点|龙头|ETF/i.test(JSON.stringify(block)))).toBe(true);
 
     const leading = modelSection("mapping");
-    leading.blocks[1].text += " 热点板块领跑市场。热点板块居前。热点板块靠前。热点板块最佳。热点板块涨幅最大。热点板块首位。热点板块领先。热点板块领涨。热点板块第一。热点板块最强。热点板块排名第一。";
+    leading.blocks[1].text += " 热点板块领跑市场。热点板块居前。热点板块靠前。热点板块最佳。热点板块涨幅最大。热点板块位居首位。热点板块领先。热点板块领涨。热点板块位列第一。热点板块最强。热点板块排名第一。";
     const leadingResult = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(leading), globalSnapshot: [], marketContext: context, attempt: 3 });
     const leadingText = JSON.stringify(leadingResult.section.blocks.filter((block) => block.type !== "table"));
     for (const claim of ["领跑市场", "居前", "靠前", "最佳", "涨幅最大", "首位", "领先", "领涨", "第一", "最强", "排名"]) {
@@ -352,9 +352,9 @@ describe("independent morning-brief section providers", () => {
       output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/structured-ranking" }] } },
     }));
     const claims = [
-      "相关板块位列前三。", "相关板块位居前十。", "相关板块跻身首位。", "相关板块进入第一。", "相关板块排名第3。",
+      "相关板块排名前三。", "相关板块位列第二。", "相关板块位列前三。", "相关板块位居前十。", "相关板块跻身首位。", "相关板块进入第一。", "相关板块排名第3。",
       "头部企业发布新公告。", "领军公司披露新计划。", "相关板块领先市场。", "相关板块领跑市场。", "相关板块领涨市场。",
-      "相关板块最强。", "相关板块最佳。", "相关板块涨幅最大。", "相关板块居前。", "相关板块靠前。",
+      "相关板块最强。", "相关板块最佳。", "相关板块涨幅最大。", "相关板块涨幅最高。", "相关板块跌幅第二。", "相关板块成交额居前。", "相关板块涨停数最大。", "相关板块连板高度靠前。", "相关板块居前。", "相关板块靠前。",
     ];
     for (const claim of claims) {
       const section = modelSection("risk");
@@ -364,9 +364,9 @@ describe("independent morning-brief section providers", () => {
     }
 
     const factual = modelSection("risk");
-    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术仍需结合事实核验。";
+    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排仍需结合事实核验。";
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(factual), globalSnapshot: [], attempt: 3 });
-    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术");
+    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排");
   });
 
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
