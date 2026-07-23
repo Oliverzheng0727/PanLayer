@@ -134,6 +134,10 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动美光涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累美光跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动该股涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累该股跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动其涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累其跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比下跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光出货量跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
