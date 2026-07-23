@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSection, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import type { BriefSectionGenerator, GeneratedBriefSection } from "../lib/ai/morning-brief-providers";
-import { generateFullMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, generateFullMorningBrief, renewJobLease } from "../lib/jobs/runner";
 
 vi.mock("../lib/data/global/overnight", () => ({
   loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
@@ -36,6 +36,7 @@ function generated(key: BriefSectionKey): GeneratedBriefSection {
 function memoryD1() {
   const sections = new Map<string, Record<string, unknown>>();
   const briefs = new Map<string, Record<string, unknown>>();
+  let lease: { token: string; expiresAt: string } | null = null;
   const calls: Array<{ sql: string; values: unknown[] }> = [];
   return {
     sections,
@@ -63,6 +64,19 @@ function memoryD1() {
             return { results: [...sections.values()].filter((row) => row.trade_date === date) };
           },
           async first() {
+            if (sql.includes("job_leases")) {
+              if (sql.startsWith("INSERT")) {
+                const [,, token,,, now] = call.values as string[];
+                const expiresAt = String(call.values[4]);
+                if (lease && lease.expiresAt > now) return null;
+                lease = { token, expiresAt };
+                return { token };
+              }
+              const [, expiresAt,,, token, now] = call.values as string[];
+              if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
+              lease = { token, expiresAt };
+              return { token };
+            }
             const [date] = call.values;
             return briefs.get(String(date)) ?? null;
           },
@@ -73,6 +87,25 @@ function memoryD1() {
 }
 
 describe("full morning brief runner", () => {
+  it("fences an expired overlapping run so its resumed provider result cannot write", async () => {
+    const { db, sections, briefs } = memoryD1();
+    const first = await acquireJobLease(db, "morning-brief", DATE, new Date("2026-07-22T23:00:00Z"));
+    expect(first).toBeTruthy();
+    let resumeOld!: () => void;
+    let enteredProvider!: () => void;
+    const waiting = new Promise<void>((resolve) => { resumeOld = resolve; });
+    const entered = new Promise<void>((resolve) => { enteredProvider = resolve; });
+    const oldRun = generateFullMorningBrief({ date: DATE, model: "old", sectionKeys: ["risk"], db, lease: { token: first!, renew: () => renewJobLease(db, "morning-brief", DATE, first!, new Date("2026-07-22T23:00:00Z")) }, generator: async ({ key }) => { enteredProvider(); await waiting; return generated(key); }, globalSnapshot: [] });
+    await entered;
+    const newer = await acquireJobLease(db, "morning-brief", DATE, new Date("2026-07-22T23:16:00Z"));
+    expect(newer).toBeTruthy();
+    await generateFullMorningBrief({ date: DATE, model: "new", sectionKeys: ["risk"], db, lease: { token: newer!, renew: () => renewJobLease(db, "morning-brief", DATE, newer!, new Date("2026-07-22T23:16:01Z")) }, generator: async ({ key }) => generated(key), globalSnapshot: [] });
+    resumeOld();
+
+    await expect(oldRun).rejects.toThrow(/lease/i);
+    expect(sections.get(`${DATE}:risk`)?.model).toBe("new");
+    expect(briefs.get(DATE)?.model).toBe("new");
+  });
   it("caps provider work at two simultaneous calls and persists each completed module once", async () => {
     const { db, calls } = memoryD1();
     let active = 0;

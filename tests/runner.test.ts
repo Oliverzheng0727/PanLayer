@@ -27,7 +27,7 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
         bind(...bound: unknown[]) { values = bound; return this; },
         async first() {
           if (sql.startsWith("INSERT INTO job_runs")) return { id: nextJobRunId++ };
-          if (sql.includes("job_leases")) return { token: String(values[2]) };
+          if (sql.includes("job_leases")) return { token: String(sql.startsWith("UPDATE") ? values[4] : values[2]) };
           return null;
         },
         async all() { return { results: [] }; },

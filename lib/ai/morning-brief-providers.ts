@@ -21,7 +21,7 @@ export interface MorningBriefMarketContext {
     metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
     ladder: { first: number; second: number; third: number; fourth: number; fivePlus: number };
     sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number; maxStreak: number } }>;
-    leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; sector: string } }>;
+    leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; firstLimitTime: string | null; sector: string } }>;
   };
   etfs: Array<{ category: string; name: string; code: string }>;
 }
@@ -323,17 +323,26 @@ function normalizeSnapshotNumber(value: string): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+function shownDecimalTolerance(value: string): number {
+  const normalized = value.replace(/[，,]/g, "").replace(/[%％]/g, "");
+  const fraction = normalized.split(".")[1]?.replace(/\D/g, "") ?? "";
+  return 0.5 * 10 ** -fraction.length + 1e-9;
+}
+
 function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: ReconciledGlobalPoint[]): void {
   const narrative = blocks.filter((block) => block.type !== "table").flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : []).join("\n");
   for (const point of globalSnapshot) {
     const allowed = [point.value, point.previousClose, point.pctChange].filter((value): value is number => value !== null);
     if (allowed.length === 0 || !point.label) continue;
     const escaped = point.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const mentions = narrative.matchAll(new RegExp(`${escaped}\\s*(?:报|收报|收于|前收(?:为)?|涨跌幅(?:为)?|数值(?:为)?|价格(?:为)?|点位(?:为)?|为|上涨|下跌|涨|跌)\\s*([+-]?\\d[\\d,.，]*%?)`, "g"));
+    const labelFirst = new RegExp(`${escaped}(?:指数)?\\s*(?:报|收报|收于|前收(?:为)?|涨跌幅(?:为)?|数值(?:为)?|价格(?:为)?|点位(?:为)?|为|上涨|下跌|涨|跌)\\s*([+-]?\\d[\\d,.，]*[%％]?)`, "g");
+    const numberFirst = new RegExp(`([+-]?\\d[\\d,.，]*[%％]?)(?:点|美元|元|%|％)?的${escaped}(?:指数)?`, "g");
+    const mentions = [...narrative.matchAll(labelFirst), ...narrative.matchAll(numberFirst)];
     for (const mention of mentions) {
-      const quoted = normalizeSnapshotNumber(mention[1]);
+      const quotedText = mention[1];
+      const quoted = normalizeSnapshotNumber(quotedText);
       if (quoted === null) continue;
-      if (!allowed.some((value) => Math.abs(value - quoted) <= Math.max(1e-6, Math.abs(value) * 1e-6))) {
+      if (!allowed.some((value) => Math.abs(value - quoted) <= shownDecimalTolerance(quotedText))) {
         throw new Error(`快照数值与服务端表格不一致：${point.label}`);
       }
     }

@@ -21,6 +21,18 @@ import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedu
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
 const MORNING_BRIEF_LEASE_MS = 15 * 60 * 1_000;
 
+export interface MorningBriefLease {
+  token: string;
+  renew: () => Promise<boolean>;
+}
+
+export class LeaseLostError extends Error {
+  constructor() {
+    super("Morning brief lease is no longer current");
+    this.name = "LeaseLostError";
+  }
+}
+
 export interface PanLayerEnv {
   DB?: D1Database;
   DASHSCOPE_API_KEY?: string;
@@ -62,6 +74,22 @@ export async function releaseJobLease(db: D1Database, job: string, tradeDate: st
   await db.prepare("DELETE FROM job_leases WHERE job = ? AND trade_date = ? AND token = ?").bind(job, tradeDate, token).run();
 }
 
+export async function renewJobLease(db: D1Database, job: string, tradeDate: string, token: string, now = new Date()): Promise<boolean> {
+  const acquiredAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + MORNING_BRIEF_LEASE_MS).toISOString();
+  const row = await db.prepare("UPDATE job_leases SET acquired_at = ?, expires_at = ? WHERE job = ? AND trade_date = ? AND token = ? AND expires_at > ? RETURNING token")
+    .bind(acquiredAt, expiresAt, job, tradeDate, token, acquiredAt).first<{ token: string }>();
+  return row?.token === token;
+}
+
+async function assertMorningBriefLease(lease: MorningBriefLease | undefined): Promise<void> {
+  if (lease && !await lease.renew()) throw new LeaseLostError();
+}
+
+function isLeaseLost(error: unknown): boolean {
+  return error instanceof Error && error.name === "LeaseLostError";
+}
+
 export async function failedOrMissingBriefSectionKeys(db: D1Database, date: string): Promise<BriefSectionKey[]> {
   const persisted = new Map((await readPersistedBriefSections(db, date)).map((item) => [item.section.key, item.section.status]));
   return BRIEF_SECTION_DEFINITIONS.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
@@ -93,7 +121,7 @@ export async function loadMorningBriefMarketContext(db: D1Database, date: string
           metrics: { ...parsed.metrics },
           ladder: { first: parsed.ladder.first.length, second: parsed.ladder.second.length, third: parsed.ladder.third.length, fourth: parsed.ladder.fourth.length, fivePlus: parsed.ladder.fivePlus.length },
           sectors: parsed.sectors.slice(0, 20).map((item) => ({ name: item.name, factors: { limitUpCount: item.limitUpCount, averagePct: item.averagePct, amountGrowthPct: item.amountGrowthPct, maxStreak: item.maxStreak } })),
-          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, sector: item.sector } })),
+          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, firstLimitTime: item.firstLimitTime, sector: item.sector } })),
         };
       }
     }
@@ -111,10 +139,12 @@ export async function generateFullMorningBrief(input: {
   retries?: number;
   globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
   marketContext?: MorningBriefMarketContext;
+  lease?: MorningBriefLease;
 }): Promise<MorningBrief> {
   const requestedKeys = input.sectionKeys;
   if (new Set(requestedKeys).size !== requestedKeys.length) throw new Error("Duplicate brief section keys are not allowed");
   const globalSnapshot = input.globalSnapshot ?? (await loadGlobalOvernightSnapshot({}, fetch)).reconciled;
+  await assertMorningBriefLease(input.lease);
   const persistedSections = await readPersistedBriefSections(input.db, input.date);
   const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
   const results: SectionRunResult[] = Array(requestedKeys.length);
@@ -129,14 +159,16 @@ export async function generateFullMorningBrief(input: {
       attempts += 1;
       try {
         const result = await input.generator({ date: input.date, key, globalSnapshot, marketContext: input.marketContext });
-        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources);
+        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources, input.lease);
         return result;
       } catch (caught) {
+        if (isLeaseLost(caught)) throw caught;
+        await assertMorningBriefLease(input.lease);
         error = caught instanceof Error ? caught.message : String(caught);
       }
     }
     const failed = failedBriefSection(key, error, beijingTimestamp());
-    await persistBriefSection(input.db, input.date, input.model, failed, attempts, error);
+    await persistBriefSection(input.db, input.date, input.model, failed, attempts, error, [], input.lease);
     return { key, error };
   };
 
@@ -156,6 +188,7 @@ export async function generateFullMorningBrief(input: {
     if (persisted) return persisted;
     return { key, error: "模块尚未生成" };
   }), beijingTimestamp());
+  await assertMorningBriefLease(input.lease);
   await input.db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`)
     .bind(input.date, input.model, JSON.stringify(assembled), assembled.status, new Date().toISOString())
     .run();
@@ -167,9 +200,12 @@ export async function persistSourceAudits(db: D1Database, date: string, snapshot
     .bind(date, snapshotTime, audit.source, audit.marketTime, audit.receivedAt, audit.rawCount, audit.validCount, audit.invalidCount, audit.coveragePct, audit.directionAgreementPct, audit.priceAgreementPct, audit.breadthDifference, audit.status, audit.message).run()));
 }
 
-export async function persistGlobalPoints(db: D1Database, date: string, points: GlobalPoint[]) {
-  await Promise.all(points.map((point) => db.prepare(`INSERT INTO global_market_snapshots (trade_date, symbol, label, provider, market_time, received_at, value, previous_close, pct_change, period, status, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, symbol, provider) DO UPDATE SET label=excluded.label, market_time=excluded.market_time, received_at=excluded.received_at, value=excluded.value, previous_close=excluded.previous_close, pct_change=excluded.pct_change, period=excluded.period, status=excluded.status, message=excluded.message`)
-    .bind(date, point.key, point.label, point.provider, point.marketTime, point.receivedAt, point.value, point.previousClose, point.pctChange, point.period, point.status, point.message).run()));
+export async function persistGlobalPoints(db: D1Database, date: string, points: GlobalPoint[], lease?: MorningBriefLease) {
+  for (const point of points) {
+    await assertMorningBriefLease(lease);
+    await db.prepare(`INSERT INTO global_market_snapshots (trade_date, symbol, label, provider, market_time, received_at, value, previous_close, pct_change, period, status, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, symbol, provider) DO UPDATE SET label=excluded.label, market_time=excluded.market_time, received_at=excluded.received_at, value=excluded.value, previous_close=excluded.previous_close, pct_change=excluded.pct_change, period=excluded.period, status=excluded.status, message=excluded.message`)
+      .bind(date, point.key, point.label, point.provider, point.marketTime, point.receivedAt, point.value, point.previousClose, point.pctChange, point.period, point.status, point.message).run();
+  }
 }
 
 export function buildDailyReview({
@@ -268,6 +304,7 @@ export async function runPanLayerJob(
   const { date } = beijingDateParts(now);
   const leaseToken = job.type === "morning-brief" ? await acquireJobLease(db, "morning-brief", date) : null;
   if (job.type === "morning-brief" && !leaseToken) return { ok: false, message: "morning-brief already running" };
+  const morningBriefLease: MorningBriefLease | undefined = leaseToken ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) } : undefined;
   const startedAt = new Date().toISOString();
   const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
   const run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
@@ -322,7 +359,8 @@ export async function runPanLayerJob(
         return { ok: true, message: `${label} no failed or missing modules; skipped` };
       }
       const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, fetcher), loadMorningBriefMarketContext(db, date)]);
-      await persistGlobalPoints(db, date, global.raw);
+      await assertMorningBriefLease(morningBriefLease);
+      await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
       const generator: BriefSectionGenerator = ai.provider === "qwen"
         ? ({ date: sectionDate, key, globalSnapshot, marketContext: sectionContext }) => generateQwenBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext })
@@ -335,6 +373,7 @@ export async function runPanLayerJob(
         db,
         globalSnapshot: global.reconciled,
         marketContext,
+        lease: morningBriefLease,
       });
       finalStatus = brief.status;
       const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);

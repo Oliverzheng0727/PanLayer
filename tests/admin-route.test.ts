@@ -24,4 +24,13 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toMatch(/mode.*section[\s\S]*status:\s*400/);
     expect(adminRouteSource).toMatch(/unknown brief mode[\s\S]*status:\s*400/);
   });
+
+  it("whitelists each query parameter once and parses force as an explicit boolean", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+
+    expect(adminRouteSource).toContain("allowedParams");
+    expect(adminRouteSource).toContain("searchParams.getAll");
+    expect(adminRouteSource).toMatch(/unknown query parameter[\s\S]*status:\s*400/);
+    expect(adminRouteSource).toMatch(/force must be true or false[\s\S]*status:\s*400/);
+  });
 });

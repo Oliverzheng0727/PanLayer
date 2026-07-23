@@ -57,7 +57,7 @@ describe("independent morning-brief section providers", () => {
     };
 
     await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher, globalSnapshot: [], marketContext: {
-      review: { date: "2026-07-22", status: "complete", closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, sector: "算力" } }] },
+      review: { date: "2026-07-22", status: "complete", closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] },
       etfs: [{ category: "人工智能", name: "AI ETF", code: "159819" }],
     } });
 
@@ -65,6 +65,7 @@ describe("independent morning-brief section providers", () => {
     expect(prompt).toContain("主线/热点/龙头只能来自此上下文");
     expect(prompt).toContain("ranking basis");
     expect(prompt).toContain("159819");
+    expect(prompt).toContain("firstLimitTime");
     expect(prompt).not.toContain("secret");
   });
 
@@ -89,6 +90,15 @@ describe("independent morning-brief section providers", () => {
     const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+  });
+
+  it("validates label variants and reverse-order rounded snapshot values", async () => {
+    const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
+    const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/variant" }] } } }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 630.3点的标普500。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.2点；0.82%的标普500来自收盘记录。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
     let request: { parameters?: { enable_search?: boolean }; input?: { messages?: Array<{ content?: string }> } } = {};

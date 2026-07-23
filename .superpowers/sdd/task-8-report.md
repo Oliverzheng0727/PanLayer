@@ -15,7 +15,7 @@
 | Command | Result |
 | --- | --- |
 | Focused morning-brief/admin/UI/persistence/runner suite | Passed: 9 files, 60 tests. |
-| `npm test` | Passed: 37 files, 161 tests; 1 skipped (162 total). |
+| `npm test` | Passed: 37 files, 164 tests; 1 skipped (165 total). |
 | `npm run lint` | Passed with no warnings or errors. |
 | `npm run build` | Passed. |
 | `npm run test:render` | Passed: 7 render tests. |
@@ -26,3 +26,11 @@ Build output retained the existing proxy-environment notice, client chunk-size w
 ## Review
 
 Self-review confirmed that all admin mutations remain behind the existing server-side authorization gate, public reads remain unchanged, no provider key enters prompts, and no unpublished timestamp is fabricated.
+
+## Review-closure follow-up
+
+- Replaced the time-only lease with token-fenced, atomic `UPDATE ... RETURNING` renewal. The matching token must still be current and unexpired to extend the lease; guards run after provider waits and immediately before global, section, and aggregate writes.
+- Added an overlap regression: an old run blocks in a provider call, a new token acquires after expiry and writes, and the resumed old run is rejected before it can overwrite the new section or aggregate row.
+- Added `firstLimitTime` to compact leader ranking factors.
+- Expanded snapshot checks to label variants and reverse phrasing, with decimal-place-aware rounding tolerance.
+- Tightened admin query parsing to the three documented parameters, each at most once, and only `true`/`false` force values.

@@ -12,6 +12,7 @@ import {
 import type { GeneratedBriefSection } from "./morning-brief-providers";
 
 type RejectedBriefSection = { key: BriefSectionKey; error: string };
+type MorningBriefLeaseGuard = { renew: () => Promise<boolean> };
 
 const DISCLAIMER = "本早参仅供市场信息整理，不构成投资建议。";
 
@@ -145,10 +146,16 @@ export async function persistBriefSection(
   attempts: number,
   error: string,
   sources: BriefSource[] = [],
+  lease?: MorningBriefLeaseGuard,
 ): Promise<void> {
   const sourceIds = new Set(sources.map((source) => source.id));
   assertValidSection(result, sourceIds);
   const payload = { version: 1, section: result, sources };
+  if (lease && !await lease.renew()) {
+    const leaseError = new Error("Morning brief lease is no longer current");
+    leaseError.name = "LeaseLostError";
+    throw leaseError;
+  }
   await db.prepare(`INSERT INTO morning_brief_sections (trade_date, section_key, model, payload, status, attempts, error, generated_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, section_key) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, attempts=excluded.attempts, error=excluded.error, generated_at=excluded.generated_at, updated_at=excluded.updated_at`)
     .bind(date, result.key, model, JSON.stringify(payload), result.status, attempts, error, result.generatedAt, new Date().toISOString())
     .run();
