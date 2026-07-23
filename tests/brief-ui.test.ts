@@ -12,6 +12,8 @@ describe("full morning brief reader", () => {
     expect(renderer).toContain("resolveBlockSources");
     expect(renderer).toContain("brief-source-missing");
     expect(renderer).toContain("section.key}-block-${index}");
+    expect(renderer).toContain("接收时间（北京时间）");
+    expect(renderer).toContain("block.provenance.receivedAt");
     expect(renderer).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
   });
 
@@ -32,6 +34,18 @@ describe("full morning brief reader", () => {
     expect(css).toContain("width:min(900px,100vw)");
     expect(css).toContain("grid-template-columns:170px minmax(0,1fr)");
     expect(css).toContain(".brief-drawer { width:100vw; border-left:0; }");
+  });
+
+  it("keeps reader focus management stable while the dashboard rerenders", async () => {
+    const [dashboard, drawer] = await Promise.all([
+      read("app/components/Dashboard.tsx"),
+      read("app/components/brief/BriefDetailDrawer.tsx"),
+    ]);
+
+    expect(dashboard).toMatch(/const closeBriefDrawer = useCallback\(\(\) => setBriefSectionIndex\(null\), \[\]\)/);
+    expect(dashboard).toContain("onClose={closeBriefDrawer}");
+    expect(drawer).toContain("const isOpen = section !== null");
+    expect(drawer).toContain("}, [isOpen, onClose]);");
   });
 
   it("shows manual full regeneration only to administrators without exposing credentials", async () => {

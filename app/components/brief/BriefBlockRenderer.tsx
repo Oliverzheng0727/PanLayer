@@ -29,7 +29,13 @@ function SourceChip({ source }: { source: BriefSource }) {
 
 function TableProvenance({ block }: { block: Extract<BriefBlock, { type: "table" }> }) {
   if (block.provenance.kind === "search") return null;
-  return <p className="brief-table-provenance">{block.provenance.label} · 市场时间 {block.provenance.marketTime} · {block.provenance.providers.join(" / ")}</p>;
+  return <p className="brief-table-provenance">{block.provenance.label} · 市场时间 {block.provenance.marketTime} · {block.provenance.providers.join(" / ")} · <time dateTime={block.provenance.receivedAt}>接收时间（北京时间）{formatBeijingTime(block.provenance.receivedAt)}</time></p>;
+}
+
+function formatBeijingTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未提供";
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(date);
 }
 
 const calloutClass = {

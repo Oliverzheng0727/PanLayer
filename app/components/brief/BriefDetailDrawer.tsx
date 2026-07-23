@@ -8,10 +8,11 @@ import { briefBlockId, BriefBlockRenderer } from "./BriefBlockRenderer";
 export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { brief: MorningBrief; section: BriefSection | null; sectionIndex: number; onClose: () => void }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  const isOpen = section !== null;
   const headings = useMemo(() => section?.blocks.flatMap((block, index) => block.type === "heading" ? [{ id: briefBlockId(section, index), text: block.text }] : []) ?? [], [section]);
 
   useEffect(() => {
-    if (!section) return;
+    if (!isOpen) return;
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const oldOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -27,7 +28,7 @@ export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { b
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => { document.body.style.overflow = oldOverflow; window.removeEventListener("keydown", handleKeyDown); previouslyFocused?.focus(); };
-  }, [onClose, section]);
+  }, [isOpen, onClose]);
 
   if (!section) return null;
 
