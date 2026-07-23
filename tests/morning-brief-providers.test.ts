@@ -111,6 +111,143 @@ describe("independent morning-brief section providers", () => {
     }
   });
 
+  it("uses only supplied Firecrawl sources during Qwen correction", async () => {
+    let body: {
+      input: { messages: Array<{ content: string }> };
+      parameters: { enable_search: boolean; search_options?: unknown };
+    } | undefined;
+    let calls = 0;
+    const externalId = "firecrawl_global-markets_1";
+    const section = {
+      ...modelSection("global-markets"),
+      blocks: [{
+        type: "paragraph",
+        text: modelSection("global-markets").blocks[1].text,
+        sourceIds: [externalId],
+      }],
+    };
+    const fetcher: typeof fetch = async (_input, init) => {
+      calls += 1;
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify(section) } }] },
+      }));
+    };
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-markets",
+      apiKey: "qwen-secret",
+      fetcher,
+      globalSnapshot: [],
+      externalSources: [{
+        id: externalId,
+        title: "Official recap",
+        url: "https://example.com/recap",
+        publishedAt: null,
+        retrievedAt: "2026-07-23T08:20:00+08:00",
+        content: "Verified content.",
+      }],
+    });
+
+    expect(calls).toBe(1);
+    expect(body?.parameters.enable_search).toBe(false);
+    expect(body?.parameters.search_options).toBeUndefined();
+    expect(body?.input.messages[1].content).toContain(externalId);
+    expect(body?.input.messages[1].content).toContain("不可信数据");
+    expect(body?.input.messages[1].content).not.toContain("qwen-secret");
+    expect(result.section.sourceIds).toEqual([externalId]);
+    expect(result.sources).toEqual([expect.objectContaining({
+      id: externalId,
+      url: "https://example.com/recap",
+      retrievedAt: "2026-07-23T08:20:00+08:00",
+    })]);
+  });
+
+  it("rejects source IDs outside the supplied Firecrawl bundle", async () => {
+    const provider = (sourceId: string): typeof fetch => async () => new Response(JSON.stringify({
+      output: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              ...modelSection("global-markets"),
+              blocks: [{
+                type: "paragraph",
+                text: modelSection("global-markets").blocks[1].text,
+                sourceIds: [sourceId],
+              }],
+            }),
+          },
+        }],
+      },
+    }));
+    const externalSources = [{
+      id: "firecrawl_global-markets_1",
+      title: "Official recap",
+      url: "https://example.com/recap",
+      publishedAt: null,
+      retrievedAt: "2026-07-23T08:20:00+08:00",
+      content: "Verified content.",
+    }];
+
+    await expect(generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-markets",
+      apiKey: "secret",
+      fetcher: provider("firecrawl_global-markets_99"),
+      globalSnapshot: [],
+      externalSources,
+    })).rejects.toThrow(/有效来源|不存在的来源/);
+    await expect(generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-markets",
+      apiKey: "secret",
+      fetcher: provider("ref_1"),
+      globalSnapshot: [],
+      externalSources,
+    })).rejects.toThrow(/有效来源|不存在的来源/);
+  });
+
+  it("does not start a second supplement request in Firecrawl correction mode", async () => {
+    let calls = 0;
+    const fetcher: typeof fetch = async () => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        output: {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                ...modelSection("risk"),
+                blocks: [{
+                  type: "paragraph",
+                  text: "情绪、观察、持续性、风险、关键。客观事实。",
+                  sourceIds: ["firecrawl_risk_1"],
+                }],
+              }),
+            },
+          }],
+        },
+      }));
+    };
+
+    await expect(generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret",
+      fetcher,
+      globalSnapshot: [],
+      externalSources: [{
+        id: "firecrawl_risk_1",
+        title: "Risk source",
+        url: "https://example.com/risk",
+        publishedAt: null,
+        retrievedAt: "2026-07-23T08:20:00+08:00",
+        content: "Verified risk context.",
+      }],
+    })).rejects.toThrow(/字数应为|长度不足/);
+    expect(calls).toBe(1);
+  });
+
   it("appends server-authored ranked context tables and normalizes Qwen ranking-token bypasses", async () => {
     const marketContext = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },

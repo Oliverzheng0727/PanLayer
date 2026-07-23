@@ -128,6 +128,23 @@ function publishedAt(metadata: unknown): string | null {
   return null;
 }
 
+function beijingTimestamp(value: Date): string {
+  const fields = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(value).reduce<Record<string, string>>((result, part) => {
+    if (part.type !== "literal") result[part.type] = part.value;
+    return result;
+  }, {});
+  return `${fields.year}-${fields.month}-${fields.day}T${fields.hour}:${fields.minute}:${fields.second}+08:00`;
+}
+
 function resultArray(value: unknown): FirecrawlResult[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is FirecrawlResult => typeof item === "object" && item !== null && !Array.isArray(item));
@@ -192,7 +209,7 @@ export async function searchFirecrawlBriefSources(
     const payload = await readJsonWithAbort(response, controller.signal) as FirecrawlPayload;
     if (!response.ok || payload.success !== true) throw new Error(`Firecrawl search failed with HTTP ${response.status}`);
 
-    const retrievedAt = new Date().toISOString();
+    const retrievedAt = beijingTimestamp(new Date());
     const seen = new Set<string>();
     let remainingCharacters = MAX_BUNDLE_CONTENT;
     const candidates = [...resultArray(payload.data?.news), ...resultArray(payload.data?.web)]

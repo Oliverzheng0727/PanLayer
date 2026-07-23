@@ -55,6 +55,7 @@ describe("Firecrawl morning brief fallback", () => {
       id: "firecrawl_global-markets_1",
       publishedAt: "2026-07-23T00:10:00.000Z",
     });
+    expect(sources[0].retrievedAt).toMatch(/\+08:00$/);
     expect(JSON.stringify(sources)).not.toContain("firecrawl-secret");
   });
 
