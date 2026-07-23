@@ -191,6 +191,15 @@ describe("independent morning-brief section providers", () => {
     const normalizedFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价下跌3%。"), globalSnapshot: positiveSnapshot, attempt: 3 });
     expect(JSON.stringify(normalizedFall.section.blocks[0])).toContain("以服务端快照表为准");
     expect(JSON.stringify(normalizedFall.section.blocks[0])).not.toMatch(/下跌|3/);
+
+    const metricAndConflictingQuote = "美光营收同比增长30%，股价上涨3%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    const normalizedMetricAndQuote = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedMetricText = JSON.stringify(normalizedMetricAndQuote.section.blocks[0]);
+    expect(normalizedMetricText).toContain("美光营收同比增长30%");
+    expect(normalizedMetricText).not.toMatch(/股价|上涨|3%/);
+    expect(normalizedMetricText).toContain("以服务端快照表为准");
   });
 
   it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {

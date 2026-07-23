@@ -535,15 +535,39 @@ function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<
     });
 }
 
+function quoteDirectionPhraseStart(sentence: string, directionStart: number): number {
+  const clauseStart = Math.max(
+    sentence.lastIndexOf("，", directionStart - 1),
+    sentence.lastIndexOf(",", directionStart - 1),
+    sentence.lastIndexOf("。", directionStart - 1),
+    sentence.lastIndexOf("；", directionStart - 1),
+    sentence.lastIndexOf(";", directionStart - 1),
+    sentence.lastIndexOf("！", directionStart - 1),
+    sentence.lastIndexOf("？", directionStart - 1),
+    sentence.lastIndexOf("\n", directionStart - 1),
+  ) + 1;
+  const subject = /(?:股价|该股|标的|其)[^，,。；;！？\n]{0,12}$/.exec(sentence.slice(clauseStart, directionStart));
+  return subject ? clauseStart + (subject.index ?? 0) : directionStart;
+}
+
 function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
   const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
-  const directions = [...sentence.matchAll(/上涨|下跌|涨幅|跌幅|涨|跌/g)]
-    .flatMap((match) => {
-      const start = match.index ?? 0;
-      const end = start + match[0].length;
-      return tokens.some((token) => end >= token.start - 24 && start <= token.end + 24) ? [{ start, end }] : [];
+  const directions = [...sentence.matchAll(/上涨|下跌|涨幅|跌幅|涨|跌/g)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  const replacementRanges = tokens.map((token) => {
+    const direction = directions.find((candidate) => {
+      const gap = candidate.end <= token.start
+        ? sentence.slice(candidate.end, token.start)
+        : candidate.start >= token.end
+          ? sentence.slice(token.end, candidate.start)
+          : "";
+      return gap.length <= 12 && !/[，,。；;！？\n]/.test(gap);
     });
-  const replacementRanges = [...tokens, ...directions].sort((left, right) => right.start - left.start);
+    if (!direction) return token;
+    return {
+      start: Math.min(quoteDirectionPhraseStart(sentence, direction.start), token.start),
+      end: Math.max(direction.end, token.end),
+    };
+  }).sort((left, right) => right.start - left.start);
   const withoutQuoteValues = replacementRanges.reduce((result, range) => `${result.slice(0, range.start)}${result.slice(range.end)}`, sentence)
     .replace(/\s{2,}/g, " ")
     .replace(/，\s*，/g, "，")
