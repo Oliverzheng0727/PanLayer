@@ -11,13 +11,16 @@ import {
   type MorningBriefMarketContext,
 } from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
+import { buildMarketComparison } from "../domain/comparison";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
+import type { BoardPools, IndexSnapshot, MarketAggregate } from "../data/provider";
 import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
+import { withRetry } from "../data/resilience";
 import { runHistoryBackfillBatch } from "../history/backfill";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
@@ -340,6 +343,7 @@ export async function persistGlobalPoints(db: D1Database, date: string, points: 
 
 export function buildDailyReview({
   date, quotes, limitPool, breadth, marginBalance, high120, allTimeHigh, source,
+  boardPools, marketAggregate, indices = [], receivedAt = new Date().toISOString(),
 }: {
   date: string;
   quotes: Quote[];
@@ -349,6 +353,10 @@ export function buildDailyReview({
   high120: number | null;
   allTimeHigh: number | null;
   source: string;
+  boardPools?: BoardPools | null;
+  marketAggregate?: MarketAggregate | null;
+  indices?: IndexSnapshot[];
+  receivedAt?: string;
 }): DailyReview {
   const pool = new Map(limitPool.map((item) => [item.symbol, item]));
   const merged = quotes.map((item) => pool.has(item.symbol) ? { ...item, ...pool.get(item.symbol) } : item);
@@ -358,16 +366,30 @@ export function buildDailyReview({
     name,
     limitUpCount: items.filter((item) => classifyLimitStatus(item) === "limit-up").length,
     averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
-    amountGrowthPct: 0,
+    amountGrowthPct: null,
     maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
   }));
   const limitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
   const resolvedBreadth = breadth.length > 0 ? breadth : [{ time: "15:00", ...calculateBreadth(quotes) }];
+  const rankedSectorMetrics = rankSectors(sectorMetrics).slice(0, 20);
+  const comparison = boardPools ? buildMarketComparison({
+    date,
+    quotes,
+    pools: boardPools,
+    marketAggregate: marketAggregate ?? null,
+    indices,
+    sectors: rankedSectorMetrics,
+    source,
+    receivedAt,
+  }) : undefined;
+  const comparisonComplete = comparison
+    ? Object.values(comparison.evidence).every((item) => item.status === "complete")
+    : boardPools === undefined;
   return {
     date,
-    status: high120 === null || allTimeHigh === null ? "partial" : "complete",
+    status: high120 === null || allTimeHigh === null || !comparisonComplete ? "partial" : "complete",
     source,
-    updatedAt: `${date} 16:10`,
+    updatedAt: receivedAt,
     breadth: resolvedBreadth,
     metrics: {
       limitUp: limitUps.length,
@@ -380,8 +402,9 @@ export function buildDailyReview({
     },
     premium: { openPct: null, closePct: null, sampleSize: 0 },
     ladder: bucketLimitLadder(merged),
-    sectors: rankSectors(sectorMetrics).slice(0, 20),
+    sectors: rankedSectorMetrics,
     leaders: rankLeaders(limitUps).slice(0, 20),
+    comparison,
   };
 }
 
@@ -485,9 +508,28 @@ export async function runPanLayerJob(
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
-      const [limitPool, marginBalance] = await Promise.all([provider.getLimitPool(date).catch(() => []), provider.getMarginBalance(date).catch(() => null)]);
+      const [limitPool, marginBalance, boardPools, marketAggregate, indices] = await Promise.all([
+        withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
+        provider.getMarginBalance(date).catch(() => null),
+        withRetry(() => provider.getBoardPools(date), { retries: 2, delayMs: 250 }).catch(() => null),
+        withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
+        withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
+      ]);
       const breadth = await loadBreadth(db, date);
-      const review = buildDailyReview({ date, quotes: market.quotes, limitPool, breadth, marginBalance, high120: null, allTimeHigh: null, source: market.source });
+      const review = buildDailyReview({
+        date,
+        quotes: market.quotes,
+        limitPool,
+        breadth,
+        marginBalance,
+        high120: null,
+        allTimeHigh: null,
+        source: market.source,
+        boardPools,
+        marketAggregate,
+        indices,
+        receivedAt: new Date().toISOString(),
+      });
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), market.source, review.status, new Date().toISOString()).run();
     } else {
       const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;

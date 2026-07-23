@@ -6,6 +6,7 @@ import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
 import { runHistoryBackfillBatch } from "../lib/history/backfill";
+import type { BoardPools, MarketAggregate } from "../lib/data/provider";
 
 vi.mock("../lib/data/global/overnight", () => ({
   loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
@@ -458,7 +459,50 @@ describe("close review aggregation", () => {
     expect(review.metrics).toMatchObject({ limitUp: 1, limitDown: 1, consecutive: 1, largeRise: 1, high120: 4, allTimeHigh: 2 });
     expect(review.ladder.second[0].symbol).toBe("A");
     expect(review.leaders[0].symbol).toBe("A");
+    expect(review.sectors.every((sector) => sector.amountGrowthPct === null)).toBe(true);
     expect(review.status).toBe("complete");
+  });
+
+  it("attaches the verified comparison snapshot to the daily review", () => {
+    const boardPools: BoardPools = {
+      limitUp: [{ code: "600001", name: "二板甲", pctChange: 10, amount: 2e8, industry: "机器人", limitStreak: 2, previousLimitStreak: 0, firstLimitTime: "09:35:00" }],
+      broken: [{ code: "600002", name: "炸板乙", pctChange: 3, amount: 1e8, industry: "电子", limitStreak: 1, previousLimitStreak: 0, firstLimitTime: "10:00:00" }],
+      limitDown: [],
+      yesterdayLimitUp: [{ code: "600003", name: "昨日二板丙", pctChange: -2, amount: 1e8, industry: "医药", limitStreak: 0, previousLimitStreak: 2, firstLimitTime: "09:40:00" }],
+    };
+    const marketAggregate: MarketAggregate = {
+      amount: 18_000,
+      rawCount: 5_300,
+      validCount: 5_250,
+      coveragePct: 99.06,
+      marketTime: "2026-07-22T15:00:00+08:00",
+      receivedAt: "2026-07-22T08:10:00.000Z",
+      source: "东方财富",
+      status: "complete",
+      message: "",
+    };
+
+    const review = buildDailyReview({
+      date: "2026-07-22",
+      quotes: [q("600001.SH", 10, 2), q("600003.SH", -2)],
+      limitPool: [q("600001.SH", 10, 2)],
+      breadth: [],
+      marginBalance: null,
+      high120: null,
+      allTimeHigh: null,
+      source: "东方财富",
+      boardPools,
+      marketAggregate,
+      indices: [],
+      receivedAt: "2026-07-22T08:10:00.000Z",
+    });
+
+    expect(review.comparison).toMatchObject({
+      brokenCount: 1,
+      sealRate: 50,
+      marketAmount: 18_000,
+      brokenBoard: { count: 1, rate: 100, sampleSize: 1 },
+    });
   });
 
   it("marks unavailable new-high data partial instead of inventing zero values", () => {

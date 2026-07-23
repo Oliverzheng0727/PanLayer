@@ -1,8 +1,10 @@
-import type { DailyReview } from "../domain/types";
+import type { DailyComparison, DailyReview } from "../domain/types";
 
 export const HISTORY_SORT_FIELDS = [
-  "date", "rising", "falling", "riseFallRatio", "limitUp", "limitDown", "consecutive",
-  "maxStreak", "openPremium", "closePremium", "high120", "allTimeHigh", "marginBalance",
+  "date", "rising", "falling", "flat", "riseFallRatio", "limitUp", "limitDown", "consecutive",
+  "brokenCount", "largeDownCount", "sealRate", "yesterdaySuccessRate", "continuationAveragePct",
+  "marketAmount", "maxStreak", "brokenBoardCount", "brokenBoardRate",
+  "openPremium", "closePremium", "high120", "allTimeHigh", "marginBalance",
 ] as const;
 
 export type HistorySortField = (typeof HISTORY_SORT_FIELDS)[number];
@@ -14,11 +16,25 @@ export interface HistoryRow {
   falling: number | null;
   flat: number | null;
   riseFallRatio: number | null;
-  limitUp: number;
-  limitDown: number;
+  limitUp: number | null;
+  limitDown: number | null;
   largeRise: number | null;
-  consecutive: number;
+  brokenCount: number | null;
+  largeDownCount: number | null;
+  sealRate: number | null;
+  yesterdaySuccessRate: number | null;
+  continuationPositiveRate: number | null;
+  continuationAveragePct: number | null;
+  continuationPromotionRate: number | null;
+  marketAmount: number | null;
+  consecutive: number | null;
   maxStreak: number;
+  maxBoardNames: string;
+  brokenBoardCount: number | null;
+  brokenBoardRate: number | null;
+  cycleLeader: string;
+  recognition: string;
+  indexSummary: string;
   openPremium: number | null;
   closePremium: number | null;
   high120: number | null;
@@ -29,6 +45,7 @@ export interface HistoryRow {
   status: "complete" | "partial" | "failed" | "demo";
   source: string;
   updatedAt: string;
+  comparison?: DailyComparison;
 }
 
 export interface HistoryQuery {
@@ -49,6 +66,11 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
   const rising = closeBreadth?.rising ?? null;
   const falling = closeBreadth?.falling ?? null;
   const ladderItems = Object.values(review.ladder).flat();
+  const comparison = review.comparison;
+  const maxStreak = comparison?.maxBoard?.height
+    ?? Math.max(0, ...ladderItems.map((item) => item.limitStreak));
+  const formatSignedPct = (value: number | null) =>
+    value === null ? "暂缺" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
   return {
     date: review.date,
     rising,
@@ -60,18 +82,35 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     limitUp: review.metrics.limitUp,
     limitDown: review.metrics.limitDown,
     largeRise: review.metrics.largeRise,
+    brokenCount: comparison?.brokenCount ?? null,
+    largeDownCount: comparison?.largeDownCount ?? null,
+    sealRate: comparison?.sealRate ?? null,
+    yesterdaySuccessRate: comparison?.yesterdaySuccessRate ?? null,
+    continuationPositiveRate: comparison?.continuation?.positiveRate ?? null,
+    continuationAveragePct: comparison?.continuation?.averagePct ?? null,
+    continuationPromotionRate: comparison?.continuation?.promotionRate ?? null,
+    marketAmount: comparison?.marketAmount ?? null,
     consecutive: review.metrics.consecutive,
-    maxStreak: Math.max(0, ...ladderItems.map((item) => item.limitStreak)),
+    maxStreak,
+    maxBoardNames: comparison?.maxBoard?.stocks.map((item) => item.name).join(" / ") ?? "—",
+    brokenBoardCount: comparison?.brokenBoard.count ?? null,
+    brokenBoardRate: comparison?.brokenBoard.rate ?? null,
+    cycleLeader: comparison?.cycleLeader
+      ? `${comparison.cycleLeader.name} · ${comparison.cycleLeader.limitStreak}板`
+      : "无明确周期龙头",
+    recognition: comparison?.recognition.map((item) => item.name).join(" / ") || "—",
+    indexSummary: comparison?.indices.map((item) => `${item.name} ${formatSignedPct(item.pctChange)}`).join(" / ") || "暂缺",
     openPremium: review.premium.openPct,
     closePremium: review.premium.closePct,
     high120: review.metrics.high120,
     allTimeHigh: review.metrics.allTimeHigh,
     marginBalance: review.metrics.marginBalance,
-    topSector: review.sectors[0]?.name ?? "—",
+    topSector: comparison?.mainSectors.map((item) => item.name).join(" / ") || review.sectors[0]?.name || "—",
     backfilled: review.historyMeta?.backfilled === true,
     status: review.status,
     source: review.source,
     updatedAt: review.updatedAt,
+    comparison,
   };
 }
 

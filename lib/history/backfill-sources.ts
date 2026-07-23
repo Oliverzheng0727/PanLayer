@@ -11,22 +11,8 @@ const POOLS = {
   yesterdayLimitUp: ["getYesterdayZTPool", "zs:desc"],
 } as const;
 
-export interface HistoricalPoolItem {
-  code: string;
-  name: string;
-  pctChange: number;
-  amount: number;
-  industry: string;
-  limitStreak: number;
-  firstLimitTime: string | null;
-}
-
-export interface HistoricalBoardPools {
-  limitUp: HistoricalPoolItem[];
-  broken: HistoricalPoolItem[];
-  limitDown: HistoricalPoolItem[];
-  yesterdayLimitUp: HistoricalPoolItem[];
-}
+export type HistoricalPoolItem = BoardPoolItem;
+export type HistoricalBoardPools = BoardPools;
 
 interface EastmoneyPoolItem {
   c?: string | number;
@@ -43,6 +29,12 @@ interface EastmoneyPoolItem {
 const numberValue = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const nullableNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "" || value === "-") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 function formatPoolTime(value: unknown): string | null {
@@ -92,10 +84,11 @@ function mapPoolItem(item: EastmoneyPoolItem): HistoricalPoolItem {
   return {
     code: String(item.c ?? ""),
     name: String(item.n ?? ""),
-    pctChange: numberValue(item.zdp),
-    amount: numberValue(item.amount),
+    pctChange: nullableNumber(item.zdp),
+    amount: nullableNumber(item.amount),
     industry: String(item.hybk ?? "未分类") || "未分类",
-    limitStreak: Math.max(0, Math.trunc(numberValue(item.lbc ?? item.ylbc))),
+    limitStreak: Math.max(0, Math.trunc(numberValue(item.lbc))),
+    previousLimitStreak: Math.max(0, Math.trunc(numberValue(item.ylbc))),
     firstLimitTime: formatPoolTime(item.fbt ?? item.yfbt),
   };
 }
@@ -144,3 +137,4 @@ export async function fetchHistoricalBoardPools(
   );
   return Object.fromEntries(entries) as unknown as HistoricalBoardPools;
 }
+import type { BoardPoolItem, BoardPools } from "../data/provider";

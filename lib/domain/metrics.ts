@@ -85,10 +85,16 @@ export function rankLeaders(quotes: Quote[]): Quote[] {
 }
 
 export function rankSectors(sectors: SectorMetric[]): SectorMetric[] {
+  const compareNullableDesc = (left: number | null, right: number | null) => {
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    return right - left;
+  };
   return [...sectors].sort((a, b) =>
     b.limitUpCount - a.limitUpCount ||
     b.averagePct - a.averagePct ||
-    b.amountGrowthPct - a.amountGrowthPct ||
+    compareNullableDesc(a.amountGrowthPct, b.amountGrowthPct) ||
     b.maxStreak - a.maxStreak,
   );
 }

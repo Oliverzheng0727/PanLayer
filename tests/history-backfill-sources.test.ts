@@ -21,6 +21,8 @@ describe("history backfill sources", () => {
       const endpoint = String(input);
       const pool = endpoint.includes("getTopicZTPool")
         ? [{ c: "600001", n: "示例", zdp: 10.01, amount: 800000000, hybk: "电子", lbc: 3, fbt: 93500 }]
+        : endpoint.includes("getYesterdayZTPool")
+          ? [{ c: "600002", n: "昨日二板", zdp: -2.5, amount: 300000000, hybk: "机器人", ylbc: 2, yfbt: 101500 }]
         : [];
       return new Response(JSON.stringify({ data: { pool } }));
     };
@@ -38,7 +40,27 @@ describe("history backfill sources", () => {
     });
     expect(pools.broken).toEqual([]);
     expect(pools.limitDown).toEqual([]);
-    expect(pools.yesterdayLimitUp).toEqual([]);
+    expect(pools.yesterdayLimitUp[0]).toMatchObject({
+      code: "600002",
+      name: "昨日二板",
+      pctChange: -2.5,
+      previousLimitStreak: 2,
+      firstLimitTime: "10:15:00",
+    });
+  });
+
+  it("keeps an invalid yesterday percentage null instead of inventing zero", async () => {
+    const fetcher = async (input: RequestInfo | URL) => new Response(JSON.stringify({
+      data: {
+        pool: String(input).includes("getYesterdayZTPool")
+          ? [{ c: "600002", n: "无有效涨幅", zdp: "-", ylbc: 2 }]
+          : [],
+      },
+    }));
+
+    const pools = await fetchHistoricalBoardPools("2026-07-22", fetcher as typeof fetch);
+
+    expect(pools.yesterdayLimitUp[0].pctChange).toBeNull();
   });
 
   it("rejects malformed pool payloads instead of accepting an unknown date as zero", async () => {

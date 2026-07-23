@@ -1,6 +1,8 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
 import { bucketLimitLadder, rankLeaders, rankSectors } from "../domain/metrics";
+import { buildMarketComparison, withoutStBoardPools } from "../domain/comparison";
 import type { Board, DailyReview, Exchange, Quote, SectorMetric } from "../domain/types";
+import type { IndexSnapshot } from "../data/provider";
 import {
   fetchHistoricalBoardPools,
   fetchRecentTradingDates,
@@ -8,7 +10,7 @@ import {
   type HistoricalPoolItem,
 } from "./backfill-sources";
 
-const PROGRESS_KEY = "history-backfill-v1";
+const PROGRESS_KEY = "history-backfill-v2-comparison";
 
 export interface HistoryBackfillProgress {
   target: number;
@@ -48,8 +50,8 @@ function poolItemToQuote(item: HistoricalPoolItem): Quote {
     price,
     high: price,
     low: previousClose,
-    pctChange: item.pctChange,
-    amount: item.amount,
+    pctChange: item.pctChange ?? 0,
+    amount: item.amount ?? 0,
     turnoverRate: 0,
     limitUpPrice: price,
     limitDownPrice: previousClose * (1 - meta.limitRate),
@@ -68,8 +70,12 @@ function buildBackfillSectors(items: HistoricalPoolItem[]): SectorMetric[] {
   return rankSectors([...groups].map(([name, group]) => ({
     name,
     limitUpCount: group.length,
-    averagePct: Number((group.reduce((sum, item) => sum + item.pctChange, 0) / group.length).toFixed(2)),
-    amountGrowthPct: 0,
+    averagePct: Number((
+      group.flatMap((item) => item.pctChange === null ? [] : [item.pctChange])
+        .reduce((sum, value) => sum + value, 0)
+      / Math.max(1, group.filter((item) => item.pctChange !== null).length)
+    ).toFixed(2)),
+    amountGrowthPct: null,
     maxStreak: Math.max(0, ...group.map((item) => item.limitStreak)),
   }))).slice(0, 20);
 }
@@ -79,8 +85,11 @@ export function buildBackfilledReview(
   pools: HistoricalBoardPools,
   marginBalance: number | null,
   receivedAt: string,
+  indices: IndexSnapshot[] = [],
 ): DailyReview {
-  const limitUps = pools.limitUp.map(poolItemToQuote);
+  const validPools = withoutStBoardPools(pools);
+  const limitUps = validPools.limitUp.map(poolItemToQuote);
+  const sectors = buildBackfillSectors(validPools.limitUp);
   return {
     date,
     status: "partial",
@@ -88,9 +97,9 @@ export function buildBackfilledReview(
     updatedAt: receivedAt,
     breadth: [],
     metrics: {
-      limitUp: pools.limitUp.length,
-      limitDown: pools.limitDown.length,
-      consecutive: pools.limitUp.filter((item) => item.limitStreak >= 2).length,
+      limitUp: validPools.limitUp.length,
+      limitDown: validPools.limitDown.length,
+      consecutive: validPools.limitUp.filter((item) => item.limitStreak >= 2).length,
       largeRise: null,
       high120: null,
       allTimeHigh: null,
@@ -98,8 +107,18 @@ export function buildBackfilledReview(
     },
     premium: { openPct: null, closePct: null, sampleSize: 0 },
     ladder: bucketLimitLadder(limitUps),
-    sectors: buildBackfillSectors(pools.limitUp),
+    sectors,
     leaders: rankLeaders(limitUps).slice(0, 20),
+    comparison: buildMarketComparison({
+      date,
+      quotes: [],
+      pools: validPools,
+      marketAggregate: null,
+      indices,
+      sectors,
+      source: "东方财富历史涨跌停池",
+      receivedAt,
+    }),
     historyMeta: { backfilled: true, receivedAt },
   };
 }
@@ -178,12 +197,13 @@ export async function runHistoryBackfillBatch({
       const existing = await readExistingReview(db, date);
       if (existing && existing.historyMeta?.backfilled !== true) return { date, completed: true };
       try {
-        const [pools, marginBalance] = await Promise.all([
+        const [pools, marginBalance, indices] = await Promise.all([
           fetchHistoricalBoardPools(date, fetcher),
           provider.getMarginBalance(date).catch(() => null),
+          provider.getIndexSnapshots(date).catch(() => []),
         ]);
         const receivedAt = new Date().toISOString();
-        const review = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt);
+        const review = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);
         await persistBackfilledReview(db, review);
         return { date, completed: true };
       } catch {

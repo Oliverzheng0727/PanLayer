@@ -24,9 +24,9 @@ export interface MorningBriefMarketContext {
     receivedAt: string | null;
     status: "complete" | "partial" | "failed" | "demo";
     closeBreadth: { rising: number; falling: number; flat: number } | null;
-    metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number | null; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
+    metrics: { limitUp: number | null; limitDown: number | null; consecutive: number | null; largeRise: number | null; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
     ladder: { first: number; second: number; third: number; fourth: number; fivePlus: number };
-    sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number; maxStreak: number } }>;
+    sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number | null; maxStreak: number } }>;
     leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; isLimitUp: boolean; firstLimitTime: string | null; sector: string } }>;
   };
   etfs: Array<{ category: string; name: string; code: string }>;
@@ -915,7 +915,7 @@ function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMa
     ? { marketTime: asBeijingMarketTime(marketContext.etfSnapshot.marketTime)!, receivedAt: marketContext.etfSnapshot.receivedAt, providers: ["服务端ETF快照"] }
     : null;
   if (review?.sectors.length && reviewProvenance) {
-    blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.slice(0, 5).map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct}%；最高连板${sector.factors.maxStreak}`]), reviewProvenance));
+    blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.slice(0, 5).map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct === null ? "暂缺" : `${sector.factors.amountGrowthPct}%`}；最高连板${sector.factors.maxStreak}`]), reviewProvenance));
   } else {
     blocks.push(contextUnavailableCallout("服务端主线热点复盘", "服务端复盘上下文不可用：主线与热点排名或快照时间暂缺。"));
   }

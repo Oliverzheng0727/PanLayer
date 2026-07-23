@@ -2,6 +2,9 @@ import type { Board, Exchange, Quote } from "../domain/types";
 import { classifyLimitStatus, rankSectors } from "../domain/metrics";
 import type { MarketDataProvider } from "./provider";
 import { classifyEtf } from "../etf/catalog";
+import { fetchHistoricalBoardPools } from "../history/backfill-sources";
+import { fetchTencentQuotes } from "./tencent";
+import { withRetry } from "./resilience";
 
 export interface EastmoneyQuoteRow {
   f12: string;
@@ -110,6 +113,13 @@ function limitPoolUrl(date: string) {
 }
 
 const SINA_COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount?node=hs_a";
+const A_SHARE_INDICES = [
+  { symbol: "000001.SH", name: "上证指数", secid: "1.000001" },
+  { symbol: "399001.SZ", name: "深证成指", secid: "0.399001" },
+  { symbol: "399006.SZ", name: "创业板指", secid: "0.399006" },
+  { symbol: "000688.SH", name: "科创50", secid: "1.000688" },
+  { symbol: "000300.SH", name: "沪深300", secid: "1.000300" },
+] as const;
 
 function sinaPageUrl(page: number) {
   return `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=${QUOTE_PAGE_SIZE}&sort=symbol&asc=1&node=hs_a&symbol=&_s_r_a=page`;
@@ -144,7 +154,8 @@ async function fetchJson<T>(fetcher: typeof fetch, url: string): Promise<T> {
 }
 
 export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDataProvider {
-  const getEastmoneyQuotes = async (): Promise<Quote[]> => {
+  type QuoteSnapshot = { quotes: Quote[]; total: number; source: string };
+  const getEastmoneyQuotes = async (): Promise<QuoteSnapshot> => {
     let preferredOrigin = QUOTE_ORIGINS[0];
     const loadPage = async (page: number) => {
       let lastError: unknown;
@@ -181,10 +192,14 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     if (total > 0 && uniqueRows.length / total < 0.95) {
       throw new Error(`Eastmoney 行情覆盖不足 ${uniqueRows.length}/${total}`);
     }
-    return uniqueRows.map(mapEastmoneyQuote).filter((item: Quote) => !item.isST && item.price > 0);
+    return {
+      quotes: uniqueRows.map(mapEastmoneyQuote).filter((item: Quote) => item.price > 0),
+      total,
+      source: "东方财富",
+    };
   };
 
-  const getSinaQuotes = async (): Promise<Quote[]> => {
+  const getSinaQuotes = async (): Promise<QuoteSnapshot> => {
     const totalPayload = await fetchJson<number | string>(fetcher, SINA_COUNT_URL);
     const total = Math.max(0, numberValue(totalPayload));
     if (total === 0) throw new Error("Sina 证券池为空");
@@ -203,10 +218,15 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     if (uniqueRows.length / total < 0.95) {
       throw new Error(`Sina 行情覆盖不足 ${uniqueRows.length}/${total}`);
     }
-    return uniqueRows.map(mapSinaQuote).filter((item) => !item.isST && item.price > 0);
+    return {
+      quotes: uniqueRows.map(mapSinaQuote).filter((item) => item.price > 0),
+      total,
+      source: "新浪财经",
+    };
   };
 
-  const getQuotes = async (): Promise<Quote[]> => {
+  let quoteSnapshot: Promise<QuoteSnapshot> | null = null;
+  const loadQuoteSnapshot = async (): Promise<QuoteSnapshot> => {
     try {
       return await getEastmoneyQuotes();
     } catch (eastmoneyError) {
@@ -219,11 +239,164 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       }
     }
   };
+  const getQuoteSnapshot = () => {
+    quoteSnapshot ??= loadQuoteSnapshot().catch((error) => {
+      quoteSnapshot = null;
+      throw error;
+    });
+    return quoteSnapshot;
+  };
+  const getQuotes = async (): Promise<Quote[]> =>
+    (await getQuoteSnapshot()).quotes.filter((item) => !item.isST);
 
   return {
     name: "东方财富 / 新浪备用",
     getUniverse: getQuotes,
     getQuotes,
+    getBoardPools(date) {
+      return fetchHistoricalBoardPools(date, fetcher);
+    },
+    async getMarketAggregate(at) {
+      const snapshot = await getQuoteSnapshot();
+      const unique = [...new Map(snapshot.quotes.map((item) => [item.symbol, item])).values()];
+      const valid = unique.filter((item) =>
+        item.symbol
+        && Number.isFinite(item.price)
+        && item.price > 0
+        && Number.isFinite(item.amount)
+        && item.amount >= 0,
+      );
+      const denominator = Math.max(1, snapshot.total);
+      const coveragePct = Number(((valid.length / denominator) * 100).toFixed(2));
+      const complete = coveragePct >= 95;
+      const receivedAt = new Date().toISOString();
+      return {
+        amount: complete
+          ? Number((valid.reduce((sum, item) => sum + item.amount, 0) / 100_000_000).toFixed(2))
+          : null,
+        rawCount: unique.length,
+        validCount: valid.length,
+        coveragePct,
+        marketTime: `${receivedAt.slice(0, 10)}T${at}:00+08:00`,
+        receivedAt,
+        source: snapshot.source,
+        status: complete ? "complete" : "partial",
+        message: complete ? "沪深京全 A（含 ST）成交额覆盖完整" : `全 A 行情覆盖率 ${coveragePct}%`,
+      };
+    },
+    async getIndexSnapshots(date) {
+      const receivedAt = new Date().toISOString();
+      const beijingToday = new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+      const isCurrentDate = date === beijingToday;
+      const tencentQuotes = isCurrentDate
+        ? await withRetry(
+          () => fetchTencentQuotes(A_SHARE_INDICES.map((item) => item.symbol), fetcher),
+          { retries: 2, delayMs: 120 },
+        ).catch(() => [])
+        : [];
+      const tencentBySymbol = new Map(tencentQuotes.map((item) => [item.symbol, item]));
+      const datedBars = await Promise.all(A_SHARE_INDICES.map(async (item) => {
+        const compactDate = date.replaceAll("-", "");
+        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${item.secid}&klt=101&fqt=0&lmt=1&end=${compactDate}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
+        try {
+          const payload = await withRetry(
+            () => fetchJson<{ data?: { klines?: string[] } }>(fetcher, url),
+            { retries: 2, delayMs: 120 },
+          );
+          const row = payload?.data?.klines?.at(-1);
+          if (!row) return null;
+          const fields = row.split(",");
+          if (fields[0] !== date) return null;
+          const price = Number(fields[2]);
+          const amount = Number(fields[6]);
+          const pctChange = Number(fields[8]);
+          if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(pctChange)) return null;
+          return {
+            price,
+            pctChange,
+            amount: Number.isFinite(amount) && amount >= 0 ? amount : null,
+          };
+        } catch {
+          return null;
+        }
+      }));
+
+      return A_SHARE_INDICES.map((item, index) => {
+        const primary = tencentBySymbol.get(item.symbol);
+        const cross = datedBars[index];
+        if (!isCurrentDate && cross) {
+          return {
+            symbol: item.symbol,
+            name: item.name,
+            price: cross.price,
+            pctChange: cross.pctChange,
+            amount: cross.amount,
+            marketTime: `${date}T15:00:00+08:00`,
+            receivedAt,
+            source: "东方财富历史K线",
+            status: "partial" as const,
+            message: "历史指数为东方财富单源日线，未使用当前行情冒充交叉源",
+          };
+        }
+        if (primary && cross) {
+          const priceAgreement = Math.abs(primary.price - cross.price) / Math.max(1, cross.price) <= .003;
+          const directionAgreement = Math.abs(primary.pctChange - cross.pctChange) <= .3;
+          const complete = priceAgreement && directionAgreement;
+          return {
+            symbol: item.symbol,
+            name: item.name,
+            price: primary.price,
+            pctChange: primary.pctChange,
+            amount: primary.amount > 0 ? primary.amount : cross.amount,
+            marketTime: `${date}T15:00:00+08:00`,
+            receivedAt,
+            source: "腾讯 / 东方财富",
+            status: complete ? "complete" as const : "partial" as const,
+            message: complete ? "腾讯与东方财富收盘点位及涨跌幅一致" : "腾讯与东方财富指数快照存在差异",
+          };
+        }
+        if (primary) {
+          return {
+            symbol: item.symbol,
+            name: item.name,
+            price: primary.price,
+            pctChange: primary.pctChange,
+            amount: primary.amount,
+            marketTime: `${date}T15:00:00+08:00`,
+            receivedAt,
+            source: "腾讯",
+            status: "partial" as const,
+            message: "东方财富交叉源暂缺",
+          };
+        }
+        if (cross) {
+          return {
+            symbol: item.symbol,
+            name: item.name,
+            price: cross.price,
+            pctChange: cross.pctChange,
+            amount: cross.amount,
+            marketTime: `${date}T15:00:00+08:00`,
+            receivedAt,
+            source: "东方财富",
+            status: "partial" as const,
+            message: "腾讯主源暂缺",
+          };
+        }
+        return {
+          symbol: item.symbol,
+          name: item.name,
+          price: null,
+          pctChange: null,
+          amount: null,
+          marketTime: `${date}T15:00:00+08:00`,
+          receivedAt,
+          source: "腾讯 / 东方财富",
+          status: "failed" as const,
+          message: "指数主源与交叉源均不可用",
+        };
+      });
+    },
     async getLimitPool(date) {
       const payload = await fetchJson<{ data?: { pool?: LimitPoolRow[] } }>(fetcher, limitPoolUrl(date));
       const rows = Array.isArray(payload?.data?.pool) ? payload.data.pool : [];
@@ -272,7 +445,7 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
         name,
         limitUpCount: items.filter((item) => classifyLimitStatus(item) === "limit-up").length,
         averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
-        amountGrowthPct: 0,
+        amountGrowthPct: null,
         maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
       })));
     },

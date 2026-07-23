@@ -8,6 +8,7 @@ import { HistoryCalendar } from "./HistoryCalendar";
 import { HistoryTable } from "./HistoryTable";
 import { HighDetailDrawer } from "./HighDetailDrawer";
 import type { HighDetail, HighDetailType } from "../../../lib/history/high-details";
+import { MarketEvidenceDrawer, type MarketEvidenceKind } from "./MarketEvidenceDrawer";
 
 const HISTORY_VIEW_KEY = "panlayer-history-view";
 
@@ -29,13 +30,20 @@ export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, can
   const [selected, setSelected] = useState(initialRows[0]?.date ?? "");
   const [visibleCount, setVisibleCount] = useState(12);
   const [drawer, setDrawer] = useState<{ date: string; type: HighDetailType } | null>(null);
+  const [evidenceDrawer, setEvidenceDrawer] = useState<{ row: HistoryRow; kind: MarketEvidenceKind } | null>(null);
   const [backfillState, setBackfillState] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [backfillLabel, setBackfillLabel] = useState("回补近20日");
   const [restored, setRestored] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
 
-  const sorted = useMemo(() => queryHistoryRows(initialRows, { sort, order, sector, cursor: 0, limit: 100 }).items, [initialRows, order, sector, sort]);
+  const sorted = useMemo(() => queryHistoryRows(initialRows, {
+    sort,
+    order,
+    sector,
+    cursor: 0,
+    limit: Math.max(1, initialRows.length),
+  }).items, [initialRows, order, sector, sort]);
   const visible = sorted.slice(0, visibleCount);
 
   useEffect(() => {
@@ -50,7 +58,7 @@ export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, can
       if (stored.order === "asc" || stored.order === "desc") setOrder(stored.order);
       if (typeof stored.sector === "string") setSector(stored.sector);
       if (stored.selected && initialRows.some((row) => row.date === stored.selected)) setSelected(stored.selected);
-      if (Number.isInteger(stored.visibleCount)) setVisibleCount(Math.min(100, Math.max(12, stored.visibleCount!)));
+      if (Number.isInteger(stored.visibleCount)) setVisibleCount(Math.min(2_000, Math.max(12, stored.visibleCount!)));
       scrollPosition.current = {
         top: typeof stored.scrollTop === "number" ? stored.scrollTop : 0,
         left: typeof stored.scrollLeft === "number" ? stored.scrollLeft : 0,
@@ -152,9 +160,11 @@ export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, can
             } satisfies StoredHistoryView));
           }}
           onOpenHighs={(date, type) => setDrawer({ date, type })}
+          onOpenEvidence={(row, kind) => setEvidenceDrawer({ row, kind })}
         />
       </div>
       {drawer && <HighDetailDrawer date={drawer.date} type={drawer.type} items={highDetailsByDate[drawer.date] ?? []} onTypeChange={(type) => setDrawer({ ...drawer, type })} onClose={() => setDrawer(null)} />}
+      {evidenceDrawer && <MarketEvidenceDrawer row={evidenceDrawer.row} kind={evidenceDrawer.kind} onClose={() => setEvidenceDrawer(null)} />}
     </div>
   );
 }

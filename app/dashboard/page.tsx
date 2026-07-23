@@ -3,6 +3,7 @@ import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHighDetailsByDate, demoHistory, demoReview } from "../../lib/data/demo";
 import { readBrief, readHighDetails, readHistory, readLatestReview } from "../../lib/data/repository";
+import { createUnavailableReview } from "../../lib/data/unavailable";
 import { queryEtfs } from "../../lib/etf/catalog";
 import { loadLiveEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
 import { beijingDateParts } from "../../lib/jobs/schedule";
@@ -22,12 +23,15 @@ export default async function DashboardPage() {
     readHistory(from, date),
     loadLiveEtfCatalogEnvelope(date).catch(() => ({ items: process.env.NODE_ENV === "development" ? demoEtfs : [] })),
   ]);
-  const review = storedReview ?? { ...demoReview, date };
+  const isDevelopment = process.env.NODE_ENV === "development";
+  const review = storedReview ?? (isDevelopment
+    ? { ...demoReview, date }
+    : createUnavailableReview(date));
   const brief = storedBrief ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
-  const history = storedHistory.length > 0 ? storedHistory : demoHistory;
+  const history = storedHistory.length > 0 ? storedHistory : isDevelopment ? demoHistory : [];
   const highDetailsByDate = storedHistory.length > 0
     ? Object.fromEntries(await Promise.all(history.slice(0, 60).map(async (row) => [row.date, await readHighDetails(row.date)] as const)))
-    : demoHighDetailsByDate;
+    : isDevelopment ? demoHighDetailsByDate : {};
   const etfs = queryEtfs(liveEtfCatalog.items, {
     category: "全部",
     query: "",

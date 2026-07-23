@@ -5,14 +5,19 @@ import type { DailyReview } from "../lib/domain/types";
 
 const pools: HistoricalBoardPools = {
   limitUp: [
-    { code: "600001", name: "电子甲", pctChange: 10.01, amount: 800_000_000, industry: "电子", limitStreak: 3, firstLimitTime: "09:35:00" },
-    { code: "000002", name: "医药乙", pctChange: 10.02, amount: 500_000_000, industry: "医药", limitStreak: 1, firstLimitTime: "10:05:00" },
+    { code: "600001", name: "电子甲", pctChange: 10.01, amount: 800_000_000, industry: "电子", limitStreak: 3, previousLimitStreak: 0, firstLimitTime: "09:35:00" },
+    { code: "000002", name: "医药乙", pctChange: 10.02, amount: 500_000_000, industry: "医药", limitStreak: 1, previousLimitStreak: 0, firstLimitTime: "10:05:00" },
   ],
-  broken: [],
+  broken: [
+    { code: "600004", name: "炸板丁", pctChange: 3, amount: 200_000_000, industry: "电子", limitStreak: 1, previousLimitStreak: 0, firstLimitTime: "10:15:00" },
+  ],
   limitDown: [
-    { code: "600003", name: "跌停丙", pctChange: -10, amount: 300_000_000, industry: "消费", limitStreak: 0, firstLimitTime: null },
+    { code: "600003", name: "跌停丙", pctChange: -10, amount: 300_000_000, industry: "消费", limitStreak: 0, previousLimitStreak: 0, firstLimitTime: null },
   ],
-  yesterdayLimitUp: [],
+  yesterdayLimitUp: [
+    { code: "600001", name: "电子甲", pctChange: 2, amount: 800_000_000, industry: "电子", limitStreak: 0, previousLimitStreak: 2, firstLimitTime: "09:35:00" },
+    { code: "600005", name: "断板戊", pctChange: -3, amount: 400_000_000, industry: "医药", limitStreak: 0, previousLimitStreak: 3, firstLimitTime: "10:20:00" },
+  ],
 };
 
 function createBackfillDb(existing: Record<string, DailyReview> = {}) {
@@ -88,6 +93,14 @@ describe("history review backfill", () => {
       marginBalance: 26978.8,
     });
     expect(review.ladder.third).toHaveLength(1);
+    expect(review.comparison).toMatchObject({
+      brokenCount: 1,
+      largeDownCount: null,
+      sealRate: 66.67,
+      yesterdaySuccessRate: 50,
+      marketAmount: null,
+      brokenBoard: { count: 1, rate: 50, sampleSize: 2 },
+    });
     expect(review.status).toBe("partial");
     expect(review.historyMeta).toEqual({ backfilled: true, receivedAt: "2026-07-23T08:00:00.000Z" });
   });

@@ -22,6 +22,114 @@ describe("Eastmoney quote mapping", () => {
 });
 
 describe("Eastmoney provider", () => {
+  it("keeps ST turnover in the all-market aggregate while excluding ST from review quotes", async () => {
+    const fetcher: typeof fetch = async () => new Response(JSON.stringify({
+      data: { total: 2, diff: [
+        { f12: "600000", f14: "浦发银行", f2: 11, f3: 1, f6: 100_000_000, f8: 1, f15: 11, f16: 10, f17: 10.5, f18: 10.9, f100: "银行" },
+        { f12: "600001", f14: "*ST示例", f2: 5, f3: 1, f6: 20_000_000, f8: 1, f15: 5, f16: 4.9, f17: 5, f18: 4.95, f100: "其他" },
+      ] },
+    }));
+    const provider = createEastmoneyProvider(fetcher);
+
+    await expect(provider.getQuotes("15:00")).resolves.toHaveLength(1);
+    await expect(provider.getMarketAggregate("15:00")).resolves.toMatchObject({
+      amount: 1.2,
+      rawCount: 2,
+      validCount: 2,
+      coveragePct: 100,
+      status: "complete",
+    });
+  });
+
+  it("exposes all four board pools with yesterday streak provenance", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = String(input);
+      const pool = url.includes("getTopicZTPool")
+        ? [{ c: "600001", n: "三板甲", zdp: 10, amount: 1e8, hybk: "电子", lbc: 3, fbt: 93100 }]
+        : url.includes("getTopicZBPool")
+          ? [{ c: "600002", n: "炸板乙", zdp: 4, amount: 2e8, hybk: "医药", lbc: 1, fbt: 100500 }]
+          : url.includes("getTopicDTPool")
+            ? [{ c: "600003", n: "跌停丙", zdp: -10, amount: 3e8, hybk: "消费" }]
+            : [{ c: "600004", n: "昨日二板", zdp: -1, amount: 4e8, hybk: "机器人", ylbc: 2, yfbt: 101500 }];
+      return new Response(JSON.stringify({ data: { pool } }));
+    };
+
+    const pools = await createEastmoneyProvider(fetcher).getBoardPools("2026-07-22");
+
+    expect(pools.limitUp[0]).toMatchObject({ code: "600001", limitStreak: 3 });
+    expect(pools.broken).toHaveLength(1);
+    expect(pools.limitDown).toHaveLength(1);
+    expect(pools.yesterdayLimitUp[0]).toMatchObject({
+      code: "600004",
+      previousLimitStreak: 2,
+      firstLimitTime: "10:15:00",
+    });
+  });
+
+  it("cross-checks the five current A-share indices with Tencent and Eastmoney", async () => {
+    const today = new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+    const tencentLine = (prefix: string, code: string, name: string) => {
+      const fields = Array.from({ length: 53 }, () => "");
+      fields[1] = name;
+      fields[3] = "3600";
+      fields[4] = "3581.38";
+      fields[5] = "3590";
+      fields[32] = "0.52";
+      fields[33] = "3610";
+      fields[34] = "3580";
+      fields[37] = "72000000";
+      fields[38] = "0";
+      return `v_${prefix}${code}="${fields.join("~")}";`;
+    };
+    const fetcher: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("qt.gtimg.cn")) {
+        return new Response([
+          tencentLine("sh", "000001", "上证指数"),
+          tencentLine("sz", "399001", "深证成指"),
+          tencentLine("sz", "399006", "创业板指"),
+          tencentLine("sh", "000688", "科创50"),
+          tencentLine("sh", "000300", "沪深300"),
+        ].join("\n"));
+      }
+      return new Response(JSON.stringify({
+        data: { klines: [`${today},3590,3600,3610,3580,100,720000000000,0,0.52`] },
+      }));
+    };
+
+    const result = await createEastmoneyProvider(fetcher).getIndexSnapshots(today);
+
+    expect(result).toHaveLength(5);
+    expect(result[0]).toMatchObject({
+      symbol: "000001.SH",
+      name: "上证指数",
+      price: 3600,
+      pctChange: .52,
+      amount: 720000000000,
+      source: "腾讯 / 东方财富",
+      status: "complete",
+    });
+  });
+
+  it("uses dated Eastmoney K-lines without pretending they were cross-checked live", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("qt.gtimg.cn")) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({
+        data: { klines: ["2026-07-22,3590,3600,3610,3580,100,720000000000,0,0.52"] },
+      }));
+    };
+
+    const result = await createEastmoneyProvider(fetcher).getIndexSnapshots("2026-07-22");
+
+    expect(result[0]).toMatchObject({
+      symbol: "000001.SH",
+      price: 3600,
+      pctChange: .52,
+      source: "东方财富历史K线",
+      status: "partial",
+    });
+  });
+
   it("rotates Eastmoney hosts when the preferred edge returns 520", async () => {
     const hosts: string[] = [];
     const fetcher: typeof fetch = async (input) => {

@@ -93,7 +93,9 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
   const ladderHeight = Math.max(0, ...Object.values(review.ladder).flat().map((item) => item.limitStreak));
-  const ladderNote = ladderHeight >= 2 ? `最高 ${ladderHeight}板` : "暂无连板";
+  const ladderNote = review.metrics.consecutive === null
+    ? "连板数据暂缺"
+    : ladderHeight >= 2 ? `最高 ${ladderHeight}板` : "暂无连板";
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const marginBalanceValue = review.metrics.marginBalance === null ? "暂缺" : `${review.metrics.marginBalance.toLocaleString("zh-CN")}亿`;
@@ -193,8 +195,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
             <div className="metric-grid">
               <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "涨跌家数数据暂缺" : `下跌 ${total.falling}`} />
-              <Metric label="涨停数量" value={String(review.metrics.limitUp)} note={`跌停 ${review.metrics.limitDown}`} />
-              <Metric label="连板家数" value={String(review.metrics.consecutive)} note={ladderNote} />
+              <Metric label="涨停数量" value={review.metrics.limitUp === null ? "暂缺" : String(review.metrics.limitUp)} note={review.metrics.limitDown === null ? "跌停数据暂缺" : `跌停 ${review.metrics.limitDown}`} />
+              <Metric label="连板家数" value={review.metrics.consecutive === null ? "暂缺" : String(review.metrics.consecutive)} note={ladderNote} />
               <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
               <Metric label="连板收盘溢价" value={pct(review.premium.closePct)} note={`开盘 ${pct(review.premium.openPct)}`} accent />
               <Metric label="两融余额" value={marginBalanceValue} note="沪深京融资余额" />
