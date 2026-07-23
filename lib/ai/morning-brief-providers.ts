@@ -44,11 +44,11 @@ type ProviderSearchResult = {
 
 type ParsedSection = Omit<BriefSection, "status" | "generatedAt" | "sourceIds">;
 
-const SECTION_SCHEMA = {
+const OPENAI_SECTION_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    key: { type: "string", enum: BRIEF_SECTION_DEFINITIONS.map((definition) => definition.key) },
+    key: { type: "string" },
     title: { type: "string" },
     summary: { type: "string" },
     tags: { type: "array", items: { type: "string" } },
@@ -57,52 +57,47 @@ const SECTION_SCHEMA = {
       minItems: 1,
       items: {
         oneOf: [
+          { type: "object", additionalProperties: false, properties: { type: { const: "heading" }, text: { type: "string" } }, required: ["type", "text"] },
           {
-            type: "object",
-            additionalProperties: false,
-            properties: { type: { const: "heading" }, text: { type: "string" } },
-            required: ["type", "text"],
+            type: "object", additionalProperties: false,
+            properties: { type: { const: "paragraph" }, text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } } },
+            required: ["type", "text", "sourceUrls"],
           },
           {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              type: { const: "paragraph" },
-              text: { type: "string" },
-              sourceIds: { type: "array", items: { type: "string" } },
-            },
-            required: ["type", "text", "sourceIds"],
-          },
-          {
-            type: "object",
-            additionalProperties: false,
+            type: "object", additionalProperties: false,
             properties: {
               type: { const: "bullets" },
               items: {
                 type: "array",
                 items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    text: { type: "string" },
-                    sourceIds: { type: "array", items: { type: "string" } },
-                  },
-                  required: ["text", "sourceIds"],
+                  type: "object", additionalProperties: false,
+                  properties: { text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } } },
+                  required: ["text", "sourceUrls"],
                 },
               },
             },
             required: ["type", "items"],
           },
           {
-            type: "object",
-            additionalProperties: false,
+            type: "object", additionalProperties: false,
             properties: {
-              type: { const: "callout" },
-              tone: { type: "string", enum: ["insight", "risk", "missing"] },
-              text: { type: "string" },
-              sourceIds: { type: "array", items: { type: "string" } },
+              type: { const: "callout" }, tone: { type: "string", enum: ["insight", "risk", "missing"] }, text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } },
             },
-            required: ["type", "tone", "text", "sourceIds"],
+            required: ["type", "tone", "text", "sourceUrls"],
+          },
+          {
+            type: "object", additionalProperties: false,
+            properties: {
+              type: { const: "table" },
+              columns: { type: "array", items: { type: "string" } },
+              rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+              sourceUrls: { type: "array", items: { type: "string" } },
+              provenance: {
+                type: "object", additionalProperties: false,
+                properties: { kind: { const: "search" } }, required: ["kind"],
+              },
+            },
+            required: ["type", "columns", "rows", "sourceUrls", "provenance"],
           },
         ],
       },
@@ -111,13 +106,13 @@ const SECTION_SCHEMA = {
   required: ["key", "title", "summary", "tags", "blocks"],
 } as const;
 
-function strictSectionSchema(key: BriefSectionKey) {
+function strictOpenAISectionSchema(key: BriefSectionKey) {
   const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
   return {
-    ...SECTION_SCHEMA,
+    ...OPENAI_SECTION_SCHEMA,
     properties: {
-      ...SECTION_SCHEMA.properties,
+      ...OPENAI_SECTION_SCHEMA.properties,
       key: { type: "string", const: key },
       title: { type: "string", const: definition.title },
     },
@@ -180,20 +175,22 @@ function snapshotBlocks(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPo
   });
 }
 
-function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[]): string {
+function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], citationField: "sourceIds" | "sourceUrls" = "sourceIds"): string {
   const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
   return `生成 ${date} 北京时间 07:15 的A股隔夜早参模块。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。
 
 本模块必须逐项覆盖：${definition.requiredTerms.join("、")}。正文内容长度（仅内容块文字）必须为 1000 至 1600 个字符。
-主动检索从上一交易日收盘至当前的可靠来源。每条事实、解读和风险说明均须在 sourceIds 中引用联网搜索返回的本地编号 ref_1、ref_2 等；不可引用不存在的编号、不可虚构 URL、不可在 JSON 中输出 sources。若没有可靠更新，请明确写“未查到可靠更新”并仍引用检索来源。
+主动检索从上一交易日收盘至当前的可靠来源。${citationField === "sourceIds"
+    ? "每条事实、解读和风险说明均须在 sourceIds 中引用联网搜索返回的本地编号 ref_1、ref_2 等；不可引用不存在的编号、不可虚构 URL、不可在 JSON 中输出 sources。"
+    : "每条事实、解读和风险说明均须在 sourceUrls 中引用联网搜索返回的精确 URL；不可引用不存在的 URL、不可虚构 URL、不可在 JSON 中输出 sources。"}若没有可靠更新，请明确写“未查到可靠更新”并仍引用检索来源。
 只做客观梳理。禁止推荐个股，禁止买卖、仓位、收益或保证性语言，也不要向读者下达投资行动指令。
 
 以下是服务端已校验的全球数值快照：${JSON.stringify(globalSnapshot)}
-指数、股票、汇率、利率和商品数值只能使用以上快照。不要输出 table 类型内容；服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
+指数、股票、汇率、利率和商品数值只能使用以上快照。${citationField === "sourceIds" ? "不要输出 table 类型内容；" : "如输出 table，其 provenance.kind 必须为 search，且使用 sourceUrls；不得输出 snapshot provenance。"}服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
 
 仅返回合法 JSON 对象，不要 Markdown 代码块，形状如下：
-{"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","sourceIds":["ref_1"]}]}`;
+{"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","${citationField}":[${citationField === "sourceIds" ? '"ref_1"' : '"https://example.com/cited-page"'}]}]}`;
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -201,30 +198,36 @@ function stringArray(value: unknown, label: string): string[] {
   return value;
 }
 
-function parseBlocks(value: unknown): BriefBlock[] {
+function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls", allowSearchTables = false): BriefBlock[] {
   if (!Array.isArray(value)) throw new Error("Provider section JSON has invalid blocks");
   return value.map((block, index) => {
     if (!isRecord(block) || typeof block.type !== "string") throw new Error(`Provider section JSON has invalid block ${index + 1}`);
     if (block.type === "heading" && typeof block.text === "string") return { type: "heading", text: block.text };
-    if (block.type === "paragraph" && typeof block.text === "string") return { type: "paragraph", text: block.text, sourceIds: stringArray(block.sourceIds, "sourceIds") };
+    if (block.type === "paragraph" && typeof block.text === "string") return { type: "paragraph", text: block.text, sourceIds: stringArray(block[citationField], citationField) };
     if (block.type === "callout" && typeof block.text === "string" && (block.tone === "insight" || block.tone === "risk" || block.tone === "missing")) {
-      return { type: "callout", tone: block.tone, text: block.text, sourceIds: stringArray(block.sourceIds, "sourceIds") };
+      return { type: "callout", tone: block.tone, text: block.text, sourceIds: stringArray(block[citationField], citationField) };
     }
     if (block.type === "bullets" && Array.isArray(block.items)) {
       return {
         type: "bullets",
         items: block.items.map((item, itemIndex) => {
           if (!isRecord(item) || typeof item.text !== "string") throw new Error(`Provider section JSON has invalid bullet ${index + 1}.${itemIndex + 1}`);
-          return { text: item.text, sourceIds: stringArray(item.sourceIds, "sourceIds") };
+          return { text: item.text, sourceIds: stringArray(item[citationField], citationField) };
         }),
       };
     }
-    if (block.type === "table") throw new Error("Provider section JSON must not contain model-generated tables");
+    if (block.type === "table" && allowSearchTables && Array.isArray(block.columns) && Array.isArray(block.rows) && isRecord(block.provenance) && block.provenance.kind === "search") {
+      if (block.columns.some((column) => typeof column !== "string") || block.rows.some((row) => !Array.isArray(row) || row.some((cell) => typeof cell !== "string"))) {
+        throw new Error(`Provider section JSON has invalid table ${index + 1}`);
+      }
+      return { type: "table", columns: [...block.columns], rows: block.rows.map((row) => [...row]), sourceIds: stringArray(block[citationField], citationField), provenance: { kind: "search" } };
+    }
+    if (block.type === "table") throw new Error("Provider section JSON must not contain model-generated snapshot tables");
     throw new Error(`Provider section JSON has invalid block ${index + 1}`);
   });
 }
 
-function parseSection(text: string, key: BriefSectionKey): ParsedSection {
+function parseSection(text: string, key: BriefSectionKey, citationField: "sourceIds" | "sourceUrls" = "sourceIds", allowSearchTables = false): ParsedSection {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -237,7 +240,7 @@ function parseSection(text: string, key: BriefSectionKey): ParsedSection {
     || typeof value.summary !== "string") {
     throw new Error("Provider response did not include a valid requested section");
   }
-  return { key, title: value.title, summary: value.summary, tags: stringArray(value.tags, "tags"), blocks: parseBlocks(value.blocks) };
+  return { key, title: value.title, summary: value.summary, tags: stringArray(value.tags, "tags"), blocks: parseBlocks(value.blocks, citationField, allowSearchTables) };
 }
 
 function namespaceSourceId(key: BriefSectionKey, sourceId: string): string {
@@ -249,6 +252,7 @@ function namespaceBlocks(key: BriefSectionKey, blocks: BriefBlock[]): BriefBlock
   return blocks.map((block) => {
     if (block.type === "paragraph" || block.type === "callout") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(key, id)) };
     if (block.type === "bullets") return { ...block, items: block.items.map((item) => ({ ...item, sourceIds: item.sourceIds.map((id) => namespaceSourceId(key, id)) })) };
+    if (block.type === "table") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(key, id)) };
     return block;
   });
 }
@@ -257,6 +261,7 @@ function referencedSourceIds(blocks: BriefBlock[]): string[] {
   const ids = blocks.flatMap((block) => {
     if (block.type === "paragraph" || block.type === "callout") return block.sourceIds;
     if (block.type === "bullets") return block.items.flatMap((item) => item.sourceIds);
+    if (block.type === "table") return block.provenance.kind === "search" ? block.sourceIds : [];
     return [];
   });
   return [...new Set(ids)];
@@ -308,9 +313,9 @@ function validateGeneratedSources(sources: BriefSource[]): void {
   if (errors.length > 0) throw new Error(`Brief section source validation failed: ${errors.join("; ")}`);
 }
 
-function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, sources: BriefSource[]): GeneratedBriefSection {
+function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, sources: BriefSource[], namespaceReferences = true): GeneratedBriefSection {
   validateGeneratedSources(sources);
-  const modelBlocks = namespaceBlocks(key, parsed.blocks);
+  const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
   const blocks = [...modelBlocks, ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
     ...parsed,
@@ -362,36 +367,78 @@ function openAIUrlCitations(payload: unknown): OpenAIUrlCitation[] {
   }) ?? [];
 }
 
-function sourceIndex(source: { index?: number }, fallbackIndex: number): number {
-  return Number.isFinite(source.index) && Number(source.index) > 0 ? Number(source.index) : fallbackIndex + 1;
-}
-
 function comparableUrl(value: string): string | null {
   try {
-    return new URL(value).href;
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
   } catch {
     return null;
   }
 }
 
-function metadataPublicationTime(document: string, response: Response): string | null {
+function metadataPublicationTime(document: string): string | null {
   const candidates: string[] = [];
   for (const tag of document.match(/<meta\b[^>]*>/gi) ?? []) {
     const name = /\b(?:property|name|itemprop)\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1]?.toLowerCase();
     const content = /\bcontent\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
-    if (content && (name === "article:published_time" || name === "datepublished" || name === "date")) candidates.push(content);
+    if (content && (name === "article:published_time" || name === "datepublished" || name === "published_time")) candidates.push(content);
   }
-  for (const tag of document.match(/<time\b[^>]*>/gi) ?? []) {
-    const datetime = /\bdatetime\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
-    if (datetime) candidates.push(datetime);
-  }
-  const metadataTime = candidates.find(validIsoTimestamp);
-  if (metadataTime) return metadataTime;
+  for (const match of document.matchAll(/"(?:datePublished|published_time)"\s*:\s*"([^"\\]+)"/gi)) candidates.push(match[1]);
+  return candidates.find(validIsoTimestamp) ?? null;
+}
 
-  const lastModified = response.headers.get("last-modified");
-  if (!lastModified) return null;
-  const parsed = new Date(lastModified);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+function isBlockedIpLiteral(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^0\./.test(host)) return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const [first, second] = ipv4.slice(1).map(Number);
+    return first === 172 && second >= 16 && second <= 31 || first === 100 && second >= 64 && second <= 127;
+  }
+  const mappedIpv6 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (mappedIpv6) {
+    const first = Number.parseInt(mappedIpv6[1], 16);
+    const second = Number.parseInt(mappedIpv6[2], 16);
+    return isBlockedIpLiteral(`${first >> 8}.${first & 255}.${second >> 8}.${second & 255}`);
+  }
+  return host === "::" || host === "::1" || /^fc|^fd|^fe[89ab]/.test(host);
+}
+
+function assertSafeOutboundUrl(value: string): string {
+  const url = comparableUrl(value);
+  if (!url) throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
+  const hostname = new URL(url).hostname;
+  if (hostname === "localhost" || hostname === "localhost." || hostname.endsWith(".localhost") || hostname.endsWith(".local") || isBlockedIpLiteral(hostname)) {
+    throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
+  }
+  return url;
+}
+
+async function fetchCitedPage(url: string, fetcher: typeof fetch): Promise<Response> {
+  let current = assertSafeOutboundUrl(url);
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    const response = await fetcher(current, { headers: { accept: "text/html,application/xhtml+xml" }, redirect: "manual" });
+    if (response.status < 300 || response.status >= 400) return response;
+    const location = response.headers.get("location");
+    if (!location) throw new Error(`OpenAI cited source could not be validated: ${current} redirected without Location`);
+    current = assertSafeOutboundUrl(new URL(location, current).href);
+  }
+  throw new Error(`OpenAI cited source could not be validated: ${url} exceeded redirect limit`);
+}
+
+function replaceSourceUrls(blocks: BriefBlock[], sourceIdsByUrl: Map<string, string>): BriefBlock[] {
+  const sourceId = (url: string) => {
+    const normalized = comparableUrl(url);
+    const id = normalized ? sourceIdsByUrl.get(normalized) : undefined;
+    if (!id) throw new Error(`OpenAI cited source could not be validated: ${url} is not an allowed search URL`);
+    return id;
+  };
+  return blocks.map((block) => {
+    if (block.type === "paragraph" || block.type === "callout") return { ...block, sourceIds: block.sourceIds.map(sourceId) };
+    if (block.type === "bullets") return { ...block, items: block.items.map((item) => ({ ...item, sourceIds: item.sourceIds.map(sourceId) })) };
+    if (block.type === "table") return { ...block, sourceIds: block.sourceIds.map(sourceId) };
+    return block;
+  });
 }
 
 async function hydrateOpenAISources(
@@ -406,20 +453,18 @@ async function hydrateOpenAISources(
     const url = comparableUrl(citation.url);
     return url && citation.title.trim() ? [[url, citation] as const] : [];
   }));
-  const actionByIndex = new Map(actionSources.map((source, index) => [sourceIndex(source, index), source]));
-  const localIds = referencedSourceIds(parsed.blocks);
+  const actionUrls = new Set(actionSources.flatMap((source) => typeof source.url === "string" ? [comparableUrl(source.url)] : []).filter((url): url is string => Boolean(url)));
+  const sourceUrls = referencedSourceIds(parsed.blocks).map((url) => assertSafeOutboundUrl(url));
+  const uniqueUrls = [...new Set(sourceUrls)].sort();
 
-  return Promise.all(localIds.map(async (localId) => {
-    const match = /^ref_(\d+)$/.exec(localId);
-    const source = match ? actionByIndex.get(Number(match[1])) : undefined;
-    const actionUrl = source?.url && comparableUrl(source.url);
-    const citation = actionUrl ? citationsByUrl.get(actionUrl) : undefined;
-    if (!citation) throw new Error(`OpenAI cited source could not be validated: ${localId} lacks a matching URL citation`);
-    const response = await fetcher(citation.url, { headers: { accept: "text/html,application/xhtml+xml" } });
+  return Promise.all(uniqueUrls.map(async (url, index) => {
+    const citation = citationsByUrl.get(url);
+    if (!actionUrls.has(url) || !citation) throw new Error(`OpenAI cited source could not be validated: ${url} lacks a matching search source or URL citation`);
+    const response = await fetchCitedPage(url, fetcher);
     if (!response.ok) throw new Error(`OpenAI cited source could not be validated: ${citation.url} returned HTTP ${response.status}`);
-    const publishedAt = metadataPublicationTime(await response.text(), response);
+    const publishedAt = metadataPublicationTime(await response.text());
     if (!publishedAt) throw new Error(`OpenAI cited source could not be validated: ${citation.url} has no verifiable publication time`);
-    return { id: `${key}_${localId}`, title: citation.title, url: citation.url, publishedAt };
+    return { id: `${key}_ref_${index + 1}`, title: citation.title, url: citation.url, publishedAt };
   }));
 }
 
@@ -487,15 +532,20 @@ export async function generateOpenAIBriefSection({
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "required",
       include: ["web_search_call.action.sources"],
-      input: promptForSection(date, key, globalSnapshot),
+      input: promptForSection(date, key, globalSnapshot, "sourceUrls"),
       text: {
         verbosity: "high",
-        format: { type: "json_schema", name: "panlayer_morning_brief_section", strict: true, schema: strictSectionSchema(key) },
+        format: { type: "json_schema", name: "panlayer_morning_brief_section", strict: true, schema: strictOpenAISectionSchema(key) },
       },
     }),
   });
   const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
-  const parsed = parseSection(openAIText(payload), key);
-  return finishSection(key, globalSnapshot, parsed, await hydrateOpenAISources(key, parsed, payload, fetcher));
+  const parsed = parseSection(openAIText(payload), key, "sourceUrls", true);
+  const sources = await hydrateOpenAISources(key, parsed, payload, fetcher);
+  const sourceIdsByUrl = new Map(sources.flatMap((source) => {
+    const url = comparableUrl(source.url);
+    return url ? [[url, source.id] as const] : [];
+  }));
+  return finishSection(key, globalSnapshot, { ...parsed, blocks: replaceSourceUrls(parsed.blocks, sourceIdsByUrl) }, sources, false);
 }
