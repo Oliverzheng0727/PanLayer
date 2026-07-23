@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -122,6 +122,79 @@ function qwenResponse(key: BriefSectionKey, status = 200) {
 }
 
 describe("close review aggregation", () => {
+  it("bounds a completely hung global snapshot request and clears its timer", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetcher: typeof fetch = async (_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => { aborted = true; reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+      const buffered = createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000);
+      const pending = buffered("https://example.com/snapshot");
+      const rejected = expect(pending).rejects.toThrow(/Global snapshot request timed out/);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await rejected;
+      expect(aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds a global snapshot response whose headers arrive but body never finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: typeof fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"data":')); },
+      }), { headers: { "content-type": "application/json", "x-provider": "snapshot" } });
+      const buffered = createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000);
+      const pending = buffered("https://example.com/snapshot");
+      const rejected = expect(pending).rejects.toThrow(/Global snapshot request timed out/);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("buffers a normal global snapshot response without changing status, headers, or body", async () => {
+    const fetcher: typeof fetch = async () => new Response('{"ok":true}', { status: 201, headers: { "content-type": "application/json", "x-provider": "snapshot" } });
+    const response = await createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000)("https://example.com/snapshot");
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-provider")).toBe("snapshot");
+    await expect(response.text()).resolves.toBe('{"ok":true}');
+  });
+
+  it("continues to morning modules after a timed-out snapshot request becomes unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db } = morningBriefJobHarness([]);
+      let generated = 0;
+      const fetcher: typeof fetch = async (input, init) => {
+        if (String(input).includes("snapshot-hang")) return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+        const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+        const definition = BRIEF_SECTION_DEFINITIONS.find((item) => request.input.messages[1].content.includes(`key 必须为 "${item.key}"`))!;
+        generated += 1;
+        return qwenResponse(definition.key);
+      };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementationOnce(async (_env, snapshotFetcher) => {
+        await snapshotFetcher("https://example.com/snapshot-hang").catch(() => undefined);
+        return { raw: [], reconciled: [] };
+      });
+      const pending = runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await expect(pending).resolves.toMatchObject({ ok: true });
+      expect(generated).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("loads prior review and ETF snapshot provenance from persisted dates and update times", async () => {
     const db = {
       prepare(sql: string) {

@@ -23,6 +23,8 @@ const MINIMUM_ALL_A_UNIVERSE = 5_000;
 // The 110s batch deadline stays below the 180s stale lease window, so a live job cannot be reclaimed.
 export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
 export const MORNING_BRIEF_BATCH_DEADLINE_MS = 110 * 1_000;
+const GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS = 8 * 1_000;
+const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 export interface MorningBriefLease {
   token: string;
   renew: () => Promise<boolean>;
@@ -83,6 +85,45 @@ export async function renewJobLease(db: D1Database, job: string, tradeDate: stri
   const row = await db.prepare("UPDATE job_leases SET acquired_at = ?, expires_at = ? WHERE job = ? AND trade_date = ? AND token = ? AND expires_at > ? RETURNING token")
     .bind(acquiredAt, expiresAt, job, tradeDate, token, acquiredAt).first<{ token: string }>();
   return row?.token === token;
+}
+
+function awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal, onAbort?: () => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (callback: (value: T) => void, value: T) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback(value);
+    };
+    const abort = () => {
+      onAbort?.();
+      settle(reject, new Error("global snapshot request aborted") as T);
+    };
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then((value) => settle(resolve, value), (error) => settle(reject, error));
+  });
+}
+
+export function createDeadlineAwareBufferedFetcher(fetcher: typeof fetch, deadlineAt: number): typeof fetch {
+  return async (input, init) => {
+    const remaining = deadlineAt - Date.now() - DEADLINE_REQUEST_SAFETY_MS;
+    if (remaining <= 0) throw new Error("Morning brief deadline budget exhausted before global snapshot request");
+    const timeoutMs = Math.min(GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS, remaining);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await awaitWithAbort(fetcher(input, { ...init, signal: controller.signal }), controller.signal);
+      const body = await awaitWithAbort(response.arrayBuffer(), controller.signal, () => { void response.body?.cancel().catch(() => undefined); });
+      return new Response(body.byteLength ? body : null, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(`Global snapshot request timed out after ${timeoutMs}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }
 
 async function assertMorningBriefLease(lease: MorningBriefLease | undefined): Promise<void> {
@@ -387,7 +428,8 @@ export async function runPanLayerJob(
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         return { ok: true, message: `${label} no failed or missing modules; skipped` };
       }
-      const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, fetcher), loadMorningBriefMarketContext(db, date)]);
+      const snapshotFetcher = createDeadlineAwareBufferedFetcher(fetcher, deadlineAt);
+      const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, snapshotFetcher), loadMorningBriefMarketContext(db, date)]);
       await assertMorningBriefLease(morningBriefLease);
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
