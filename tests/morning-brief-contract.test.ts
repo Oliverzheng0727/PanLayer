@@ -77,22 +77,49 @@ describe("V2 morning brief contract", () => {
       columns: ["指标"],
       rows: [["100"]],
       sourceIds: [],
-      provenance: { kind: "snapshot", label: " ", marketTime: "2026-07-23T07:15:00Z" },
+      provenance: { kind: "snapshot", label: " ", marketTime: "2026-07-23T07:15:00Z", providers: [], receivedAt: "not-a-time" },
     }] as BriefSection["blocks"];
     const result = validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id)));
     expect(result.ok).toBe(false);
-    expect(result.errors.join(" ")).toMatch(/快照来源|北京时间/);
+    expect(result.errors.join(" ")).toMatch(/快照来源|北京时间|提供方|接收时间/);
+  });
+
+  it("requires snapshot provenance to retain providers and the received timestamp", () => {
+    const valid = structuredClone(brief);
+    valid.sections[0].blocks.push({
+      type: "table",
+      columns: ["指标"],
+      rows: [["100"]],
+      sourceIds: [],
+      provenance: {
+        kind: "snapshot",
+        label: "标普500",
+        marketTime: "2026-07-23T07:15:00+08:00",
+        providers: ["Twelve Data", "Alpha Vantage"],
+        receivedAt: "2026-07-23T00:00:00Z",
+      },
+    });
+    expect(validateBriefSection(valid.sections[0], new Set(valid.sources.map((item) => item.id))).ok).toBe(true);
+
+    const invalid = structuredClone(valid);
+    const snapshot = invalid.sections[0].blocks.at(-1);
+    if (snapshot?.type === "table" && snapshot.provenance.kind === "snapshot") {
+      snapshot.provenance.providers = [];
+      snapshot.provenance.receivedAt = "2026-02-30T00:00:00Z";
+    }
+    expect(validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id))).errors.join(" "))
+      .toMatch(/提供方|接收时间/);
   });
 
   it("requires Beijing run timestamps and a V2 schema with legal statuses", () => {
-    const invalid = structuredClone(brief) as any;
-    invalid.schemaVersion = 1;
-    invalid.status = "ready";
+    const invalid = structuredClone(brief);
+    invalid.schemaVersion = 1 as 2;
+    invalid.status = "ready" as never;
     invalid.date = "2026/07/23";
     invalid.generatedAt = "2026-07-23T07:15:00Z";
     invalid.sections[0].generatedAt = "2026-07-23T07:15:00Z";
     invalid.sections[1].status = "ready" as never;
-    const result = validateMorningBrief(invalid as MorningBrief);
+    const result = validateMorningBrief(invalid);
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toMatch(/schemaVersion|状态|日期|北京时间/);
   });
@@ -202,7 +229,7 @@ describe("V2 morning brief contract", () => {
       columns: ["指标"],
       rows: [["100"]],
       sourceIds: [],
-      provenance: { kind: "snapshot", label: "全球行情快照", marketTime: "2026-02-30T25:61:61+08:00" },
+      provenance: { kind: "snapshot", label: "全球行情快照", marketTime: "2026-02-30T25:61:61+08:00", providers: ["来源"], receivedAt: "2026-07-23T00:00:00Z" },
     });
     const result = validateMorningBrief(invalid);
     expect(result.ok).toBe(false);

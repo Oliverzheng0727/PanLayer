@@ -54,13 +54,23 @@ describe("independent morning-brief section providers", () => {
   });
 
   it("uses strict OpenAI Responses JSON schema and only provider search metadata for sources", async () => {
-    let request: { model?: string; reasoning?: unknown; tools?: unknown[]; text?: { verbosity?: string; format?: Record<string, unknown> }; input?: string } = {};
-    const fetcher: typeof fetch = async (_input, init) => {
+    let request: { model?: string; reasoning?: unknown; tools?: unknown[]; tool_choice?: unknown; text?: { verbosity?: string; format?: Record<string, unknown> }; input?: string } = {};
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input) === "https://example.com/openai") {
+        return new Response('<meta property="article:published_time" content="2026-07-23T07:15:00+08:00">');
+      }
       request = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
         output: [
-          { type: "web_search_call", action: { sources: [{ title: "搜索来源", url: "https://example.com/openai", published_at: "2026-07-23T07:15:00+08:00" }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(modelSection("risk")) }] },
+          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai" }] } },
+          {
+            type: "message",
+            content: [{
+              type: "output_text",
+              text: JSON.stringify(modelSection("risk")),
+              annotations: [{ type: "url_citation", title: "搜索来源", url: "https://example.com/openai" }],
+            }],
+          },
         ],
       }));
     };
@@ -76,6 +86,7 @@ describe("independent morning-brief section providers", () => {
     expect(request.model).toBe("gpt-5.6-terra");
     expect(request.reasoning).toEqual({ effort: "medium" });
     expect(request.tools).toContainEqual({ type: "web_search", search_context_size: "medium" });
+    expect(request.tool_choice).toBe("required");
     expect(request.text?.verbosity).toBe("high");
     expect(request.text?.format).toMatchObject({ type: "json_schema", name: "panlayer_morning_brief_section", strict: true });
     expect(request.text?.format?.schema).toMatchObject({ type: "object", additionalProperties: false });
@@ -119,7 +130,13 @@ describe("independent morning-brief section providers", () => {
       columns: ["标的", "数值", "前收", "涨跌幅", "状态"],
       rows: [["标普500", "630.2", "625.1", "0.8159", "cross-checked"]],
       sourceIds: [],
-      provenance: { kind: "snapshot", label: "标普500", marketTime: "2026-07-22T00:00:00+08:00" },
+      provenance: {
+        kind: "snapshot",
+        label: "标普500",
+        marketTime: "2026-07-22T00:00:00+08:00",
+        providers: ["Twelve Data", "Alpha Vantage"],
+        receivedAt: "2026-07-23T00:00:00Z",
+      },
     });
   });
 
@@ -138,5 +155,32 @@ describe("independent morning-brief section providers", () => {
       fetcher,
       globalSnapshot: [],
     })).rejects.toThrow("source validation");
+  });
+
+  it("fails explicitly when a cited OpenAI URL has no verifiable publication metadata", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input) === "https://example.com/openai") return new Response("<html><head></head><body>no date</body></html>");
+      return new Response(JSON.stringify({
+        output: [
+          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai" }] } },
+          {
+            type: "message",
+            content: [{
+              type: "output_text",
+              text: JSON.stringify(modelSection("risk")),
+              annotations: [{ type: "url_citation", title: "搜索来源", url: "https://example.com/openai" }],
+            }],
+          },
+        ],
+      }));
+    };
+
+    await expect(generateOpenAIBriefSection({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret",
+      fetcher,
+      globalSnapshot: [],
+    })).rejects.toThrow("cited source could not be validated");
   });
 });

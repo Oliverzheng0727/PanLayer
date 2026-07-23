@@ -169,7 +169,13 @@ function snapshotBlocks(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPo
         point.status,
       ]],
       sourceIds: [],
-      provenance: { kind: "snapshot" as const, label: point.label, marketTime },
+      provenance: {
+        kind: "snapshot" as const,
+        label: point.label,
+        marketTime,
+        providers: [...point.providers],
+        receivedAt: point.receivedAt,
+      },
     }];
   });
 }
@@ -330,6 +336,9 @@ function qwenSearchResults(payload: unknown): ProviderSearchResult[] {
   return Array.isArray(value.output?.search_info?.search_results) ? value.output.search_info.search_results.filter(isRecord) : [];
 }
 
+type OpenAISearchSource = { index?: number; url?: string };
+type OpenAIUrlCitation = { title: string; url: string };
+
 function openAIText(payload: unknown): string {
   const value = payload as { output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }> };
   const text = value.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
@@ -337,9 +346,81 @@ function openAIText(payload: unknown): string {
   return text;
 }
 
-function openAISearchResults(payload: unknown): ProviderSearchResult[] {
+function openAISearchResults(payload: unknown): OpenAISearchSource[] {
   const value = payload as { output?: Array<{ action?: { sources?: unknown } }> };
   return value.output?.flatMap((item) => Array.isArray(item.action?.sources) ? item.action.sources.filter(isRecord) : []) ?? [];
+}
+
+function openAIUrlCitations(payload: unknown): OpenAIUrlCitation[] {
+  const value = payload as { output?: Array<{ content?: Array<{ annotations?: unknown }> }> };
+  return value.output?.flatMap((item) => item.content ?? []).flatMap((content) => {
+    if (!Array.isArray(content.annotations)) return [];
+    return content.annotations.flatMap((annotation) => {
+      if (!isRecord(annotation) || annotation.type !== "url_citation" || typeof annotation.title !== "string" || typeof annotation.url !== "string") return [];
+      return [{ title: annotation.title, url: annotation.url }];
+    });
+  }) ?? [];
+}
+
+function sourceIndex(source: { index?: number }, fallbackIndex: number): number {
+  return Number.isFinite(source.index) && Number(source.index) > 0 ? Number(source.index) : fallbackIndex + 1;
+}
+
+function comparableUrl(value: string): string | null {
+  try {
+    return new URL(value).href;
+  } catch {
+    return null;
+  }
+}
+
+function metadataPublicationTime(document: string, response: Response): string | null {
+  const candidates: string[] = [];
+  for (const tag of document.match(/<meta\b[^>]*>/gi) ?? []) {
+    const name = /\b(?:property|name|itemprop)\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1]?.toLowerCase();
+    const content = /\bcontent\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
+    if (content && (name === "article:published_time" || name === "datepublished" || name === "date")) candidates.push(content);
+  }
+  for (const tag of document.match(/<time\b[^>]*>/gi) ?? []) {
+    const datetime = /\bdatetime\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
+    if (datetime) candidates.push(datetime);
+  }
+  const metadataTime = candidates.find(validIsoTimestamp);
+  if (metadataTime) return metadataTime;
+
+  const lastModified = response.headers.get("last-modified");
+  if (!lastModified) return null;
+  const parsed = new Date(lastModified);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+async function hydrateOpenAISources(
+  key: BriefSectionKey,
+  parsed: ParsedSection,
+  payload: unknown,
+  fetcher: typeof fetch,
+): Promise<BriefSource[]> {
+  const actionSources = openAISearchResults(payload);
+  const citations = openAIUrlCitations(payload);
+  const citationsByUrl = new Map(citations.flatMap((citation) => {
+    const url = comparableUrl(citation.url);
+    return url && citation.title.trim() ? [[url, citation] as const] : [];
+  }));
+  const actionByIndex = new Map(actionSources.map((source, index) => [sourceIndex(source, index), source]));
+  const localIds = referencedSourceIds(parsed.blocks);
+
+  return Promise.all(localIds.map(async (localId) => {
+    const match = /^ref_(\d+)$/.exec(localId);
+    const source = match ? actionByIndex.get(Number(match[1])) : undefined;
+    const actionUrl = source?.url && comparableUrl(source.url);
+    const citation = actionUrl ? citationsByUrl.get(actionUrl) : undefined;
+    if (!citation) throw new Error(`OpenAI cited source could not be validated: ${localId} lacks a matching URL citation`);
+    const response = await fetcher(citation.url, { headers: { accept: "text/html,application/xhtml+xml" } });
+    if (!response.ok) throw new Error(`OpenAI cited source could not be validated: ${citation.url} returned HTTP ${response.status}`);
+    const publishedAt = metadataPublicationTime(await response.text(), response);
+    if (!publishedAt) throw new Error(`OpenAI cited source could not be validated: ${citation.url} has no verifiable publication time`);
+    return { id: `${key}_${localId}`, title: citation.title, url: citation.url, publishedAt };
+  }));
 }
 
 export async function generateQwenBriefSection({
@@ -404,6 +485,7 @@ export async function generateOpenAIBriefSection({
       model: "gpt-5.6-terra",
       reasoning: { effort: "medium" },
       tools: [{ type: "web_search", search_context_size: "medium" }],
+      tool_choice: "required",
       include: ["web_search_call.action.sources"],
       input: promptForSection(date, key, globalSnapshot),
       text: {
@@ -414,5 +496,6 @@ export async function generateOpenAIBriefSection({
   });
   const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
-  return finishSection(key, globalSnapshot, parseSection(openAIText(payload), key), sourcesFromMetadata(key, openAISearchResults(payload)));
+  const parsed = parseSection(openAIText(payload), key);
+  return finishSection(key, globalSnapshot, parsed, await hydrateOpenAISources(key, parsed, payload, fetcher));
 }

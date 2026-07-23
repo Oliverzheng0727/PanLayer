@@ -25,7 +25,7 @@ export type BriefBlock =
     sourceIds: string[];
     provenance:
       | { kind: "search" }
-      | { kind: "snapshot"; label: string; marketTime: string };
+      | { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string };
   }
   | { type: "callout"; tone: "insight" | "risk" | "missing"; text: string; sourceIds: string[] };
 
@@ -173,6 +173,12 @@ function validateTableProvenance(errors: string[], sectionTitle: string, index: 
   }
   if (!isBeijingTimestamp(provenance.marketTime)) {
     errors.push(`${sectionTitle}第${index + 1}个表格市场时间必须为北京时间`);
+  }
+  if (!Array.isArray(provenance.providers) || provenance.providers.length === 0 || provenance.providers.some((provider) => !isNonBlankString(provider))) {
+    errors.push(`${sectionTitle}第${index + 1}个表格缺少快照提供方`);
+  }
+  if (!isIsoTimestamp(provenance.receivedAt)) {
+    errors.push(`${sectionTitle}第${index + 1}个表格接收时间必须为有效ISO时间`);
   }
 }
 
