@@ -1,4 +1,5 @@
 import type { ReconciledGlobalPoint } from "../data/global/types";
+import { LEADER_RANKING_BASIS } from "../domain/metrics";
 import {
   BRIEF_SECTION_DEFINITIONS,
   type BriefBlock,
@@ -21,7 +22,7 @@ export interface MorningBriefMarketContext {
     metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
     ladder: { first: number; second: number; third: number; fourth: number; fivePlus: number };
     sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number; maxStreak: number } }>;
-    leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; firstLimitTime: string | null; sector: string } }>;
+    leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; isLimitUp: boolean; firstLimitTime: string | null; sector: string } }>;
   };
   etfs: Array<{ category: string; name: string; code: string }>;
 }
@@ -401,10 +402,11 @@ function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: 
   }
 }
 
-function assertNoModelRankingTokens(key: BriefSectionKey, summary: string, blocks: BriefBlock[]): void {
+function assertNoModelRankingTokens(key: BriefSectionKey, summary: string, tags: string[], blocks: BriefBlock[]): void {
   if (key !== "mapping" && key !== "risk") return;
   const reserved = /主线|热点|龙头|ETF/i;
-  const offending = [summary, ...narrativeSegments(blocks)].find((segment) => reserved.test(segment));
+  const textFields = blocks.flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : []);
+  const offending = [summary, ...tags, ...textFields].find((text) => reserved.test(text));
   if (offending) throw new Error(`模型正文包含排名保留词：${offending}`);
 }
 
@@ -450,7 +452,7 @@ function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMa
     blocks.push(contextUnavailableCallout("服务端主线热点复盘", "服务端复盘上下文不可用：主线与热点排名暂缺。", generatedAt));
   }
   if (review?.leaders.length) {
-    blocks.push(contextSnapshotTable("服务端龙头复盘", ["龙头", "代码", "排名依据", "因素"], review.leaders.map((leader) => [leader.name, leader.symbol, "涨幅、成交额、连板、首次封板时间", `涨幅${leader.factors.pctChange}%；成交额${leader.factors.amount}；连板${leader.factors.limitStreak}；首次封板${leader.factors.firstLimitTime ?? "暂缺"}`]), generatedAt));
+    blocks.push(contextSnapshotTable("服务端龙头复盘", ["龙头", "代码", "排名依据", "因素"], review.leaders.map((leader) => [leader.name, leader.symbol, LEADER_RANKING_BASIS.join("、"), `涨停状态:${leader.factors.isLimitUp ? "涨停" : "非涨停"}；连板高度${leader.factors.limitStreak}；首次封板${leader.factors.firstLimitTime ?? "暂缺"}；成交额${leader.factors.amount}`]), generatedAt));
   } else {
     blocks.push(contextUnavailableCallout("服务端龙头复盘", "服务端复盘上下文不可用：龙头排名暂缺。", generatedAt));
   }
@@ -467,7 +469,7 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
-  assertNoModelRankingTokens(key, parsed.summary, modelBlocks);
+  assertNoModelRankingTokens(key, parsed.summary, parsed.tags, modelBlocks);
   assertNarrativeSnapshotIntegrity(modelBlocks, globalSnapshot);
   const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext, generatedAt), ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {

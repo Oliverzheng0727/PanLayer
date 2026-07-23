@@ -60,3 +60,10 @@ Latest verification: focused provider tests passed (17 tests); `npm test` passed
 - Snapshot integrity now creates label-associated clauses at sentence/comma boundaries, preserves thousands separators, validates each clause only against its named label, and rejects numeric clauses with multiple labels as ambiguous.
 
 Latest verification: focused provider tests passed (18 tests); `npm test` passed (37 files, 173 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.
+
+## Final ranking-integrity correction
+
+- Reserved ranking-token protection now scans every model-authored field, including headings, summaries, tags, paragraphs, bullets, and callouts; Qwen and OpenAI heading-bypass regressions are covered.
+- Defined the leader ranking order once alongside `rankLeaders`—连板高度、涨停状态、首次封板时间、成交额—and reused it in the server table. The compact market context now carries the derived limit-up status so each displayed factor corresponds to the actual comparator.
+
+Latest verification: focused provider/metrics tests passed (25 tests); `npm test` passed (37 files, 173 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.

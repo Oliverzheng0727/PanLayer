@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import { generateOpenAIBriefSection, generateQwenBriefSection } from "../lib/ai/morning-brief-providers";
+import { LEADER_RANKING_BASIS } from "../lib/domain/metrics";
 
 function modelSection(key: BriefSectionKey) {
   const definitions: Record<BriefSectionKey, { title: string; terms: string[] }> = {
@@ -57,7 +58,7 @@ describe("independent morning-brief section providers", () => {
     };
 
     await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher, globalSnapshot: [], marketContext: {
-      review: { date: "2026-07-22", status: "complete", closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] },
+      review: { date: "2026-07-22", status: "complete", closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },
       etfs: [{ category: "人工智能", name: "AI ETF", code: "159819" }],
     } });
 
@@ -70,7 +71,7 @@ describe("independent morning-brief section providers", () => {
 
   it("appends server-authored ranked context tables and rejects Qwen ranking-token bypasses", async () => {
     const marketContext = {
-      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] },
+      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },
       etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }],
     };
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), blocks: [{ type: "paragraph", text: `${modelSection("mapping").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
@@ -79,23 +80,29 @@ describe("independent morning-brief section providers", () => {
     expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", rows: expect.arrayContaining([expect.arrayContaining(["算力"])]), sourceIds: [] }));
     expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", rows: expect.arrayContaining([expect.arrayContaining(["龙头甲", "600001.SH"])]), sourceIds: [] }));
     expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", rows: expect.arrayContaining([expect.arrayContaining(["人工智能", "人工智能ETF", "159819"])]), sourceIds: [] }));
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", columns: ["龙头", "代码", "排名依据", "因素"], rows: [["龙头甲", "600001.SH", LEADER_RANKING_BASIS.join("、"), "涨停状态:涨停；连板高度3；首次封板09:32:00；成交额1000000"]] }));
     const unavailable = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider("") as typeof fetch, globalSnapshot: [] });
     expect(unavailable.section.blocks).toContainEqual(expect.objectContaining({ type: "callout", tone: "missing", text: expect.stringContaining("上下文不可用"), sourceIds: [] }));
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线聚焦虚构题材。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 虚构ETF代码999999。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|ETF/);
+    const headingBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), blocks: [{ type: "heading", text: "主线聚焦虚构题材" }, modelSection("mapping").blocks[1]] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: headingBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
     const summaryBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), summary: "主线聚焦虚构题材" }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: summaryBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
+    const tagBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), tags: ["ETF 映射"] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: tagBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|ETF/);
   });
 
   it("rejects OpenAI ranking-token bypasses while retaining server context blocks", async () => {
     const context = {
-      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [],
+      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [],
     };
-    const fetcher = (suffix: string): typeof fetch => async () => new Response(JSON.stringify({ output: [{ type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai-context" }] } }, { type: "message", content: [{ type: "output_text", text: JSON.stringify({ ...openAIModelSection("risk", ["https://example.com/openai-context", "https://example.com/openai-context"]), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text}${suffix}`, sourceUrls: ["https://example.com/openai-context"] }] }), annotations: [{ type: "url_citation", title: "来源", url: "https://example.com/openai-context" }] }] }] }));
+    const fetcher = (suffix: string, heading?: string): typeof fetch => async () => new Response(JSON.stringify({ output: [{ type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai-context" }] } }, { type: "message", content: [{ type: "output_text", text: JSON.stringify({ ...openAIModelSection("risk", ["https://example.com/openai-context", "https://example.com/openai-context"]), blocks: [...(heading ? [{ type: "heading", text: heading }] : []), { type: "paragraph", text: `${modelSection("risk").blocks[1].text}${suffix}`, sourceUrls: ["https://example.com/openai-context"] }] }), annotations: [{ type: "url_citation", title: "来源", url: "https://example.com/openai-context" }] }] }] }));
 
     const result = await generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher(""), globalSnapshot: [], marketContext: context });
     expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", rows: expect.arrayContaining([expect.arrayContaining(["龙头甲", "600001.SH"])]), sourceIds: [] }));
     await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher(" 龙头锁定虚构标的。"), globalSnapshot: [], marketContext: context })).rejects.toThrow(/保留词|龙头/);
+    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher("", "ETF 映射"), globalSnapshot: [], marketContext: context })).rejects.toThrow(/保留词|ETF/);
   });
 
   it("rejects a narrative snapshot number that disagrees with the server table but permits unrelated counts", async () => {

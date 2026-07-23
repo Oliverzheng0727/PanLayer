@@ -121,7 +121,7 @@ export async function loadMorningBriefMarketContext(db: D1Database, date: string
           metrics: { ...parsed.metrics },
           ladder: { first: parsed.ladder.first.length, second: parsed.ladder.second.length, third: parsed.ladder.third.length, fourth: parsed.ladder.fourth.length, fivePlus: parsed.ladder.fivePlus.length },
           sectors: parsed.sectors.slice(0, 20).map((item) => ({ name: item.name, factors: { limitUpCount: item.limitUpCount, averagePct: item.averagePct, amountGrowthPct: item.amountGrowthPct, maxStreak: item.maxStreak } })),
-          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, firstLimitTime: item.firstLimitTime, sector: item.sector } })),
+          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, isLimitUp: classifyLimitStatus(item) === "limit-up", firstLimitTime: item.firstLimitTime, sector: item.sector } })),
         };
       }
     }

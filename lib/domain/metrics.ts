@@ -65,16 +65,22 @@ export function findNewHighs(adjustedHistory: number[], currentClose: number) {
   return { high120, allTimeHigh };
 }
 
+const LEADER_RANKING_RULES = [
+  { label: "连板高度", compare: (a: Quote, b: Quote) => b.limitStreak - a.limitStreak },
+  { label: "涨停状态", compare: (a: Quote, b: Quote) => Number(classifyLimitStatus(b) === "limit-up") - Number(classifyLimitStatus(a) === "limit-up") },
+  { label: "首次封板时间", compare: (a: Quote, b: Quote) => (a.firstLimitTime ?? "99:99:99").localeCompare(b.firstLimitTime ?? "99:99:99") },
+  { label: "成交额", compare: (a: Quote, b: Quote) => b.amount - a.amount },
+] as const;
+
+export const LEADER_RANKING_BASIS = LEADER_RANKING_RULES.map((rule) => rule.label);
+
 export function rankLeaders(quotes: Quote[]): Quote[] {
   return [...quotes].sort((a, b) => {
-    const streak = b.limitStreak - a.limitStreak;
-    if (streak) return streak;
-    const seal = Number(classifyLimitStatus(b) === "limit-up") - Number(classifyLimitStatus(a) === "limit-up");
-    if (seal) return seal;
-    const aTime = a.firstLimitTime ?? "99:99:99";
-    const bTime = b.firstLimitTime ?? "99:99:99";
-    if (aTime !== bTime) return aTime.localeCompare(bTime);
-    return b.amount - a.amount;
+    for (const rule of LEADER_RANKING_RULES) {
+      const result = rule.compare(a, b);
+      if (result) return result;
+    }
+    return 0;
   });
 }
 
