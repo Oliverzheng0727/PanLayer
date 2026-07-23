@@ -34,7 +34,6 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
 
   useEffect(() => {
     let cancelled = false;
-    setChartError("");
     fetch(`/api/v1/etfs/${etf.symbol}/bars?period=${period}&adjust=${adjustment}`)
       .then(async (response) => {
         const payload = await response.json() as { bars?: MarketBar[]; source?: string; status?: LiveDataState; marketTime?: string | null; receivedAt?: string | null; error?: string };
@@ -48,6 +47,7 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
           setStatus(payload.status ?? "complete");
           setMarketTime(payload.marketTime ?? null);
           setReceivedAt(payload.receivedAt ?? new Date().toISOString());
+          setChartError("");
         }
       })
       .catch((error) => {
