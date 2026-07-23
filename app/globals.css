@@ -213,7 +213,7 @@ button, input { font: inherit; }
 .history-calendar-head button { display:grid; width:28px; height:28px; place-items:center; border-radius:8px; color:rgba(255,255,255,.35); }
 .history-calendar-head button:hover { background:rgba(255,255,255,.05); color:white; }
 .history-table-scroll { max-height:548px; min-width:0; overflow:auto; scrollbar-color:rgba(232,112,42,.32) rgba(255,255,255,.025); }
-.history-table { width:100%; min-width:1480px; border-collapse:separate; border-spacing:0; font-size:10px; }
+.history-table { width:100%; min-width:1960px; border-collapse:separate; border-spacing:0; font-size:10px; font-variant-numeric:tabular-nums; }
 .history-table th { position:sticky; top:0; z-index:4; height:42px; border-bottom:1px solid rgba(255,255,255,.08); background:#121314; padding:0 11px; color:rgba(255,255,255,.3); font-weight:500; text-align:left; white-space:nowrap; }
 .history-table th button { display:flex; align-items:center; gap:5px; height:100%; color:inherit; white-space:nowrap; }
 .history-table th button:hover,.history-table th button.is-sorted { color:#e8702a; }
@@ -221,21 +221,25 @@ button, input { font: inherit; }
 .history-table tr { cursor:pointer; }
 .history-table tbody tr:hover td { background:rgba(255,255,255,.025); }
 .history-table tbody tr.selected td { background:rgba(232,112,42,.075); }
-.history-table .history-sector-cell { position:sticky; left:0; z-index:3; width:170px; min-width:170px; background:#121314; }
-.history-table th.history-sector-cell { z-index:8; }
-.history-table .history-date { position:sticky; left:170px; z-index:3; min-width:102px; border-right:1px solid rgba(255,255,255,.06); background:#121314; }
-.history-table th.history-date { z-index:7; }
+.history-table .history-date { position:sticky; left:0; z-index:3; width:102px; min-width:102px; background:#121314; }
+.history-table th.history-date { z-index:8; }
+.history-table .history-sector-cell { position:sticky; left:102px; z-index:3; width:170px; min-width:170px; border-right:1px solid rgba(255,255,255,.06); background:#121314; }
+.history-table th.history-sector-cell { z-index:7; }
 .history-table td.history-date a { color:rgba(255,255,255,.82); font-weight:600; }
 .history-table tbody tr:hover td.history-sector-cell,
 .history-table tbody tr:hover td.history-date { background:#171819; }
 .history-table tbody tr.selected td.history-sector-cell,
 .history-table tbody tr.selected td.history-date { background:#251710; color:#f29a64; }
 .history-sector { display:inline-flex; max-width:150px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.04); padding:5px 8px; text-overflow:ellipsis; }
+.history-table .history-group-end { border-right:1px solid rgba(255,255,255,.07); }
+.history-source { max-width:150px; overflow:hidden; text-overflow:ellipsis; }
+.history-updated { color:rgba(255,255,255,.32) !important; }
 .history-status { display:inline-flex; border-radius:999px; padding:4px 7px; background:rgba(255,255,255,.04); color:rgba(255,255,255,.35); }
 .history-status.complete { background:rgba(59,201,135,.08); color:#55d49a; }
 .history-status.partial { background:rgba(245,158,11,.08); color:#f6b94f; }
 .history-status.demo { background:rgba(232,112,42,.09); color:#ee925b; }
 .history-status.failed { background:rgba(239,91,88,.08); color:#ef7774; }
+.history-status.backfilled { background:rgba(87,143,255,.11); color:#8fb5ff; }
 .history-drilldown { min-width:34px; border-radius:8px; padding:5px 8px; color:#f09a65; text-decoration:underline; text-decoration-color:rgba(232,112,42,.3); text-underline-offset:3px; }
 .history-drilldown:hover { background:rgba(232,112,42,.12); color:#ffc09a; }
 .history-drilldown:disabled { cursor:default; color:rgba(255,255,255,.25); text-decoration:none; }
