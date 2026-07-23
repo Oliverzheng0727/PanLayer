@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
-import { demoBrief, demoEtfs, demoHighDetailsByDate, demoHistory, demoReview } from "../../lib/data/demo";
-import { readBrief, readHighDetails, readHistory, readLatestReview } from "../../lib/data/repository";
+import { demoBrief, demoEtfs, demoHistory, demoReview } from "../../lib/data/demo";
+import { readBrief, readHistory, readLatestReview } from "../../lib/data/repository";
 import { createUnavailableReview } from "../../lib/data/unavailable";
 import { queryEtfs } from "../../lib/etf/catalog";
 import { loadLiveEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
@@ -29,9 +29,6 @@ export default async function DashboardPage() {
     : createUnavailableReview(date));
   const brief = storedBrief ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
   const history = storedHistory.length > 0 ? storedHistory : isDevelopment ? demoHistory : [];
-  const highDetailsByDate = storedHistory.length > 0
-    ? Object.fromEntries(await Promise.all(history.slice(0, 60).map(async (row) => [row.date, await readHighDetails(row.date)] as const)))
-    : isDevelopment ? demoHighDetailsByDate : {};
   const etfs = queryEtfs(liveEtfCatalog.items, {
     category: "全部",
     query: "",
@@ -40,5 +37,5 @@ export default async function DashboardPage() {
     cursor: 0,
     limit: 100,
   }).items;
-  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} highDetailsByDate={highDetailsByDate} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
+  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
 }

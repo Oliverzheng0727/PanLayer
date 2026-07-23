@@ -1,7 +1,9 @@
 export type LiveDataState = "complete" | "partial" | "failed" | "demo";
 
-function clockTime(value: string | null): string {
+export function clockTime(value: string | null): string {
   if (!value) return "时间暂缺";
+  const timezoneLess = value.match(/^\d{4}-\d{2}-\d{2}[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+  if (timezoneLess) return `${timezoneLess[1]}:${timezoneLess[2] ?? "00"}`;
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {

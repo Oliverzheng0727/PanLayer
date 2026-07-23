@@ -52,15 +52,24 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
   const historyTable = html.match(/<table class="history-table">[\s\S]*?<\/table>/)?.[0] ?? "";
-  assert.ok(historyTable.indexOf("日期") < historyTable.indexOf("主线板块"), "历史表应先显示日期，再显示主线板块");
-  assert.match(historyTable, /炸板/);
-  assert.match(historyTable, /昨日打板成功率/);
-  assert.match(historyTable, /全市场成交额/);
-  assert.match(historyTable, /断板率/);
-  assert.match(historyTable, /辨识度个股/);
-  assert.match(historyTable, /两融余额/);
-  assert.match(historyTable, /数据来源/);
-  assert.match(historyTable, /更新时间/);
+  const historyHeaders = [
+    "日期", "涨停家数", "跌停家数", "炸板家数", "大跌家数（7%）", "封板率",
+    "昨日打板成功率", "连板反馈", "上涨家数", "成交额", "连板数", "最高板（名称）",
+    "断板数（二板+）", "断板率", "主线板块", "龙头周期", "今日辨识度个股", "指数情况",
+  ];
+  assert.doesNotMatch(historyTable, /大盘复盘记录/);
+  for (let index = 1; index < historyHeaders.length; index += 1) {
+    assert.ok(
+      historyTable.indexOf(historyHeaders[index - 1]) < historyTable.indexOf(historyHeaders[index]),
+      `历史表头顺序错误：${historyHeaders[index - 1]} 应位于 ${historyHeaders[index]} 之前`,
+    );
+  }
+  assert.doesNotMatch(historyTable, />下跌</);
+  assert.doesNotMatch(historyTable, />平盘</);
+  assert.doesNotMatch(historyTable, /120日新高/);
+  assert.doesNotMatch(historyTable, /两融余额/);
+  assert.doesNotMatch(historyTable, /数据来源/);
+  assert.doesNotMatch(historyTable, /更新时间/);
   assert.match(html, /固定表头/);
   assert.doesNotMatch(html, /市场情绪震荡修复/);
   assert.match(html, /仅供市场复盘，不构成投资建议/);
@@ -76,12 +85,11 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.doesNotMatch(html, /OPENAI_API_KEY|FIRECRAWL_API_KEY|fc-[A-Za-z0-9_-]+|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
 });
 
-test("keeps the historical review header and first two columns frozen", async () => {
+test("keeps the historical review header and date column frozen", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  assert.match(css, /\.history-table th \{[^}]*position:sticky;[^}]*top:0;/);
+  assert.match(css, /\.history-table-columns th \{[^}]*position:sticky;[^}]*top:0;/);
   assert.match(css, /\.history-table \.history-date \{[^}]*position:sticky;[^}]*left:0;/);
-  assert.match(css, /\.history-table \.history-sector-cell \{[^}]*position:sticky;[^}]*left:102px;/);
-  assert.match(css, /\.history-table-scroll \{[^}]*max-height:548px;[^}]*overflow:auto;/);
+  assert.match(css, /\.history-table-scroll \{[^}]*max-height:620px;[^}]*overflow:auto;/);
 });
 
 test("binds morning brief cards to source-aware details instead of a placeholder URL", async () => {

@@ -30,18 +30,22 @@ export function GlobalMarketClock({
   receivedAt: string | null;
   error?: string;
 }) {
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
+    const initialTimer = window.setTimeout(() => setNow(new Date()), 0);
     const timer = window.setInterval(() => setNow(new Date()), 1_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
   }, []);
 
   const failed = status === "failed" || Boolean(error);
-  const delayedBy = delayMinutes(receivedAt, now);
+  const delayedBy = now ? delayMinutes(receivedAt, now) : null;
   const delayed = failed || (delayedBy !== null && delayedBy > 5);
-  const inSession = isBeijingMarketSession(now);
-  const seconds = nextRefreshSeconds(receivedAt, now);
+  const inSession = now ? isBeijingMarketSession(now) : false;
+  const seconds = now ? nextRefreshSeconds(receivedAt, now) : 0;
   const statusLabel = failed
     ? "更新失败 · 旧数据"
     : delayed
@@ -51,13 +55,15 @@ export function GlobalMarketClock({
         : status === "demo"
           ? "演示"
           : "部分";
-  const refreshLabel = inSession
+  const refreshLabel = now === null
+    ? "同步中"
+    : inSession
     ? seconds > 0 ? `下次刷新 ${countdown(seconds)}` : "正在刷新"
     : "已收盘";
 
   return (
     <div className={`global-market-clock ${delayed ? "is-delayed" : ""}`}>
-      <span className="global-clock-now" aria-hidden="true"><em>北京时间</em>{formatBeijingClock(now)}</span>
+      <span className="global-clock-now" aria-hidden="true"><em>北京时间</em>{now ? formatBeijingClock(now) : "--:--:--"}</span>
       <span><em>市场数据</em>{marketClock(marketTime)}</span>
       <span><em>数据源</em>{source}</span>
       <span className="global-clock-status" aria-live="polite">{statusLabel}</span>

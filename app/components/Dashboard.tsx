@@ -14,7 +14,6 @@ import { shouldPoll } from "../../lib/live/polling";
 import { formatBeijingDateTime } from "../../lib/live/market-clock";
 import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
-import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
@@ -63,7 +62,7 @@ function briefSourceCount(section: BriefSection) {
   return new Set([...section.sourceIds, ...blockSourceIds]).size;
 }
 
-export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string; canManageBrief: boolean }) {
+export function Dashboard({ review, brief, etfs, history, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -240,8 +239,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           </section>
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
-            <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="像 Excel 一样排序、滚动并回看每个交易日。" />
-            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} canManageHistory={canManageBrief} />
+            <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="横向比较每日复盘指标，纵向滚动查看真实历史记录。" />
+            <HistoryWorkspace initialRows={history} canManageHistory={canManageBrief} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

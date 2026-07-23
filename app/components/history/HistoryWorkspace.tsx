@@ -6,8 +6,6 @@ import { useRouter } from "next/navigation";
 import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
 import { HistoryCalendar } from "./HistoryCalendar";
 import { HistoryTable } from "./HistoryTable";
-import { HighDetailDrawer } from "./HighDetailDrawer";
-import type { HighDetail, HighDetailType } from "../../../lib/history/high-details";
 import { MarketEvidenceDrawer, type MarketEvidenceKind } from "./MarketEvidenceDrawer";
 
 const HISTORY_VIEW_KEY = "panlayer-history-view";
@@ -22,14 +20,13 @@ interface StoredHistoryView {
   scrollLeft?: number;
 }
 
-export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, canManageHistory = false }: { initialRows?: HistoryRow[]; highDetailsByDate?: Record<string, HighDetail[]>; canManageHistory?: boolean }) {
+export function HistoryWorkspace({ initialRows = [], canManageHistory = false }: { initialRows?: HistoryRow[]; canManageHistory?: boolean }) {
   const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [sector, setSector] = useState("");
   const [selected, setSelected] = useState(initialRows[0]?.date ?? "");
   const [visibleCount, setVisibleCount] = useState(12);
-  const [drawer, setDrawer] = useState<{ date: string; type: HighDetailType } | null>(null);
   const [evidenceDrawer, setEvidenceDrawer] = useState<{ row: HistoryRow; kind: MarketEvidenceKind } | null>(null);
   const [backfillState, setBackfillState] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [backfillLabel, setBackfillLabel] = useState("回补近20日");
@@ -159,11 +156,9 @@ export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, can
               sort, order, sector, selected, visibleCount, scrollTop: top, scrollLeft: left,
             } satisfies StoredHistoryView));
           }}
-          onOpenHighs={(date, type) => setDrawer({ date, type })}
           onOpenEvidence={(row, kind) => setEvidenceDrawer({ row, kind })}
         />
       </div>
-      {drawer && <HighDetailDrawer date={drawer.date} type={drawer.type} items={highDetailsByDate[drawer.date] ?? []} onTypeChange={(type) => setDrawer({ ...drawer, type })} onClose={() => setDrawer(null)} />}
       {evidenceDrawer && <MarketEvidenceDrawer row={evidenceDrawer.row} kind={evidenceDrawer.kind} onClose={() => setEvidenceDrawer(null)} />}
     </div>
   );
