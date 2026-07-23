@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { BriefBlock, LegacyMorningBrief, MorningBrief } from "../../lib/ai/morning-brief";
+import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
@@ -17,6 +17,7 @@ import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
+import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 
@@ -51,35 +52,18 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
   demo: { label: "演示", detail: "演示模式，定时任务采集后自动替换", dot: "bg-orange-400 shadow-[0_0_10px_#fb923c]", pill: "border-orange-400/15 bg-orange-400/[0.07] text-orange-300" },
 };
 
-function isLegacyMorningBrief(brief: LegacyMorningBrief | MorningBrief): brief is LegacyMorningBrief {
-  return !("schemaVersion" in brief);
+const briefStatusLabel = { complete: "完整", partial: "部分", failed: "失败" } as const;
+
+function briefItemCount(section: BriefSection) {
+  return section.blocks.reduce((count, block) => count + (block.type === "heading" ? 0 : block.type === "bullets" ? block.items.length : 1), 0);
 }
 
-function legacyItemsFromBlocks(blocks: BriefBlock[], fallbackText: string, fallbackSourceIds: string[]) {
-  const items = blocks.flatMap((block) => {
-    if (block.type === "heading") return [];
-    if (block.type === "bullets") return block.items;
-    if (block.type === "table") return [{ text: [block.columns.join(" · "), ...block.rows.map((row) => row.join(" · "))].join("\n"), sourceIds: block.sourceIds }];
-    return [{ text: block.text, sourceIds: block.sourceIds }];
-  });
-  return items.length > 0 ? items : [{ text: fallbackText, sourceIds: fallbackSourceIds }];
+function briefSourceCount(section: BriefSection) {
+  const blockSourceIds = section.blocks.flatMap((block) => block.type === "heading" ? [] : block.type === "bullets" ? block.items.flatMap((item) => item.sourceIds) : block.sourceIds);
+  return new Set([...section.sourceIds, ...blockSourceIds]).size;
 }
 
-function displayBrief(brief: LegacyMorningBrief | MorningBrief | null): LegacyMorningBrief | null {
-  if (!brief) return null;
-  if (isLegacyMorningBrief(brief)) return brief;
-  return {
-    date: brief.date,
-    sources: brief.sources,
-    disclaimer: brief.disclaimer,
-    sections: brief.sections.map((section) => ({
-      title: section.title,
-      items: legacyItemsFromBlocks(section.blocks, section.summary, section.sourceIds),
-    })),
-  };
-}
-
-export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName, canManageBrief }: { review: DailyReview; brief: LegacyMorningBrief | MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string; canManageBrief: boolean }) {
+export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -112,7 +96,6 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const marginBalanceValue = review.metrics.marginBalance === null ? "暂缺" : `${review.metrics.marginBalance.toLocaleString("zh-CN")}亿`;
-  const renderedBrief = displayBrief(brief);
 
   const refreshLiveBreadth = useCallback(async () => {
     if (liveRequestInFlight.current) return;
@@ -230,10 +213,10 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           </section>
 
           <section id="brief" className="dashboard-section scroll-mt-24" data-can-manage-brief={canManageBrief ? "true" : "false"}>
-            <SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" />
-            {renderedBrief
-              ? <><div className="brief-grid">{renderedBrief.sections.map((section, index) => <button type="button" key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.slice(0, 2).map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<span className="brief-card-action">打开详情 · {new Set(section.items.flatMap((item) => item.sourceIds)).size} 个来源 <ArrowUpRight size={11}/></span></button>)}</div><BriefDetailDrawer brief={renderedBrief} section={briefSectionIndex === null ? null : renderedBrief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} /></>
-              : <div className="panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">数据状态：暂不可用。生成完成后将显示五个固定模块。</p></div></div>}
+            <div className="brief-heading-row"><SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" />{canManageBrief && <BriefRegenerateButton />}</div>
+            {brief
+              ? <><div className="brief-grid">{brief.sections.map((section, index) => <button type="button" key={section.key} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="brief-card-top"><span>0{index + 1}</span><span className={`brief-card-status is-${section.status}`}>{briefStatusLabel[section.status]}</span><Sparkles size={15} aria-hidden="true"/></div><h3>{section.title}</h3><p className="brief-card-summary">{section.summary}</p><div className="brief-tags">{section.tags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="brief-card-meta"><span>{briefItemCount(section)} 条</span><span>{briefSourceCount(section)} 个来源</span><span>{section.generatedAt.slice(11, 16)} 生成</span></div><span className="brief-card-action">打开详情 <ArrowUpRight size={11}/></span></button>)}</div><BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} /></>
+              : <div className="brief-unavailable panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">暂不可用，生成后将显示五个模块。</p></div></div>}
           </section>
 
           <section id="ladder" className="dashboard-section scroll-mt-24">

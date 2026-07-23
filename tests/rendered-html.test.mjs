@@ -70,9 +70,14 @@ test("server-renders the protected review dashboard for the allowed user", async
 });
 
 test("binds morning brief cards to source-aware details instead of a placeholder URL", async () => {
-  const dashboard = await readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8");
+  const [dashboard, renderer] = await Promise.all([
+    readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/brief/BriefBlockRenderer.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(dashboard, /BriefDetailDrawer/);
+  assert.match(dashboard, /BriefRegenerateButton/);
   assert.doesNotMatch(dashboard, /href="https:\/\/example\.com"/);
+  assert.doesNotMatch(renderer, /dangerouslySetInnerHTML|innerHTML/);
 });
 
 test("removes the disposable starter preview", async () => {
