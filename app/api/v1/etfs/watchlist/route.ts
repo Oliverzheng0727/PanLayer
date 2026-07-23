@@ -2,7 +2,7 @@ import { authorizeApi } from "../../../../auth-guard";
 import { getChatGPTUser } from "../../../../chatgpt-auth";
 import { demoEtfs } from "../../../../../lib/data/demo";
 import { ETF_CATEGORIES } from "../../../../../lib/etf/catalog";
-import { loadLiveEtfCatalog } from "../../../../../lib/etf/live-catalog";
+import { loadLiveEtfCatalog, loadLiveEtfCatalogEnvelope } from "../../../../../lib/etf/live-catalog";
 import {
   deleteWatchlistItem,
   listWatchlistItems,
@@ -47,12 +47,19 @@ export async function GET() {
   const saved = await listWatchlistItems(context.db, context.userEmail);
   let live = [];
   let status: "complete" | "partial" = "complete";
+  let receivedAt: string | null = null;
+  let marketTime: string | null = null;
+  let isStale = true;
   try {
-    live = await liveCatalog();
+    const catalog = await loadLiveEtfCatalogEnvelope();
+    live = catalog.items;
+    receivedAt = catalog.receivedAt;
+    marketTime = catalog.marketTime;
+    isStale = catalog.isStale;
   } catch {
     status = "partial";
   }
-  return Response.json({ items: mergeWatchlistEtfs(live, saved), status, source: "东方财富 · 用户自选" });
+  return Response.json({ items: mergeWatchlistEtfs(live, saved), status, source: "东方财富 · 用户自选", receivedAt, marketTime, isStale });
 }
 
 export async function POST(request: Request) {

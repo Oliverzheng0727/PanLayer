@@ -18,9 +18,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
     const daily = period === "minute" ? [] : await fetchEastmoneyDailyBars(symbol, adjustment);
     const bars = period === "minute" ? await fetchEastmoneyMinuteBars(symbol) : period === "day" ? daily : aggregateBars(daily, period);
     if (bars.length === 0) throw new Error("empty market bars");
-    return Response.json({ symbol, period, adjustment, bars, source: "东方财富", status: "complete" });
+    return Response.json({ symbol, period, adjustment, bars, source: "东方财富", status: "complete", marketTime: bars.at(-1)?.time ?? null, receivedAt: new Date().toISOString(), isStale: false });
   } catch (error) {
-    if (process.env.NODE_ENV !== "development") return Response.json({ symbol, period, adjustment, bars: [], source: "东方财富", status: "failed", error: error instanceof Error ? error.message : "market data failed" }, { status: 502 });
-    return Response.json({ symbol, period, adjustment, bars: createDemoBars(symbol, period), source: "本机演示行情", status: "demo" });
+    if (process.env.NODE_ENV !== "development") return Response.json({ symbol, period, adjustment, bars: [], source: "东方财富", status: "failed", error: error instanceof Error ? error.message : "market data failed", marketTime: null, receivedAt: new Date().toISOString(), isStale: true }, { status: 502 });
+    return Response.json({ symbol, period, adjustment, bars: createDemoBars(symbol, period), source: "本机演示行情", status: "demo", marketTime: null, receivedAt: new Date().toISOString(), isStale: true });
   }
 }

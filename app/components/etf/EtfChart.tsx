@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { createDemoBars, type Adjustment, type BarPeriod, type MarketBar } from "../../../lib/etf/bars";
 import { ETF_CATEGORIES } from "../../../lib/etf/catalog";
 import type { EtfSnapshot } from "../../../lib/data/provider";
+import { LiveDataStatus, type LiveDataState } from "../data/LiveDataStatus";
 
 const periods: Array<{ value: BarPeriod; label: string }> = [{ value: "minute", label: "分时" }, { value: "day", label: "日K" }, { value: "week", label: "周K" }, { value: "month", label: "月K" }];
 
@@ -24,17 +25,40 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
   const container = useRef<HTMLDivElement>(null);
   const [period, setPeriod] = useState<BarPeriod>("day");
   const [adjustment, setAdjustment] = useState<Adjustment>("forward");
-  const [bars, setBars] = useState<MarketBar[]>(() => createDemoBars(etf.symbol, "day", etf.price));
-  const [source, setSource] = useState("本机演示行情");
+  const [bars, setBars] = useState<MarketBar[]>(() => process.env.NODE_ENV === "development" ? createDemoBars(etf.symbol, "day", etf.price) : []);
+  const [source, setSource] = useState(process.env.NODE_ENV === "development" ? "本机演示行情" : "东方财富");
+  const [status, setStatus] = useState<LiveDataState>(process.env.NODE_ENV === "development" ? "demo" : "complete");
+  const [marketTime, setMarketTime] = useState<string | null>(null);
+  const [receivedAt, setReceivedAt] = useState<string | null>(null);
+  const [chartError, setChartError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    setChartError("");
     fetch(`/api/v1/etfs/${etf.symbol}/bars?period=${period}&adjust=${adjustment}`)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error("bars failed")))
-      .then((payload: { bars?: MarketBar[]; source?: string }) => {
-        if (!cancelled && payload.bars?.length) { setBars(payload.bars); setSource(payload.source ?? "行情源"); }
+      .then(async (response) => {
+        const payload = await response.json() as { bars?: MarketBar[]; source?: string; status?: LiveDataState; marketTime?: string | null; receivedAt?: string | null; error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "K 线数据更新失败");
+        return payload;
       })
-      .catch(() => { if (!cancelled) { setBars(createDemoBars(etf.symbol, period, etf.price)); setSource("本机演示行情"); } });
+      .then((payload) => {
+        if (!cancelled && payload.bars?.length) {
+          setBars(payload.bars);
+          setSource(payload.source ?? "行情源");
+          setStatus(payload.status ?? "complete");
+          setMarketTime(payload.marketTime ?? null);
+          setReceivedAt(payload.receivedAt ?? new Date().toISOString());
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setChartError(error instanceof Error ? error.message : "K 线数据更新失败");
+        setStatus("failed");
+        if (process.env.NODE_ENV === "development") {
+          setBars(createDemoBars(etf.symbol, period, etf.price));
+          setSource("本机演示行情");
+        }
+      });
     return () => { cancelled = true; };
   }, [adjustment, etf.price, etf.symbol, period]);
 
@@ -74,7 +98,9 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
           <button type="button" className={adjustment === "forward" ? "active" : ""} onClick={() => setAdjustment((value) => value === "forward" ? "none" : "forward")}>{adjustment === "forward" ? "前复权" : "不复权"}</button>
         </div>
       </div>
+      <LiveDataStatus label="K线" source={source} status={status} marketTime={marketTime} receivedAt={receivedAt} isStale={Boolean(chartError) || status === "demo"} error={chartError} />
       <div ref={container} className="etf-chart-canvas" />
+      {!bars.length && <div className="etf-chart-empty">数据暂缺 · 更新失败</div>}
       <div className="etf-chart-foot"><span>十字光标 · 缩放浏览</span><span>{source} · 成交量同步显示</span></div>
     </div>
   );

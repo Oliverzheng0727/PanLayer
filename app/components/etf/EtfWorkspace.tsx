@@ -1,16 +1,27 @@
 "use client";
 
 import { LoaderCircle, Plus, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EtfSnapshot } from "../../../lib/data/provider";
 import { buildEtfCategoryCounts, ETF_CATEGORIES, queryEtfs, type EtfCategory, type EtfSortField } from "../../../lib/etf/catalog";
 import { buildEtfSearchUrl } from "../../../lib/etf/search";
 import { normalizeEtfSymbol } from "../../../lib/etf/watchlist";
+import { shouldPoll } from "../../../lib/live/polling";
+import { ETF_REFRESH_MS } from "../../../lib/live/refresh-policy";
+import { LiveDataStatus, type LiveDataState } from "../data/LiveDataStatus";
 import { EtfChart } from "./EtfChart";
 import { EtfTable } from "./EtfTable";
 
 type WorkspaceCategory = EtfCategory | "我的自选";
 const workspaceCategories: WorkspaceCategory[] = ["我的自选", ...ETF_CATEGORIES];
+
+interface EtfResponseMeta {
+  source: string;
+  status: LiveDataState;
+  receivedAt: string | null;
+  marketTime: string | null;
+  isStale: boolean;
+}
 
 export function EtfWorkspace({ initialEtfs }: { initialEtfs: EtfSnapshot[] }) {
   const [category, setCategory] = useState<WorkspaceCategory>("全部");
@@ -26,6 +37,14 @@ export function EtfWorkspace({ initialEtfs }: { initialEtfs: EtfSnapshot[] }) {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [message, setMessage] = useState("");
+  const [liveMeta, setLiveMeta] = useState<EtfResponseMeta>({
+    source: "东方财富",
+    status: initialEtfs.length ? "complete" : "failed",
+    receivedAt: initialEtfs[0]?.updatedAt ?? null,
+    marketTime: null,
+    isStale: !initialEtfs.length,
+  });
+  const requestInFlight = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,43 +60,70 @@ export function EtfWorkspace({ initialEtfs }: { initialEtfs: EtfSnapshot[] }) {
         setMessage("自选列表暂时无法加载");
       }
       if (categoryResult.status === "fulfilled") {
-        const payload = categoryResult.value as { categories?: Array<{ category: string; count: number }> };
+        const payload = categoryResult.value as { categories?: Array<{ category: string; count: number }> } & Partial<EtfResponseMeta>;
         if (Array.isArray(payload.categories)) {
           const nextCounts = Object.fromEntries(payload.categories.map((item) => [item.category, item.count]));
           setMarketCategoryCounts(nextCounts);
           if (Number.isFinite(nextCounts["全部"])) setCatalogTotal(nextCounts["全部"]);
         }
+        if (payload.receivedAt) setLiveMeta({ source: payload.source ?? "东方财富", status: payload.status ?? "complete", receivedAt: payload.receivedAt, marketTime: payload.marketTime ?? null, isStale: Boolean(payload.isStale) });
       }
     });
     return () => { cancelled = true; };
   }, []);
 
+  const refreshCatalog = useCallback(async (signal?: AbortSignal) => {
+    if (requestInFlight.current) return;
+    requestInFlight.current = true;
+    setSearching(true);
+    setSearchError("");
+    try {
+      const endpoint = category === "我的自选"
+        ? "/api/v1/etfs/watchlist"
+        : buildEtfSearchUrl({ category, query, sort, order, limit: 100 });
+      const response = await fetch(endpoint, { signal });
+      const payload = await response.json() as { items?: EtfSnapshot[]; total?: number; error?: string } & Partial<EtfResponseMeta>;
+      if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error ?? "全市场 ETF 暂时无法查询");
+      if (category === "我的自选") {
+        setWatchlist(payload.items);
+      } else {
+        setCatalogEtfs(payload.items);
+        setCatalogTotal(Number.isFinite(payload.total) ? Number(payload.total) : payload.items.length);
+      }
+      setLiveMeta({
+        source: payload.source ?? "东方财富",
+        status: payload.status ?? "complete",
+        receivedAt: payload.receivedAt ?? new Date().toISOString(),
+        marketTime: payload.marketTime ?? null,
+        isStale: Boolean(payload.isStale),
+      });
+    } catch (error) {
+      if (!signal?.aborted) {
+        setSearchError(error instanceof Error ? error.message : "全市场 ETF 暂时无法查询");
+        setLiveMeta((current) => ({ ...current, status: "failed", isStale: true }));
+      }
+    } finally {
+      requestInFlight.current = false;
+      if (!signal?.aborted) setSearching(false);
+    }
+  }, [category, order, query, sort]);
+
   useEffect(() => {
-    if (category === "我的自选") return;
     const controller = new AbortController();
     const delay = query.trim() ? 260 : 0;
-    const timer = window.setTimeout(() => {
-      setSearching(true);
-      setSearchError("");
-      fetch(buildEtfSearchUrl({ category, query, sort, order, limit: 100 }), { signal: controller.signal })
-        .then(async (response) => {
-          const payload = await response.json() as { items?: EtfSnapshot[]; total?: number; error?: string };
-          if (!response.ok || !Array.isArray(payload.items)) throw new Error(payload.error ?? "全市场 ETF 暂时无法查询");
-          setCatalogEtfs(payload.items);
-          setCatalogTotal(Number.isFinite(payload.total) ? Number(payload.total) : payload.items.length);
-        })
-        .catch((error) => {
-          if (!controller.signal.aborted) setSearchError(error instanceof Error ? error.message : "全市场 ETF 暂时无法查询");
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setSearching(false);
-        });
-    }, delay);
+    const timer = window.setTimeout(() => void refreshCatalog(controller.signal), delay);
+    const refreshWhenVisible = () => {
+      if (shouldPoll({ visible: document.visibilityState === "visible", kind: "etf", now: new Date() })) void refreshCatalog(controller.signal);
+    };
+    const interval = window.setInterval(refreshWhenVisible, ETF_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       window.clearTimeout(timer);
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
       controller.abort();
     };
-  }, [category, order, query, sort]);
+  }, [query, refreshCatalog]);
 
   const watchedSymbols = useMemo(() => new Set(watchlist.map((item) => item.symbol)), [watchlist]);
   const allEtfs = useMemo(() => [
@@ -187,6 +233,7 @@ export function EtfWorkspace({ initialEtfs }: { initialEtfs: EtfSnapshot[] }) {
             {codeToAdd && <button type="submit" className="etf-add-button" disabled={saving}>{saving ? <LoaderCircle size={12} className="spin" /> : <Plus size={12} />}添加</button>}
           </form>
         </div>
+        <LiveDataStatus label="ETF" source={liveMeta.source} status={liveMeta.status} marketTime={liveMeta.marketTime} receivedAt={liveMeta.receivedAt} isStale={liveMeta.isStale} error={searchError} />
         {(message || (category !== "我的自选" && searchError)) && <div className="etf-inline-message" role="status">{message || searchError}</div>}
         <EtfTable items={page.items} selected={selected?.symbol ?? ""} sort={sort} order={order} watchedSymbols={watchedSymbols} onSelect={(item) => setSelectedSymbol(item.symbol)} onSort={cycleSort} onRemove={(symbol) => void removeFromWatchlist(symbol)} />
       </section>

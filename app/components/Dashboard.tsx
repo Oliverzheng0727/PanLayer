@@ -2,16 +2,20 @@
 
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Database, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { MorningBrief } from "../../lib/ai/morning-brief";
-import type { DailyReview, Quote } from "../../lib/domain/types";
+import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import type { HistoryRow } from "../../lib/history/query";
+import { shouldPoll } from "../../lib/live/polling";
+import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
+import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -25,6 +29,16 @@ const nav = [
 
 const pct = (value: number | null) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
+interface LiveMarketPayload {
+  breadth: Breadth;
+  source: string;
+  status: Exclude<LiveDataState, "demo" | "failed">;
+  message: string;
+  marketTime: string | null;
+  receivedAt: string;
+  isStale: boolean;
+}
+
 const statusViews: Record<DailyReview["status"], { label: string; detail: string; dot: string; pill: string }> = {
   complete: { label: "完整", detail: "国内行情已完成双源交叉校验", dot: "bg-emerald-400 shadow-[0_0_10px_#34d399]", pill: "border-emerald-400/15 bg-emerald-400/[0.07] text-emerald-300" },
   partial: { label: "部分", detail: "部分数据待交叉校验，请查看来源与时间", dot: "bg-amber-400 shadow-[0_0_10px_#f59e0b]", pill: "border-amber-400/15 bg-amber-400/[0.07] text-amber-300" },
@@ -33,19 +47,65 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
 };
 
 export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
+  const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
+  const liveRequestInFlight = useRef(false);
   const statusView = statusViews[review.status];
-  const total = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
-  const maxBreadth = Math.max(1, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
+  const persistedTotal = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
+  const total = liveMarket?.breadth ?? persistedTotal;
+  const maxBreadth = Math.max(1, total.rising, total.falling, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
   const ladder = [
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
 
+  const refreshLiveBreadth = useCallback(async () => {
+    if (liveRequestInFlight.current) return;
+    liveRequestInFlight.current = true;
+    try {
+      const response = await fetch("/api/v1/market/live", { cache: "no-store" });
+      const payload = await response.json() as Partial<LiveMarketPayload> & { error?: string };
+      if (!response.ok || !payload.breadth || !payload.receivedAt) throw new Error(payload.error ?? payload.message ?? "实时市场数据更新失败");
+      setLiveMarket(payload as LiveMarketPayload);
+      setRefreshError("");
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "实时市场数据更新失败");
+    } finally {
+      liveRequestInFlight.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (shouldPoll({ visible: document.visibilityState === "visible", kind: "breadth", now: new Date() })) void refreshLiveBreadth();
+    };
+    refreshWhenVisible();
+    const interval = window.setInterval(refreshWhenVisible, BREADTH_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshLiveBreadth]);
+
   const refresh = async () => {
+    if (refreshing) return;
     setRefreshing(true);
-    try { await fetch("/api/v1/admin/jobs/close-review/run", { method: "POST" }); } finally { setTimeout(() => setRefreshing(false), 700); }
+    setRefreshError("");
+    try {
+      await refreshLiveBreadth();
+      const response = await fetch("/api/v1/admin/jobs/close-review/run", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "收盘复盘刷新失败");
+      router.refresh();
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "刷新失败，请稍后重试");
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   return (
@@ -75,15 +135,16 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           <button className="grid size-9 place-items-center rounded-full border border-white/10 lg:hidden" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={18} /></button>
           <div className="hidden items-center gap-2 text-sm text-white/40 sm:flex"><CalendarDays size={16} /><span>{review.date}</span><span className="mx-2 text-white/10">/</span><span>收盘复盘</span></div>
           <div className="ml-auto flex items-center gap-2">
+            <div className="hidden xl:block"><LiveDataStatus label="市场" source={liveMarket?.source ?? review.source} status={refreshError ? "failed" : liveMarket?.status ?? review.status} marketTime={liveMarket?.marketTime ?? null} receivedAt={liveMarket?.receivedAt ?? review.updatedAt} isStale={Boolean(refreshError) || (liveMarket?.isStale ?? review.status === "demo")} error={refreshError} /></div>
             <label className="hidden items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.035] px-4 py-2 text-xs text-white/35 md:flex"><Search size={14} /><input className="w-32 bg-transparent outline-none placeholder:text-white/25" placeholder="搜索指标或板块" /></label>
-            <button onClick={refresh} className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/65 transition hover:bg-white/[0.06]"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />刷新数据</button>
+            <button onClick={refresh} disabled={refreshing} title={refreshError || undefined} className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/65 transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />{refreshing ? "刷新中" : "刷新数据"}</button>
           </div>
         </header>
 
         <div className="dashboard-content">
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">更新时间 {review.updatedAt} · 数据来源 {review.source} · 统计范围：沪深京全 A，剔除 ST</p><p className="mt-2 text-[11px] text-white/25">状态口径：完整 / 部分 / 失败 / 演示</p></div>
+              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">更新时间 {liveMarket?.receivedAt ?? review.updatedAt} · 数据来源 {liveMarket?.source ?? review.source} · 统计范围：沪深京全 A，剔除 ST</p><p className="mt-2 text-[11px] text-white/25">状态口径：完整 / 部分 / 失败 / 演示{refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
               <div className={`rounded-full border px-4 py-2 text-xs ${statusView.pill}`}>{statusView.label} · {statusView.detail}</div>
             </div>
 
