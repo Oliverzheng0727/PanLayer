@@ -12,7 +12,7 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   const searchParams = new URL(request.url).searchParams;
   const section = searchParams.get("section");
   let sectionKeys: BriefSectionKey[] | undefined;
-  if (section) {
+  if (section !== null) {
     if (mapped.type !== "morning-brief") {
       return Response.json({ error: "section is only supported for morning-brief" }, { status: 400 });
     }

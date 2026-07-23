@@ -8,7 +8,7 @@ export interface LegacyBriefSource {
   id: string;
   title: string;
   url: string;
-  publishedAt: string;
+  publishedAt: string | null;
 }
 
 export interface LegacyBriefItem {

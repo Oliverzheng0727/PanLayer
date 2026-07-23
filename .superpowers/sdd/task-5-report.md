@@ -2,6 +2,11 @@
 
 Status: complete
 
+Review follow-up:
+
+- Query validation now treats `?section=` as a supplied section and returns HTTP 400; section parameters on non-morning jobs also return HTTP 400.
+- Legacy source publication times now remain nullable, so the dashboard V2-to-legacy adapter preserves an unavailable `publishedAt` value without fabricating one.
+
 Implemented behavior:
 
 - `GET /api/v1/brief/:date` returns the persisted V2 brief or `null`, with an explicit `unavailable` status and `demo: false`.
@@ -23,3 +28,4 @@ Verification:
 - `npm run lint` — passed.
 - `npm run test:render` — passed (production build plus 7 render tests).
 - `git diff --check` — passed.
+- `npx tsc --noEmit` — still reports pre-existing workspace type-environment failures (Cloudflare worker/D1 declarations, example route typing, and unrelated implicit-any issues); it no longer reports the dashboard V2 source assignment error.
