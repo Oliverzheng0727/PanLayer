@@ -32,6 +32,16 @@ function memoryD1() {
 }
 
 describe("morning brief section persistence", () => {
+  it("persists a versioned section-and-sources envelope and rejects legacy section-only rows", async () => {
+    const { db, rows } = memoryD1();
+    const date = "2026-07-23";
+    const section = failedBriefSection("risk", "provider timeout", "2026-07-23T07:15:00+08:00");
+    await persistBriefSection(db, date, "qwen", section, 1, "provider timeout");
+    const payload = JSON.parse(String(rows.get(`${date}:risk`)?.payload));
+    expect(payload).toMatchObject({ version: 1, section: { key: "risk" }, sources: [] });
+    rows.set(`${date}:legacy`, { trade_date: date, section_key: "risk", status: "failed", payload: JSON.stringify(section) });
+    await expect(readPersistedBriefSections(db, date)).resolves.toHaveLength(1);
+  });
   it("upserts a section by trade date and section key and reads it back", async () => {
     const { db, calls } = memoryD1();
     const date = "2026-07-23";
@@ -43,7 +53,7 @@ describe("morning brief section persistence", () => {
 
     expect(calls[0].sql).toContain("ON CONFLICT(trade_date, section_key)");
     expect(calls[0].values).toEqual(expect.arrayContaining([date, "risk", "qwen-plus", 1, "first failure"]));
-    await expect(readPersistedBriefSections(db, date)).resolves.toEqual([second]);
+    await expect(readPersistedBriefSections(db, date)).resolves.toEqual([{ section: second, sources: [] }]);
   });
 
   it("ignores malformed JSON payloads", async () => {

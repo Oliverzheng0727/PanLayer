@@ -13,10 +13,24 @@ export interface GeneratedBriefSection {
   sources: BriefSource[];
 }
 
+export interface MorningBriefMarketContext {
+  review: null | {
+    date: string;
+    status: "complete" | "partial" | "failed" | "demo";
+    closeBreadth: { rising: number; falling: number; flat: number } | null;
+    metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
+    ladder: { first: number; second: number; third: number; fourth: number; fivePlus: number };
+    sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number; maxStreak: number } }>;
+    leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; sector: string } }>;
+  };
+  etfs: Array<{ category: string; name: string; code: string }>;
+}
+
 export type BriefSectionGenerator = (input: {
   date: string;
   key: BriefSectionKey;
   globalSnapshot: ReconciledGlobalPoint[];
+  marketContext?: MorningBriefMarketContext;
 }) => Promise<GeneratedBriefSection>;
 
 export interface ProviderSectionInput {
@@ -24,6 +38,7 @@ export interface ProviderSectionInput {
   key: BriefSectionKey;
   apiKey: string;
   globalSnapshot: ReconciledGlobalPoint[];
+  marketContext?: MorningBriefMarketContext;
   fetcher?: typeof fetch;
   endpoint?: string;
 }
@@ -162,7 +177,7 @@ function snapshotBlocks(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPo
   });
 }
 
-function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], citationField: "sourceIds" | "sourceUrls" = "sourceIds"): string {
+function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, citationField: "sourceIds" | "sourceUrls" = "sourceIds"): string {
   const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
   return `生成 ${date} 北京时间 07:15 的A股隔夜早参模块。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。
@@ -174,7 +189,10 @@ function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: Re
 只做客观梳理。禁止推荐个股，禁止买卖、仓位、收益或保证性语言，也不要向读者下达投资行动指令。
 
 以下是服务端已校验的全球数值快照：${JSON.stringify(globalSnapshot)}
-指数、股票、汇率、利率和商品数值只能使用以上快照。不要输出 table 类型内容；服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
+指数、股票、汇率、利率和商品数值只能使用以上快照。不要在叙述中重复这些快照数字；不要输出 table 类型内容；服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
+
+${key === "mapping" || key === "risk" ? `以下为服务端裁剪的 marketContext（只含上一交易日复盘和最近 ETF 分类映射）：${JSON.stringify(marketContext ?? { review: null, etfs: [] })}
+主线/热点/龙头只能来自此上下文；每次使用都必须写明 ranking basis（排名依据）及其因素。若 review 或 ETF 映射不可用，必须明确写“上下文不可用”，不得从搜索结果推断主线、热点、龙头或 ETF 对应关系。` : ""}
 
 仅返回合法 JSON 对象，不要 Markdown 代码块，形状如下：
 {"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","${citationField}":[${citationField === "sourceIds" ? '"ref_1"' : '"https://example.com/cited-page"'}]}]}`;
@@ -299,11 +317,35 @@ function validateGeneratedSources(sources: BriefSource[]): void {
   if (errors.length > 0) throw new Error(`Brief section source validation failed: ${errors.join("; ")}`);
 }
 
+function normalizeSnapshotNumber(value: string): number | null {
+  const normalized = value.replace(/[,%％，,\s]/g, "").replace(/^\+/, "");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: ReconciledGlobalPoint[]): void {
+  const narrative = blocks.filter((block) => block.type !== "table").flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : []).join("\n");
+  for (const point of globalSnapshot) {
+    const allowed = [point.value, point.previousClose, point.pctChange].filter((value): value is number => value !== null);
+    if (allowed.length === 0 || !point.label) continue;
+    const escaped = point.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const mentions = narrative.matchAll(new RegExp(`${escaped}\\s*(?:报|收报|收于|前收(?:为)?|涨跌幅(?:为)?|数值(?:为)?|价格(?:为)?|点位(?:为)?|为|上涨|下跌|涨|跌)\\s*([+-]?\\d[\\d,.，]*%?)`, "g"));
+    for (const mention of mentions) {
+      const quoted = normalizeSnapshotNumber(mention[1]);
+      if (quoted === null) continue;
+      if (!allowed.some((value) => Math.abs(value - quoted) <= Math.max(1e-6, Math.abs(value) * 1e-6))) {
+        throw new Error(`快照数值与服务端表格不一致：${point.label}`);
+      }
+    }
+  }
+}
+
 function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
   const generatedAt = beijingTimestamp(new Date());
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
+  assertNarrativeSnapshotIntegrity(modelBlocks, globalSnapshot);
   const blocks = [...modelBlocks, ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
     ...parsed,
@@ -415,6 +457,7 @@ export async function generateQwenBriefSection({
   key,
   apiKey,
   globalSnapshot,
+  marketContext,
   fetcher = fetch,
   endpoint = DASHSCOPE_SECTION_GENERATION_URL,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
@@ -427,7 +470,7 @@ export async function generateQwenBriefSection({
       input: {
         messages: [
           { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
-          { role: "user", content: promptForSection(date, key, globalSnapshot) },
+          { role: "user", content: promptForSection(date, key, globalSnapshot, marketContext) },
         ],
       },
       parameters: {
@@ -461,6 +504,7 @@ export async function generateOpenAIBriefSection({
   key,
   apiKey,
   globalSnapshot,
+  marketContext,
   fetcher = fetch,
   endpoint = OPENAI_RESPONSES_URL,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
@@ -474,7 +518,7 @@ export async function generateOpenAIBriefSection({
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "required",
       include: ["web_search_call.action.sources"],
-      input: promptForSection(date, key, globalSnapshot, "sourceUrls"),
+      input: promptForSection(date, key, globalSnapshot, marketContext, "sourceUrls"),
       text: {
         verbosity: "high",
         format: { type: "json_schema", name: "panlayer_morning_brief_section", strict: true, schema: strictOpenAISectionSchema(key) },

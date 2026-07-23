@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, persistGlobalPoints, persistSourceAudits, releaseJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
@@ -27,6 +27,7 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
         bind(...bound: unknown[]) { values = bound; return this; },
         async first() {
           if (sql.startsWith("INSERT INTO job_runs")) return { id: nextJobRunId++ };
+          if (sql.includes("job_leases")) return { token: String(values[2]) };
           return null;
         },
         async all() { return { results: [] }; },
@@ -69,6 +70,36 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
 }
 
 describe("close review aggregation", () => {
+  it("keeps an active morning lease through a stale release so an overlap cannot take its writes", async () => {
+    let lease: { token: string; expiresAt: string } | null = null;
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() {
+            if (!sql.includes("job_leases")) return null;
+            const [,, token,, expiresAt, now] = values as string[];
+            if (lease && lease.expiresAt > now) return null;
+            lease = { token, expiresAt };
+            return { token };
+          },
+          async run() {
+            if (sql.startsWith("DELETE") && lease?.token === values[2]) lease = null;
+            return {};
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const first = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:00:00Z"));
+    const overlapping = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:01:00Z"));
+
+    expect(first).toBeTruthy();
+    expect(overlapping).toBeNull();
+    await releaseJobLease(db, "morning-brief", "2026-07-23", "stale-token");
+    expect(lease?.token).toBe(first);
+  });
+
   it("loads the persisted security universe for provider fallback", async () => {
     const loadExpectedSymbols = (runnerModule as unknown as {
       loadExpectedSymbols?: (db: D1Database) => Promise<string[]>;

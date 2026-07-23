@@ -22,7 +22,7 @@ function SourceChip({ source }: { source: BriefSource }) {
   return (
     <a className="brief-source-chip" href={source.url} target="_blank" rel="noreferrer" aria-label={`打开来源：${source.title}`}>
       <span><ArrowUpRight size={11} />{source.title}</span>
-      <small><Clock3 size={10} />{source.publishedAt ?? "发布时间未提供"}</small>
+      <small><Clock3 size={10} />{source.publishedAt ?? "发布时间未公开"} · 接收时间（北京时间）{formatBeijingTime(source.retrievedAt)}</small>
     </a>
   );
 }

@@ -144,10 +144,13 @@ export async function persistBriefSection(
   result: BriefSection,
   attempts: number,
   error: string,
+  sources: BriefSource[] = [],
 ): Promise<void> {
-  assertValidSection(result, new Set(result.sourceIds));
+  const sourceIds = new Set(sources.map((source) => source.id));
+  assertValidSection(result, sourceIds);
+  const payload = { version: 1, section: result, sources };
   await db.prepare(`INSERT INTO morning_brief_sections (trade_date, section_key, model, payload, status, attempts, error, generated_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, section_key) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, attempts=excluded.attempts, error=excluded.error, generated_at=excluded.generated_at, updated_at=excluded.updated_at`)
-    .bind(date, result.key, model, JSON.stringify(result), result.status, attempts, error, result.generatedAt, new Date().toISOString())
+    .bind(date, result.key, model, JSON.stringify(payload), result.status, attempts, error, result.generatedAt, new Date().toISOString())
     .run();
 }
 
@@ -166,7 +169,27 @@ export function isValidPersistedMorningBrief(value: unknown): value is MorningBr
   return validateMorningBrief(brief as MorningBrief).ok;
 }
 
-export async function readPersistedBriefSections(db: D1Database, date: string): Promise<BriefSection[]> {
+function isSourceDirectory(value: unknown): value is BriefSource[] {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  return value.every((source) => {
+    if (!source || typeof source !== "object") return false;
+    const item = source as BriefSource;
+    if (typeof item.id !== "string" || !item.id || ids.has(item.id) || typeof item.title !== "string" || !item.title || typeof item.url !== "string" || typeof item.retrievedAt !== "string" || !item.retrievedAt.endsWith("+08:00") || Number.isNaN(Date.parse(item.retrievedAt)) || (item.publishedAt !== null && (typeof item.publishedAt !== "string" || Number.isNaN(Date.parse(item.publishedAt))))) return false;
+    try { const url = new URL(item.url); if (url.protocol !== "https:" && url.protocol !== "http:") return false; } catch { return false; }
+    ids.add(item.id);
+    return true;
+  });
+}
+
+function isPersistedEnvelope(value: unknown): value is { version: 1; section: BriefSection; sources: BriefSource[] } {
+  if (!value || typeof value !== "object") return false;
+  const envelope = value as { version?: unknown; section?: unknown; sources?: unknown };
+  return envelope.version === 1 && isBriefSection(envelope.section) && isSourceDirectory(envelope.sources)
+    && validateBriefSection(envelope.section, new Set(envelope.sources.map((source) => source.id))).ok;
+}
+
+export async function readPersistedBriefSections(db: D1Database, date: string): Promise<GeneratedBriefSection[]> {
   const result = await db.prepare("SELECT section_key, payload, status FROM morning_brief_sections WHERE trade_date = ? ORDER BY section_key")
     .bind(date)
     .all<{ section_key: BriefSectionKey; payload: string; status: BriefStatus }>();
@@ -174,11 +197,11 @@ export async function readPersistedBriefSections(db: D1Database, date: string): 
 
   return (result.results ?? []).flatMap((row) => {
     try {
-      const section = JSON.parse(row.payload) as unknown;
-      if (!isBriefSection(section) || section.key !== row.section_key || section.status !== row.status) return [];
-      return [section];
+      const envelope = JSON.parse(row.payload) as unknown;
+      if (!isPersistedEnvelope(envelope) || envelope.section.key !== row.section_key || envelope.section.status !== row.status) return [];
+      return [{ section: envelope.section, sources: envelope.sources }];
     } catch {
       return [];
     }
-  }).sort((left, right) => (order.get(left.key) ?? Infinity) - (order.get(right.key) ?? Infinity));
+  }).sort((left, right) => (order.get(left.section.key) ?? Infinity) - (order.get(right.section.key) ?? Infinity));
 }

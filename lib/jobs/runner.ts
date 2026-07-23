@@ -1,17 +1,12 @@
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
-import {
-  assembleMorningBrief,
-  failedBriefSection,
-  isValidPersistedMorningBrief,
-  persistBriefSection,
-  readPersistedBriefSections,
-} from "../ai/morning-brief-assembly";
+import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
   QWEN_BRIEF_SECTION_MODEL,
   type BriefSectionGenerator,
   type GeneratedBriefSection,
+  type MorningBriefMarketContext,
 } from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
@@ -24,6 +19,7 @@ import { fetchTencentQuotes } from "../data/tencent";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
+const MORNING_BRIEF_LEASE_MS = 15 * 60 * 1_000;
 
 export interface PanLayerEnv {
   DB?: D1Database;
@@ -53,6 +49,24 @@ export function shouldSkipMorningBrief(existingStatus: string | null | undefined
   return existingStatus === "complete" && !force;
 }
 
+export async function acquireJobLease(db: D1Database, job: string, tradeDate: string, now = new Date()): Promise<string | null> {
+  const token = crypto.randomUUID();
+  const acquiredAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + MORNING_BRIEF_LEASE_MS).toISOString();
+  const row = await db.prepare(`INSERT INTO job_leases (job, trade_date, token, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job, trade_date) DO UPDATE SET token=excluded.token, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at WHERE job_leases.expires_at <= ? RETURNING token`)
+    .bind(job, tradeDate, token, acquiredAt, expiresAt, acquiredAt).first<{ token: string }>();
+  return row?.token === token ? token : null;
+}
+
+export async function releaseJobLease(db: D1Database, job: string, tradeDate: string, token: string): Promise<void> {
+  await db.prepare("DELETE FROM job_leases WHERE job = ? AND trade_date = ? AND token = ?").bind(job, tradeDate, token).run();
+}
+
+export async function failedOrMissingBriefSectionKeys(db: D1Database, date: string): Promise<BriefSectionKey[]> {
+  const persisted = new Map((await readPersistedBriefSections(db, date)).map((item) => [item.section.key, item.section.status]));
+  return BRIEF_SECTION_DEFINITIONS.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
+}
+
 type RejectedSection = { key: BriefSectionKey; error: string };
 type SectionRunResult = GeneratedBriefSection | RejectedSection;
 
@@ -64,27 +78,27 @@ function isGeneratedSection(result: SectionRunResult): result is GeneratedBriefS
   return "section" in result;
 }
 
-async function readStoredMorningBrief(db: D1Database, date: string): Promise<MorningBrief | null> {
+export async function loadMorningBriefMarketContext(db: D1Database, date: string): Promise<MorningBriefMarketContext> {
+  const fallback: MorningBriefMarketContext = { review: null, etfs: [] };
   try {
-    const row = await db.prepare("SELECT payload FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ payload: string }>();
-    if (!row) return null;
-    const parsed = JSON.parse(row.payload) as unknown;
-    return isValidPersistedMorningBrief(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function storedSectionResult(brief: MorningBrief, key: BriefSectionKey): GeneratedBriefSection | RejectedSection | null {
-  const section = brief.sections.find((item) => item.key === key);
-  if (!section) return null;
-  if (section.status !== "complete") {
-    const failure = section.blocks.find((block) => block.type === "callout");
-    return { key, error: failure?.text ?? "模块上次生成失败" };
-  }
-  const sourceIds = new Set(section.sourceIds);
-  const sources = brief.sources.filter((source) => sourceIds.has(source.id));
-  return sources.length > 0 ? { section, sources } : { key, error: "已存模块缺少可用来源" };
+    const reviewRow = await db.prepare("SELECT trade_date, payload, status FROM daily_reviews WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1").bind(date).first<{ trade_date: string; payload: string; status: DailyReview["status"] }>().catch(() => null);
+    const etfResult = await db.prepare("SELECT category, name, symbol FROM etf_snapshots WHERE trade_date = (SELECT MAX(trade_date) FROM etf_snapshots WHERE trade_date < ?) ORDER BY category, symbol LIMIT 120").bind(date).all<{ category: string; name: string; symbol: string }>().catch(() => ({ results: [] }));
+    let review: MorningBriefMarketContext["review"] = null;
+    if (reviewRow?.payload) {
+      const parsed = JSON.parse(reviewRow.payload) as DailyReview;
+      const closeBreadth = parsed.breadth?.at(-1);
+      if (parsed && typeof parsed.date === "string" && Array.isArray(parsed.sectors) && Array.isArray(parsed.leaders) && parsed.metrics && parsed.ladder) {
+        review = {
+          date: parsed.date, status: parsed.status, closeBreadth: closeBreadth ? { rising: closeBreadth.rising, falling: closeBreadth.falling, flat: closeBreadth.flat } : null,
+          metrics: { ...parsed.metrics },
+          ladder: { first: parsed.ladder.first.length, second: parsed.ladder.second.length, third: parsed.ladder.third.length, fourth: parsed.ladder.fourth.length, fivePlus: parsed.ladder.fivePlus.length },
+          sectors: parsed.sectors.slice(0, 20).map((item) => ({ name: item.name, factors: { limitUpCount: item.limitUpCount, averagePct: item.averagePct, amountGrowthPct: item.amountGrowthPct, maxStreak: item.maxStreak } })),
+          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, sector: item.sector } })),
+        };
+      }
+    }
+    return { review, etfs: (etfResult.results ?? []).flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []) };
+  } catch { return fallback; }
 }
 
 export async function generateFullMorningBrief(input: {
@@ -96,13 +110,13 @@ export async function generateFullMorningBrief(input: {
   concurrency?: number;
   retries?: number;
   globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
+  marketContext?: MorningBriefMarketContext;
 }): Promise<MorningBrief> {
   const requestedKeys = input.sectionKeys;
   if (new Set(requestedKeys).size !== requestedKeys.length) throw new Error("Duplicate brief section keys are not allowed");
   const globalSnapshot = input.globalSnapshot ?? (await loadGlobalOvernightSnapshot({}, fetch)).reconciled;
-  const existingBrief = await readStoredMorningBrief(input.db, input.date);
-  const persistedSections = existingBrief ? [] : await readPersistedBriefSections(input.db, input.date);
-  const persistedByKey = new Map(persistedSections.map((section) => [section.key, section]));
+  const persistedSections = await readPersistedBriefSections(input.db, input.date);
+  const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
   const results: SectionRunResult[] = Array(requestedKeys.length);
   const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
   const workerCount = Math.min(2, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
@@ -114,8 +128,8 @@ export async function generateFullMorningBrief(input: {
     while (attempts < maxAttempts) {
       attempts += 1;
       try {
-        const result = await input.generator({ date: input.date, key, globalSnapshot });
-        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "");
+        const result = await input.generator({ date: input.date, key, globalSnapshot, marketContext: input.marketContext });
+        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources);
         return result;
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
@@ -138,11 +152,9 @@ export async function generateFullMorningBrief(input: {
   const assembled = assembleMorningBrief(input.date, BRIEF_SECTION_DEFINITIONS.map(({ key }) => {
     const generated = generatedByKey.get(key);
     if (generated) return generated;
-    const stored = existingBrief ? storedSectionResult(existingBrief, key) : null;
-    if (stored) return stored;
     const persisted = persistedByKey.get(key);
-    if (persisted?.status !== "complete") return { key, error: "模块尚未生成" };
-    return { key, error: "已存模块缺少完整来源目录" };
+    if (persisted) return persisted;
+    return { key, error: "模块尚未生成" };
   }), beijingTimestamp());
   await input.db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`)
     .bind(input.date, input.model, JSON.stringify(assembled), assembled.status, new Date().toISOString())
@@ -213,6 +225,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS daily_reviews (trade_date TEXT PRIMARY KEY, payload TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS morning_briefs (trade_date TEXT PRIMARY KEY, model TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS morning_brief_sections (trade_date TEXT NOT NULL, section_key TEXT NOT NULL, model TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', generated_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (trade_date, section_key))`,
+  `CREATE TABLE IF NOT EXISTS job_leases (job TEXT NOT NULL, trade_date TEXT NOT NULL, token TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (job, trade_date))`,
   `CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, trade_date TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS new_high_details (trade_date TEXT NOT NULL, type TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL, sector TEXT NOT NULL, pct_change REAL NOT NULL, close REAL NOT NULL, high_price REAL NOT NULL, amount REAL NOT NULL, interval_pct REAL NOT NULL, high_date TEXT NOT NULL, is_all_time INTEGER NOT NULL, PRIMARY KEY (trade_date, type, symbol))`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
@@ -247,12 +260,14 @@ export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
   env: PanLayerEnv,
-  options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[] } = {},
+  options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[]; mode?: "failed" } = {},
 ): Promise<{ ok: boolean; message: string }> {
   if (!env.DB) throw new Error("DB binding is unavailable");
   const db = env.DB;
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
+  const leaseToken = job.type === "morning-brief" ? await acquireJobLease(db, "morning-brief", date) : null;
+  if (job.type === "morning-brief" && !leaseToken) return { ok: false, message: "morning-brief already running" };
   const startedAt = new Date().toISOString();
   const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
   const run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
@@ -297,23 +312,29 @@ export async function runPanLayerJob(
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), market.source, review.status, new Date().toISOString()).run();
     } else {
       const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
-      if (shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
+      if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
         await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
         return { ok: true, message: `${label} already complete; skipped` };
       }
-      const global = await loadGlobalOvernightSnapshot(env, fetcher);
+      const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key);
+      if (selectedKeys.length === 0) {
+        await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
+        return { ok: true, message: `${label} no failed or missing modules; skipped` };
+      }
+      const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, fetcher), loadMorningBriefMarketContext(db, date)]);
       await persistGlobalPoints(db, date, global.raw);
       const ai = resolveMorningBriefProvider(env);
       const generator: BriefSectionGenerator = ai.provider === "qwen"
-        ? ({ date: sectionDate, key, globalSnapshot }) => generateQwenBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot })
-        : ({ date: sectionDate, key, globalSnapshot }) => generateOpenAIBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot });
+        ? ({ date: sectionDate, key, globalSnapshot, marketContext: sectionContext }) => generateQwenBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext })
+        : ({ date: sectionDate, key, globalSnapshot, marketContext: sectionContext }) => generateOpenAIBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext });
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,
-        sectionKeys: options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key),
+        sectionKeys: selectedKeys,
         generator,
         db,
         globalSnapshot: global.reconciled,
+        marketContext,
       });
       finalStatus = brief.status;
       const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);
@@ -325,6 +346,8 @@ export async function runPanLayerJob(
     const message = error instanceof Error ? error.message : String(error);
     await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run?.id).run();
     throw error;
+  } finally {
+    if (leaseToken) await releaseJobLease(db, "morning-brief", date, leaseToken);
   }
 }
 

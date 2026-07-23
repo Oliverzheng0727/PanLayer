@@ -48,6 +48,8 @@ button, input { font: inherit; }
 .brief-card { display:flex; min-height:280px; flex-direction:column; border:1px solid rgba(255,255,255,.06); border-radius:20px; background:rgba(255,255,255,.022); padding:22px; color:inherit; text-align:left; transition:border-color .2s ease,background .2s ease,transform .2s ease; }
 .brief-card:hover { border-color:rgba(232,112,42,.24); background:rgba(255,255,255,.035); transform:translateY(-2px); }
 .brief-card:focus-visible { outline:2px solid rgba(232,112,42,.7); outline-offset:3px; }
+.brief-card-open { display:flex; min-height:0; flex:1; flex-direction:column; border:0; padding:0; color:inherit; background:transparent; text-align:left; cursor:pointer; }
+.brief-card-open:focus-visible { outline:2px solid rgba(232,112,42,.7); outline-offset:3px; }
 .brief-card-top { display:flex; align-items:center; gap:9px; margin-bottom:18px; color:#e8702a; font-size:10px; font-weight:600; letter-spacing:.16em; }
 .brief-card-top svg { margin-left:auto; color:rgba(255,255,255,.2); }
 .brief-card-status { border:1px solid rgba(255,255,255,.1); border-radius:999px; padding:3px 6px; color:rgba(255,255,255,.4); font-size:8px; letter-spacing:0; }

@@ -60,4 +60,14 @@ describe("full morning brief reader", () => {
     expect(button).toContain("window.location.reload()");
     expect(button).not.toMatch(/API_KEY|apiKey|secret/i);
   });
+
+  it("offers failed-only and per-card retry affordances and labels unavailable publication times honestly", async () => {
+    const [dashboard, renderer] = await Promise.all([
+      read("app/components/Dashboard.tsx"), read("app/components/brief/BriefBlockRenderer.tsx"),
+    ]);
+    expect(dashboard).toContain("仅重试失败模块");
+    expect(dashboard).toContain("section={section.key}");
+    expect(renderer).toContain("发布时间未公开");
+    expect(renderer).toContain("接收时间（北京时间）");
+  });
 });

@@ -16,4 +16,12 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toContain("if (section !== null)");
     expect(adminRouteSource).toMatch(/mapped\.type !== "morning-brief"[\s\S]*status:\s*400/);
   });
+
+  it("supports failed-only retries but rejects conflicting and unknown modes", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+
+    expect(adminRouteSource).toContain('mode === "failed"');
+    expect(adminRouteSource).toMatch(/mode.*section[\s\S]*status:\s*400/);
+    expect(adminRouteSource).toMatch(/unknown brief mode[\s\S]*status:\s*400/);
+  });
 });

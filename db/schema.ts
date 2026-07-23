@@ -48,6 +48,14 @@ export const morningBriefSections = sqliteTable("morning_brief_sections", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.sectionKey] })]);
 
+export const jobLeases = sqliteTable("job_leases", {
+  job: text("job").notNull(),
+  tradeDate: text("trade_date").notNull(),
+  token: text("token").notNull(),
+  acquiredAt: text("acquired_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.job, table.tradeDate] })]);
+
 export const etfSnapshots = sqliteTable("etf_snapshots", {
   tradeDate: text("trade_date").notNull(),
   symbol: text("symbol").notNull(),
