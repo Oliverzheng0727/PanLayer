@@ -904,12 +904,29 @@ function requestTimeoutMs(provider: "Qwen" | "OpenAI", deadlineAt?: number): num
   return Math.min(PROVIDER_REQUEST_TIMEOUT_MS, remaining);
 }
 
-async function fetchWithTimeout(fetcher: typeof fetch, endpoint: string, init: RequestInit, provider: "Qwen" | "OpenAI", deadlineAt?: number): Promise<Response> {
+async function fetchJsonWithDeadline(fetcher: typeof fetch, endpoint: string, init: RequestInit, provider: "Qwen" | "OpenAI", deadlineAt?: number): Promise<{ response: Response; payload: unknown }> {
   const timeoutMs = requestTimeoutMs(provider, deadlineAt);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetcher(endpoint, { ...init, signal: controller.signal });
+    const response = await fetcher(endpoint, { ...init, signal: controller.signal });
+    const payload = await new Promise<unknown>((resolve, reject) => {
+      let settled = false;
+      const settle = (callback: (value: unknown) => void, value: unknown) => {
+        if (settled) return;
+        settled = true;
+        controller.signal.removeEventListener("abort", onAbort);
+        callback(value);
+      };
+      const onAbort = () => {
+        void response.body?.cancel().catch(() => undefined);
+        settle(reject, new Error("response body read aborted"));
+      };
+      if (controller.signal.aborted) return onAbort();
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      void response.json().then((value) => settle(resolve, value), (error) => settle(reject, error));
+    });
+    return { response, payload };
   } catch (error) {
     if (controller.signal.aborted) throw new Error(`${provider} request timed out after ${timeoutMs}ms`);
     throw error;
@@ -919,7 +936,7 @@ async function fetchWithTimeout(fetcher: typeof fetch, endpoint: string, init: R
 }
 
 async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, apiKey: string, prompt: string, deadlineAt?: number): Promise<unknown> {
-  const response = await fetchWithTimeout(fetcher, endpoint, {
+  const { response, payload } = await fetchJsonWithDeadline(fetcher, endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -948,7 +965,6 @@ async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, ap
       },
     }),
   }, "Qwen", deadlineAt);
-  const payload: unknown = await response.json();
   if (!response.ok) {
     const detail = isRecord(payload) && (typeof payload.message === "string" || typeof payload.code === "string")
       ? (payload.message ?? payload.code)
@@ -1099,7 +1115,7 @@ export async function generateOpenAIBriefSection({
   deadlineAt,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const response = await fetchWithTimeout(fetcher, endpoint, {
+  const { response, payload } = await fetchJsonWithDeadline(fetcher, endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -1115,7 +1131,6 @@ export async function generateOpenAIBriefSection({
       },
     }),
   }, "OpenAI", deadlineAt);
-  const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
   const parsed = parseSection(openAIText(payload), key, "sourceUrls");
   const sources = sourcesFromOpenAI(key, parsed, payload);

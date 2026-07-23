@@ -736,6 +736,38 @@ describe("independent morning-brief section providers", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("keeps Qwen's deadline active while a response body never finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: typeof fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"output":')); },
+      }), { headers: { "content-type": "application/json" } });
+      const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+      const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
+
+      await vi.advanceTimersByTimeAsync(18_000);
+
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps OpenAI's deadline active while a response body never finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: typeof fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"output":')); },
+      }), { headers: { "content-type": "application/json" } });
+      const pending = generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+      const rejected = expect(pending).rejects.toThrow(/OpenAI request timed out/);
+
+      await vi.advanceTimersByTimeAsync(18_000);
+
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
     let request: { model?: string; reasoning?: unknown; tools?: unknown[]; tool_choice?: unknown; text?: { verbosity?: string; format?: Record<string, unknown> }; input?: string } = {};
     const calls: string[] = [];
