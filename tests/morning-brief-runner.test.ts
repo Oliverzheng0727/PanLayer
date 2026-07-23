@@ -103,7 +103,7 @@ describe("full morning brief runner", () => {
       return generated(key);
     };
 
-    await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db });
+    await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db, retries: 2 });
 
     expect(attempts).toBe(3);
     expect(sections.get(`${DATE}:risk`)).toMatchObject({ status: "complete", attempts: 3, error: "" });

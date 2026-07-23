@@ -104,7 +104,7 @@ export async function generateFullMorningBrief(input: {
   const persistedSections = existingBrief ? [] : await readPersistedBriefSections(input.db, input.date);
   const persistedByKey = new Map(persistedSections.map((section) => [section.key, section]));
   const results: SectionRunResult[] = Array(requestedKeys.length);
-  const maxAttempts = Math.min(3, Math.max(1, input.retries ?? 3));
+  const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
   const workerCount = Math.min(2, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
   let cursor = 0;
 

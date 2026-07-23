@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { describe, expect, it, vi } from "vitest";
+import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
+import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
+
+vi.mock("../lib/data/global/overnight", () => ({
+  loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
+}));
 
 const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
   symbol, name: symbol, exchange: "SH", board: "MAIN", isST: false, isNoLimitDay: false,
@@ -11,6 +16,57 @@ const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
   limitUpPrice: 11, limitDownPrice: 9, sector: streak ? "机器人" : "银行",
   firstLimitTime: streak ? "09:35:00" : null, limitStreak: streak,
 });
+
+function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
+  const jobUpdates: Array<{ status: string; message: string }> = [];
+  let nextJobRunId = 1;
+  const db = {
+    prepare(sql: string) {
+      let values: unknown[] = [];
+      return {
+        bind(...bound: unknown[]) { values = bound; return this; },
+        async first() {
+          if (sql.startsWith("INSERT INTO job_runs")) return { id: nextJobRunId++ };
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() {
+          if (sql.startsWith("UPDATE job_runs")) {
+            jobUpdates.push({ status: String(values[0]), message: String(values[1] ?? "") });
+          }
+          return {};
+        },
+      };
+    },
+    async batch() { return []; },
+  } as unknown as D1Database;
+  const fetcher: typeof fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+    const prompt = request.input.messages[1].content;
+    const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
+    if (!definition || failedKeys.includes(definition.key)) {
+      return new Response(JSON.stringify({ message: "provider unavailable" }), { status: 503 });
+    }
+    const section = {
+      key: definition.key,
+      title: definition.title,
+      summary: "已核验的隔夜市场信息摘要。",
+      tags: ["市场"],
+      blocks: [{
+        type: "paragraph",
+        text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(100)}`,
+        sourceIds: ["ref_1"],
+      }],
+    };
+    return new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(section) } }],
+        search_info: { search_results: [{ index: 1, title: "可靠来源", url: `https://example.com/${definition.key}` }] },
+      },
+    }), { status: 200 });
+  };
+  return { db, fetcher, jobUpdates };
+}
 
 describe("close review aggregation", () => {
   it("loads the persisted security universe for provider fallback", async () => {
@@ -103,5 +159,24 @@ describe("close review aggregation", () => {
       marginBalance: null, high120: null, allTimeHigh: null, source: "东方财富",
     });
     expect(review.breadth).toEqual([{ time: "15:00", rising: 1, falling: 1, flat: 1 }]);
+  });
+
+  it("persists a partial morning job run and names its failed module", async () => {
+    const { db, fetcher, jobUpdates } = morningBriefJobHarness(["mapping"]);
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
+      .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
+
+    expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "failed modules: mapping" });
+  });
+
+  it("persists a failed morning job run and names every failed module", async () => {
+    const failedKeys = BRIEF_SECTION_DEFINITIONS.map((item) => item.key);
+    const { db, fetcher, jobUpdates } = morningBriefJobHarness(failedKeys);
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
+      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
+
+    expect(jobUpdates.at(-1)).toEqual({ status: "failed", message: `failed modules: ${failedKeys.join(", ")}` });
   });
 });
