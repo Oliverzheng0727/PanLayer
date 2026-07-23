@@ -106,7 +106,7 @@ describe("independent morning-brief section providers", () => {
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(validBlocks), globalSnapshot: [] });
     expect(result.section.blocks[0]).toEqual({ type: "heading", text: "隔夜市场概览" });
 
-    for (const invalid of ["这是一句无引用事实。", "包含来源[ref_1]", "标题\n换行", "2026年市场概览", " "]) {
+    for (const invalid of ["这是一句无引用事实。", "美股大幅下跌", "美联储宣布加息", "包含来源[ref_1]", "标题\n换行", "2026年市场概览", " "]) {
       await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider([invalid, validBlocks[1]]), globalSnapshot: [] })).rejects.toThrow(/invalid block 1/);
     }
   });

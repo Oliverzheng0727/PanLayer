@@ -276,12 +276,32 @@ function blockText(block: Record<string, unknown>, fields: string[]): string | n
   return null;
 }
 
+const QWEN_BARE_STRING_HEADINGS = new Set([
+  "隔夜市场概览",
+  "全球外围市场",
+  "美股与半导体",
+  "中概股与富时A50",
+  "汇率与利率",
+  "原油黄金与工业金属",
+  "大宗商品",
+  "海外地缘与政策",
+  "全球产业催化",
+  "科技与产业动态",
+  "国内隔夜要闻",
+  "宏观政策与流动性",
+  "板块利好与利空",
+  "内需映射",
+  "盘前情绪",
+  "观察方向",
+  "关键风险",
+]);
+
 function qwenBareStringHeading(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
   if (text.length < 1 || text.length > 40 || /[。！？；\n\r]/.test(text) || /\[ref_\d+\]/.test(text) || /\d/.test(text)) return null;
   if (/^(?:[-*•]|[一二三四五六七八九十]+[、.．)）]|\d+[、.．)）])/.test(text)) return null;
-  return text;
+  return QWEN_BARE_STRING_HEADINGS.has(text) ? text : null;
 }
 
 function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"): BriefBlock[] {
