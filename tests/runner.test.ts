@@ -454,7 +454,170 @@ describe("close review aggregation", () => {
     expect(requests.mapping).toBe(1);
   });
 
-  it("retries an explicit single Qwen module once with its coverage diagnostic", async () => {
+  it("does not call Firecrawl when the first Qwen generation succeeds", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        return Response.json({ success: true, data: { news: [] } });
+      }
+      calls.qwen += 1;
+      return qwenResponse("risk");
+    };
+
+    await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
+  });
+
+  it("calls Firecrawl once and performs one search-disabled Qwen correction after failure", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const qwenBodies: Array<{ parameters: { enable_search: boolean }; input: { messages: Array<{ content: string }> } }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer firecrawl-secret");
+        return Response.json({
+          success: true,
+          data: {
+            news: [{
+              title: "Risk source",
+              url: "https://example.com/risk-source",
+              markdown: "Verified risk context. ".repeat(40),
+            }],
+          },
+        });
+      }
+      calls.qwen += 1;
+      const body = JSON.parse(String(init?.body)) as typeof qwenBodies[number];
+      qwenBodies.push(body);
+      if (calls.qwen === 1) return Response.json({ message: "provider unavailable" }, { status: 503 });
+      const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === "risk")!;
+      return Response.json({
+        output: {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                key: definition.key,
+                title: definition.title,
+                summary: "已核验的风险摘要。",
+                tags: ["市场"],
+                blocks: [{
+                  type: "paragraph",
+                  text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`,
+                  sourceIds: ["firecrawl_risk_1"],
+                }],
+              }),
+            },
+          }],
+        },
+      });
+    };
+
+    const result = await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl-secret",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
+    expect(qwenBodies[0].parameters.enable_search).toBe(true);
+    expect(qwenBodies[1].parameters.enable_search).toBe(false);
+    expect(qwenBodies[1].input.messages[1].content).toContain("firecrawl_risk_1");
+  });
+
+  it("uses Firecrawl at most once when the correction also fails", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        return Response.json({
+          success: true,
+          data: {
+            news: [{
+              title: "Risk source",
+              url: "https://example.com/risk-source",
+              markdown: "Verified risk context. ".repeat(40),
+            }],
+          },
+        });
+      }
+      calls.qwen += 1;
+      return Response.json({ message: "provider unavailable" }, { status: 503 });
+    };
+
+    await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
+  });
+
+  it("skips Firecrawl when fewer than 40 seconds remain in the batch budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(now);
+      const { db } = morningBriefJobHarness([]);
+      const calls = { qwen: 0, firecrawl: 0 };
+      const fetcher: typeof fetch = async (input) => {
+        if (String(input).includes("firecrawl.example")) {
+          calls.firecrawl += 1;
+          return Response.json({ success: true, data: { news: [] } });
+        }
+        calls.qwen += 1;
+        vi.setSystemTime(new Date(now.getTime() + 71_000));
+        return Response.json({ message: "provider unavailable" }, { status: 503 });
+      };
+
+      await runPanLayerJob(
+        { type: "morning-brief" },
+        now,
+        {
+          DB: db,
+          DASHSCOPE_API_KEY: "qwen",
+          FIRECRAWL_API_KEY: "firecrawl",
+          FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+        },
+        { fetcher, sectionKeys: ["risk"] },
+      );
+
+      expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not perform a redundant outer retry for an explicit Qwen module", async () => {
     const { db } = morningBriefJobHarness([]);
     const requests: string[] = [];
     let calls = 0;
@@ -478,11 +641,10 @@ describe("close review aggregation", () => {
     };
 
     await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] }))
-      .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
+      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
 
-    expect(calls).toBe(2);
-    expect(requests[1]).toContain("第 2 次生成必须修正上一轮问题");
-    expect(requests[1]).toContain("缺少关键");
+    expect(calls).toBe(1);
+    expect(requests).toHaveLength(1);
   });
 
   it("persists a failed morning job run and names every failed module", async () => {

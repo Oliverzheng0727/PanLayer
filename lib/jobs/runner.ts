@@ -1,6 +1,7 @@
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
+import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
 import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
@@ -25,6 +26,7 @@ export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
 export const MORNING_BRIEF_BATCH_DEADLINE_MS = 110 * 1_000;
 const GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS = 8 * 1_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
+const FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS = 40 * 1_000;
 export interface MorningBriefLease {
   token: string;
   renew: () => Promise<boolean>;
@@ -41,6 +43,8 @@ export interface PanLayerEnv {
   DB?: D1Database;
   DASHSCOPE_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  FIRECRAWL_API_KEY?: string;
+  FIRECRAWL_API_URL?: string;
   TWELVE_DATA_API_KEY?: string;
   ALPHA_VANTAGE_API_KEY?: string;
   FRED_API_KEY?: string;
@@ -63,6 +67,63 @@ export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_AP
 
 export function shouldSkipMorningBrief(existingStatus: string | null | undefined, force: boolean): boolean {
   return existingStatus === "complete" && !force;
+}
+
+function createQwenBriefGenerator(input: {
+  apiKey: string;
+  firecrawlApiKey?: string;
+  firecrawlEndpoint?: string;
+  fetcher: typeof fetch;
+}): BriefSectionGenerator {
+  const fallbackUsed = new Set<BriefSectionKey>();
+  return async (sectionInput) => {
+    try {
+      return await generateQwenBriefSection({
+        ...sectionInput,
+        apiKey: input.apiKey,
+        fetcher: input.fetcher,
+      });
+    } catch (primaryError) {
+      const remaining = sectionInput.deadlineAt === undefined
+        ? Number.POSITIVE_INFINITY
+        : sectionInput.deadlineAt - Date.now();
+      if (!input.firecrawlApiKey
+        || fallbackUsed.has(sectionInput.key)
+        || remaining < FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS) {
+        throw primaryError;
+      }
+      fallbackUsed.add(sectionInput.key);
+      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
+      let externalSources;
+      try {
+        externalSources = await searchFirecrawlBriefSources({
+          date: sectionInput.date,
+          key: sectionInput.key,
+          apiKey: input.firecrawlApiKey,
+          endpoint: input.firecrawlEndpoint,
+          fetcher: input.fetcher,
+          deadlineAt: sectionInput.deadlineAt,
+        });
+      } catch (fallbackSearchError) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackSearchError)}`);
+      }
+      if (externalSources.length === 0) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback returned no usable sources`);
+      }
+      try {
+        return await generateQwenBriefSection({
+          ...sectionInput,
+          attempt: Math.max(sectionInput.attempt, 2),
+          previousError: primaryDiagnostic,
+          apiKey: input.apiKey,
+          fetcher: input.fetcher,
+          externalSources,
+        });
+      } catch (fallbackGenerationError) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackGenerationError)}`);
+      }
+    }
+  };
 }
 
 export async function acquireJobLease(db: D1Database, job: string, tradeDate: string, now = new Date()): Promise<string | null> {
@@ -434,7 +495,12 @@ export async function runPanLayerJob(
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
       const generator: BriefSectionGenerator = ai.provider === "qwen"
-        ? ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateQwenBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline })
+        ? createQwenBriefGenerator({
+          apiKey: ai.apiKey,
+          firecrawlApiKey: env.FIRECRAWL_API_KEY,
+          firecrawlEndpoint: env.FIRECRAWL_API_URL,
+          fetcher,
+        })
         : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
       const brief = await generateFullMorningBrief({
         date,
@@ -446,7 +512,7 @@ export async function runPanLayerJob(
         marketContext,
         lease: morningBriefLease,
         concurrency: ai.provider === "qwen" ? 3 : 2,
-        retries: ai.provider === "qwen" ? (selectedKeys.length === 1 ? 1 : 0) : undefined,
+        retries: ai.provider === "qwen" ? 0 : undefined,
         deadlineAt,
       });
       finalStatus = brief.status;
