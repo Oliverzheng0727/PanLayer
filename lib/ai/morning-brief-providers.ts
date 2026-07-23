@@ -227,11 +227,9 @@ function stringArray(value: unknown, label: string, minimum = 0): string[] {
 function qwenSourcedText(text: string, value: unknown): { text: string; sourceIds: string[] } {
   const inlineSourceIds = [...text.matchAll(/\[ref_(\d+)\]/g)].map((match) => `ref_${match[1]}`);
   const cleanedText = text.replace(/\s*\[ref_\d+\]/g, "").trim();
-  if (Array.isArray(value)) {
-    const sourceIds = stringArray(value, "sourceIds");
-    if (sourceIds.length > 0) return { text: cleanedText, sourceIds };
-  }
-  if (inlineSourceIds.length > 0) return { text: cleanedText, sourceIds: [...new Set(inlineSourceIds)] };
+  const declaredSourceIds = Array.isArray(value) ? stringArray(value, "sourceIds") : [];
+  const sourceIds = [...new Set([...declaredSourceIds, ...inlineSourceIds])];
+  if (sourceIds.length > 0) return { text: cleanedText, sourceIds };
   return { text: cleanedText, sourceIds: stringArray(value, "sourceIds", 1) };
 }
 

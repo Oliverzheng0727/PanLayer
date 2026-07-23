@@ -537,6 +537,19 @@ describe("independent morning-brief section providers", () => {
       output: { choices: [{ message: { content: JSON.stringify(unknown) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/inline" }] } },
     }));
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: unknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+
+    const mixedUnknown = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text}[ref_9]`, sourceIds: ["ref_1"] }] };
+    const mixedUnknownFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(mixedUnknown) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/inline" }] } },
+    }));
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: mixedUnknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+
+    const mixedValid = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text}[ref_2][ref_1]`, sourceIds: ["ref_1"] }] };
+    const mixedValidFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(mixedValid) } }], search_info: { search_results: [{ index: 1, title: "来源一", url: "https://example.com/inline-1" }, { index: 2, title: "来源二", url: "https://example.com/inline-2" }] } },
+    }));
+    const mixedValidResult = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: mixedValidFetcher, globalSnapshot: [] });
+    expect(mixedValidResult.section.blocks[0]).toMatchObject({ sourceIds: ["risk_ref_1", "risk_ref_2"] });
   });
 
   it("removes investment-advice sentences only on Qwen's final attempt while retaining facts", async () => {
