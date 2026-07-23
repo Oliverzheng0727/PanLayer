@@ -20,6 +20,8 @@ export interface EtfQuery {
 
 export interface EtfPage { items: EtfSnapshot[]; nextCursor: number | null; total: number }
 
+export interface EtfCategoryCount { category: EtfCategory; count: number }
+
 const rules: Array<{ category: Exclude<EtfCategory, "全部" | "其他">; pattern: RegExp; tags: string[] }> = [
   { category: "美容护理", pattern: /医美|美容|美妆|化妆品|护肤/, tags: ["医美", "美容护理", "消费"] },
   { category: "半导体存储", pattern: /半导体|芯片|集成电路|存储|科创芯片/, tags: ["半导体", "芯片", "存储"] },
@@ -45,6 +47,13 @@ export function classifyEtf(name: string): { category: Exclude<EtfCategory, "全
   return matched ? { category: matched.category, tags: [...matched.tags] } : { category: "其他", tags: ["其他"] };
 }
 
+export function buildEtfCategoryCounts(items: EtfSnapshot[]): EtfCategoryCount[] {
+  return ETF_CATEGORIES.map((category) => ({
+    category,
+    count: category === "全部" ? items.length : items.filter((item) => item.category === category).length,
+  }));
+}
+
 function compareNullable(left: number | null, right: number | null, order: "asc" | "desc"): number {
   if (left === null && right === null) return 0;
   if (left === null) return 1;
@@ -53,7 +62,7 @@ function compareNullable(left: number | null, right: number | null, order: "asc"
 }
 
 export function queryEtfs(items: EtfSnapshot[], query: EtfQuery): EtfPage {
-  const needle = query.query.toLocaleLowerCase("zh-CN");
+  const needle = query.query.trim().toLocaleLowerCase("zh-CN");
   const filtered = items.filter((item) => {
     const categoryMatch = query.category === "全部" || item.category === query.category;
     const searchText = `${item.name}${item.symbol}${item.category}${item.tags.join("")}`.toLocaleLowerCase("zh-CN");

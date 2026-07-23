@@ -1,7 +1,7 @@
 import { authorizeApi } from "../../../auth-guard";
 import { demoEtfs } from "../../../../lib/data/demo";
-import { createEastmoneyProvider } from "../../../../lib/data/eastmoney";
 import { ETF_CATEGORIES, queryEtfs, type EtfCategory, type EtfQuery, type EtfSortField } from "../../../../lib/etf/catalog";
+import { loadLiveEtfCatalog } from "../../../../lib/etf/live-catalog";
 
 const sortFields: EtfSortField[] = ["price", "pctChange", "amount", "averageAmount20", "scale", "turnoverRate"];
 
@@ -24,9 +24,12 @@ export async function GET(request: Request) {
     limit: Math.min(100, Math.max(1, Number(params.get("limit") ?? 30) || 30)),
   };
   try {
-    const source = process.env.NODE_ENV === "development" ? demoEtfs : await createEastmoneyProvider().getEtfs(new Date().toISOString().slice(0, 10));
-    return Response.json({ ...queryEtfs(source, query), source: process.env.NODE_ENV === "development" ? "demo" : "东方财富" });
+    const source = await loadLiveEtfCatalog();
+    return Response.json({ ...queryEtfs(source, query), source: "东方财富" });
   } catch (error) {
+    if (process.env.NODE_ENV === "development") {
+      return Response.json({ ...queryEtfs(demoEtfs, query), source: "本机演示数据", status: "partial" });
+    }
     return Response.json({ error: error instanceof Error ? error.message : "ETF data failed", items: [], nextCursor: null, total: 0 }, { status: 502 });
   }
 }

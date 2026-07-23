@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "Vibe-Research/**",
     "next-env.d.ts",
   ]),
 ]);

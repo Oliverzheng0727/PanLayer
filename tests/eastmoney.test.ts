@@ -43,4 +43,25 @@ describe("Eastmoney provider", () => {
     const pool = await provider.getLimitPool("2026-07-22");
     expect(pool[0]).toMatchObject({ symbol: "600000.SH", limitStreak: 2, firstLimitTime: "09:35:00", sector: "银行" });
   });
+
+  it("paginates the ETF market so products beyond the first provider page stay searchable", async () => {
+    const requestedPages: string[] = [];
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      const page = url.searchParams.get("pn") ?? "1";
+      requestedPages.push(page);
+      const diff = page === "1"
+        ? [
+            { f12: "510300", f14: "沪深300ETF", f2: 4.1, f3: 0.5, f6: 30, f8: 1, f20: 100 },
+            { f12: "512480", f14: "半导体ETF", f2: 1.2, f3: 1.5, f6: 20, f8: 2, f20: 80 },
+          ]
+        : [{ f12: "159995", f14: "芯片ETF", f2: 1.3, f3: 2, f6: 10, f8: 3, f20: 60 }];
+      return new Response(JSON.stringify({ data: { total: 3, diff } }));
+    };
+
+    const etfs = await createEastmoneyProvider(fetcher).getEtfs("2026-07-23");
+
+    expect(requestedPages).toEqual(["1", "2"]);
+    expect(etfs.map((item) => item.symbol)).toEqual(["510300", "512480", "159995"]);
+  });
 });

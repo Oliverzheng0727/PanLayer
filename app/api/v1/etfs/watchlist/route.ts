@@ -1,8 +1,8 @@
 import { authorizeApi } from "../../../../auth-guard";
 import { getChatGPTUser } from "../../../../chatgpt-auth";
 import { demoEtfs } from "../../../../../lib/data/demo";
-import { createEastmoneyProvider } from "../../../../../lib/data/eastmoney";
 import { ETF_CATEGORIES } from "../../../../../lib/etf/catalog";
+import { loadLiveEtfCatalog } from "../../../../../lib/etf/live-catalog";
 import {
   deleteWatchlistItem,
   listWatchlistItems,
@@ -34,7 +34,7 @@ async function requestContext(): Promise<{ db: D1Database; userEmail: string } |
 
 async function liveCatalog() {
   try {
-    return await createEastmoneyProvider().getEtfs(new Date().toISOString().slice(0, 10));
+    return await loadLiveEtfCatalog();
   } catch {
     if (process.env.NODE_ENV === "development") return demoEtfs;
     throw new Error("ETF 行情源暂不可用");

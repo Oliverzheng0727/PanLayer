@@ -161,10 +161,22 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       })));
     },
     async getEtfs() {
-      const url = "https://88.push2.eastmoney.com/api/qt/clist/get?pn=1&pz=5000&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:MK0021,b:MK0022,b:MK0023,b:MK0024&fields=f12,f14,f2,f3,f6,f8,f20";
-      const payload = await fetchJson<{ data?: { diff?: EtfRow[] } }>(fetcher, url);
-      const rows = Array.isArray(payload?.data?.diff) ? payload.data.diff : [];
-      return rows.map((row) => {
+      const etfPageUrl = (page: number) => `https://88.push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:MK0021,b:MK0022,b:MK0023,b:MK0024&fields=f12,f14,f2,f3,f6,f8,f20`;
+      const firstPayload = await fetchJson<{ data?: { total?: number; diff?: EtfRow[] } }>(fetcher, etfPageUrl(1));
+      const firstRows = Array.isArray(firstPayload?.data?.diff) ? firstPayload.data.diff : [];
+      const total = Math.max(firstRows.length, numberValue(firstPayload?.data?.total));
+      const effectivePageSize = Math.max(1, firstRows.length);
+      const pageCount = Math.min(50, Math.max(1, Math.ceil(total / effectivePageSize)));
+      const rows = [...firstRows];
+      for (let start = 2; start <= pageCount; start += 4) {
+        const pages = Array.from({ length: Math.min(4, pageCount - start + 1) }, (_, index) => start + index);
+        const payloads = await Promise.all(pages.map((page) => fetchJson<{ data?: { diff?: EtfRow[] } }>(fetcher, etfPageUrl(page))));
+        payloads.forEach((payload) => {
+          if (Array.isArray(payload?.data?.diff)) rows.push(...payload.data.diff);
+        });
+      }
+      const uniqueRows = [...new Map(rows.map((row) => [String(row.f12 ?? ""), row])).values()];
+      return uniqueRows.map((row) => {
         const symbol = String(row.f12 ?? "");
         const name = String(row.f14 ?? "");
         const classified = classifyEtf(name);

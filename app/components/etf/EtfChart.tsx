@@ -1,7 +1,7 @@
 "use client";
 
 import { CandlestickSeries, ColorType, HistogramSeries, createChart, type Time, type UTCTimestamp } from "lightweight-charts";
-import { Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createDemoBars, type Adjustment, type BarPeriod, type MarketBar } from "../../../lib/etf/bars";
 import { ETF_CATEGORIES } from "../../../lib/etf/catalog";
@@ -13,11 +13,13 @@ const chartTime = (time: string): Time => time.includes(" ")
   ? Math.floor(new Date(`${time.replace(" ", "T")}:00+08:00`).getTime() / 1000) as UTCTimestamp
   : time.slice(0, 10) as Time;
 
-export function EtfChart({ etf, isWatched, onCategoryChange, onRemove }: {
+export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, onAdd, addDisabled = false }: {
   etf: EtfSnapshot;
-  isWatched: boolean;
-  onCategoryChange: (category: string) => void;
-  onRemove: () => void;
+  isWatched?: boolean;
+  onCategoryChange?: (category: string) => void;
+  onRemove?: () => void;
+  onAdd?: () => void;
+  addDisabled?: boolean;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const [period, setPeriod] = useState<BarPeriod>("day");
@@ -67,7 +69,8 @@ export function EtfChart({ etf, isWatched, onCategoryChange, onRemove }: {
       <div className="etf-chart-controls">
         <div>{periods.map((item) => <button key={item.value} type="button" className={period === item.value ? "active" : ""} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>
         <div className="etf-chart-actions">
-          {isWatched && <><label>分类<select value={etf.category} onChange={(event) => onCategoryChange(event.target.value)}>{ETF_CATEGORIES.filter((item) => item !== "全部").map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" className="etf-remove-button" onClick={onRemove} title="移出我的自选"><Trash2 size={11} />移除</button></>}
+          {isWatched && <><label>分类<select value={etf.category} onChange={(event) => onCategoryChange?.(event.target.value)}>{ETF_CATEGORIES.filter((item) => item !== "全部").map((item) => <option key={item} value={item}>{item}</option>)}</select></label><button type="button" className="etf-remove-button" onClick={onRemove} title="移出我的自选"><Trash2 size={11} />移除</button></>}
+          {!isWatched && onAdd && <button type="button" className="etf-add-button" onClick={onAdd} disabled={addDisabled}><Plus size={11} />加入自选</button>}
           <button type="button" className={adjustment === "forward" ? "active" : ""} onClick={() => setAdjustment((value) => value === "forward" ? "none" : "forward")}>{adjustment === "forward" ? "前复权" : "不复权"}</button>
         </div>
       </div>
