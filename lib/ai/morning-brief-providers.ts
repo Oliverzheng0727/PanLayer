@@ -356,8 +356,21 @@ function textSegments(texts: string[]): string[] {
 }
 
 const SNAPSHOT_QUOTE_CONTEXT = /报|收报|收于|收盘|开盘|前收|股价|价格|点位|汇率|收益率|涨幅|跌幅|上涨|下跌|涨|跌/;
+const STRUCTURED_QUOTE_CONCEPT = /报|收报|收于|收盘|开盘|前收|股价|价格|点位|汇率|收益率|涨幅|跌幅|上涨|下跌/;
 const BUSINESS_METRIC_TERM = "营收|收入|营利|利润|盈利|出货|出货量|出货率|产能|产量|销量|交付|订单|公司数|员工数|装机|资本开支";
-const BUSINESS_METRIC_VALUE = new RegExp(`(?:${BUSINESS_METRIC_TERM})[^，,。；;！？\\n\\d]{0,24}[+-]?\\d[\\d,.，]*(?:[%％]|家|只|个|人|年|月|日|时|分|秒|亿元|亿美元)?`, "g");
+const BUSINESS_METRIC_VALUE = new RegExp(`(${BUSINESS_METRIC_TERM})([^，,。；;！？\\n\\d]{0,24})([+-]?\\d[\\d,.，]*(?:[%％]|家|只|个|人|年|月|日|时|分|秒|亿元|亿美元)?)`, "g");
+
+function businessMetricValueRanges(text: string): Array<{ start: number; end: number }> {
+  return [...text.matchAll(BUSINESS_METRIC_VALUE)].flatMap((match) => {
+    const [whole, , bridge] = match;
+    const start = match.index ?? 0;
+    return STRUCTURED_QUOTE_CONCEPT.test(bridge) ? [] : [{ start, end: start + whole.length }];
+  });
+}
+
+function stripBusinessMetricValues(text: string): string {
+  return text.replace(BUSINESS_METRIC_VALUE, (whole, term: string, bridge: string) => STRUCTURED_QUOTE_CONCEPT.test(bridge) ? whole : `${term}${bridge}`);
+}
 
 function hasStructuredQuoteContext(clause: string): boolean {
   return SNAPSHOT_QUOTE_CONTEXT.test(clause);
@@ -366,8 +379,7 @@ function hasStructuredQuoteContext(clause: string): boolean {
 function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text: string; isPercent: boolean }> {
   if (!hasStructuredQuoteContext(clause)) return [];
   const withoutLabel = labels.reduce((text, label) => text.split(label).join("标的"), clause);
-  const withoutUnrelatedValues = withoutLabel
-    .replace(BUSINESS_METRIC_VALUE, "")
+  const withoutUnrelatedValues = stripBusinessMetricValues(withoutLabel)
     .replace(/[A-Za-z]+\d[\d,.，]*/g, "")
     .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "")
     .replace(/\d{4}年\d{1,2}月\d{1,2}日/g, "")
@@ -493,7 +505,7 @@ function labelCharacterRanges(text: string, labels: string[]): Array<{ start: nu
 
 function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<{ start: number; end: number }> {
   const labelRanges = labelCharacterRanges(sentence, labels);
-  const businessRanges = [...sentence.matchAll(BUSINESS_METRIC_VALUE)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  const businessRanges = businessMetricValueRanges(sentence);
   return [...sentence.matchAll(/[+-]?\d[\d,.，]*(?:\s*[^\d\s，,。；;！？点美元元%％.]+(?:\s+[^\d\s，,。；;！？点美元元%％.]+)*\s*)?(?:[%％]|点|美元|元)?/g)]
     .flatMap((match) => {
       const start = match.index ?? 0;

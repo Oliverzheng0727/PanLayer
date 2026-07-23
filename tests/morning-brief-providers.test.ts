@@ -131,6 +131,7 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比增长30%，产能提升20%，均由来源披露。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比增长30%，股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
   });
 
   it("rejects conflicting Qwen quote claims until the final attempt, then removes the number", async () => {
@@ -163,7 +164,7 @@ describe("independent morning-brief section providers", () => {
     expect(JSON.stringify(result.section)).not.toContain("20,000");
   });
 
-  it("removes reserved ranking sentences only on final Qwen attempts and revalidates citations and coverage", async () => {
+  it("removes reserved ranking sentences only on final Qwen attempts and revalidates independent gates", async () => {
     const context = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }], etfSnapshot: { marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z" },
     };
@@ -183,6 +184,14 @@ describe("independent morning-brief section providers", () => {
     const citationOnlyReserved = modelSection("mapping");
     citationOnlyReserved.blocks = [{ type: "paragraph", text: "主线聚焦虚构题材。", sourceIds: ["ref_1"] }];
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(citationOnlyReserved), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/来源|字数|覆盖/);
+
+    const missingTermAfterRemoval = modelSection("mapping");
+    missingTermAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空。${"客观事实与盘面映射。".repeat(140)}主线内需映射由模型给出。`, sourceIds: ["ref_1"] }];
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(missingTermAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/覆盖不完整/);
+
+    const tooShortAfterRemoval = modelSection("mapping");
+    tooShortAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空、内需。主线${"虚构排名内容".repeat(220)}。`, sourceIds: ["ref_1"] }];
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(tooShortAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/字数应为1000至1600/);
   });
 
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
