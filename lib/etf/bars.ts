@@ -18,6 +18,8 @@ export interface EtfBarsResult {
   appliedAdjustment: Adjustment;
 }
 
+const UPSTREAM_TIMEOUT_MS = 4_500;
+
 const numberValue = (value: string | number | undefined) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -54,7 +56,10 @@ function secidFor(symbol: string): string {
 }
 
 async function fetchJson<T>(url: string, fetcher: typeof fetch): Promise<T> {
-  const response = await fetcher(url, { headers: { accept: "application/json", "user-agent": "PanLayer/1.0" } });
+  const response = await fetcher(url, {
+    headers: { accept: "application/json", "user-agent": "PanLayer/1.0" },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`Eastmoney ${response.status}`);
   return response.json() as Promise<T>;
 }
@@ -96,6 +101,7 @@ async function fetchSinaText(url: string, fetcher: typeof fetch): Promise<string
       referer: "https://finance.sina.com.cn/",
       "user-agent": "PanLayer/1.0",
     },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Sina ${response.status}`);
   return response.text();

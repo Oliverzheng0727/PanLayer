@@ -36,6 +36,17 @@ describe("ETF market bar aggregation", () => {
     }]);
   });
 
+  it("bounds each upstream K-line request with an abort signal", async () => {
+    let requestSignal: AbortSignal | null | undefined;
+    const fetcher = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestSignal = init?.signal;
+      return new Response(JSON.stringify({ data: { trends: [] } }));
+    };
+
+    await fetchEastmoneyMinuteBars("510300", fetcher as typeof fetch);
+    expect(requestSignal).toBeInstanceOf(AbortSignal);
+  });
+
   it("maps Sina daily K-line JSON and uses the Shanghai market prefix", async () => {
     let requestedUrl = "";
     const fetcher = async (input: RequestInfo | URL) => {
