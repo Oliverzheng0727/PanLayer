@@ -9,6 +9,8 @@ import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
+const MINIMUM_ALL_A_UNIVERSE = 5_000;
+
 export interface PanLayerEnv {
   DB?: D1Database;
   DASHSCOPE_API_KEY?: string;
@@ -153,6 +155,7 @@ export async function runPanLayerJob(
         primary: provider,
         secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
+        minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
       });
       await persistSourceAudits(db, date, job.time, market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -168,6 +171,7 @@ export async function runPanLayerJob(
         primary: provider,
         secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
+        minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");

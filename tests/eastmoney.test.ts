@@ -20,6 +20,27 @@ describe("Eastmoney quote mapping", () => {
 });
 
 describe("Eastmoney provider", () => {
+  it("paginates the A-share quote market instead of treating the first 100 movers as the full universe", async () => {
+    const requestedPages: string[] = [];
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      const page = url.searchParams.get("pn") ?? "1";
+      requestedPages.push(page);
+      const diff = page === "1"
+        ? [
+            { f12: "600000", f14: "浦发银行", f2: 11, f3: 1, f6: 1e8, f8: 2, f15: 11, f16: 10, f17: 10.1, f18: 10, f100: "银行" },
+            { f12: "000001", f14: "平安银行", f2: 12, f3: -1, f6: 2e8, f8: 1, f15: 12.2, f16: 11.8, f17: 12, f18: 12.12, f100: "银行" },
+          ]
+        : [{ f12: "830001", f14: "北交示例", f2: 13, f3: 0, f6: 3e7, f8: 3, f15: 13, f16: 13, f17: 13, f18: 13, f100: "机械" }];
+      return new Response(JSON.stringify({ data: { total: 3, diff } }));
+    };
+
+    const quotes = await createEastmoneyProvider(fetcher).getQuotes("11:00");
+
+    expect(requestedPages).toEqual(["1", "2"]);
+    expect(quotes.map((item) => item.symbol)).toEqual(["600000.SH", "000001.SZ", "830001.BJ"]);
+  });
+
   it("returns the non-ST review universe from the quote endpoint", async () => {
     const fetcher: typeof fetch = async () => new Response(JSON.stringify({
       data: { diff: [

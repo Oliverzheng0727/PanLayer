@@ -19,6 +19,11 @@ export function calculateBreadth(quotes: Quote[]): Breadth {
   }, { rising: 0, falling: 0, flat: 0 });
 }
 
+export function formatBreadthRatio(rising: number, falling: number): string {
+  if (!Number.isFinite(rising) || !Number.isFinite(falling) || falling <= 0) return "暂缺";
+  return (rising / falling).toFixed(2);
+}
+
 export function bucketLimitLadder(quotes: Quote[]) {
   const ladder = {
     first: [] as Quote[],

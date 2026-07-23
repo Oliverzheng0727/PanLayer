@@ -21,6 +21,22 @@ describe("domestic market pipeline", () => {
     expect(result.quotes).toEqual(quotes);
   });
 
+  it("does not mark a tiny all-A sample complete when the expected universe floor is much larger", async () => {
+    const quotes = Array.from({ length: 100 }, (_, index) => quote(index));
+    const result = await runDomesticPipeline({
+      at: "11:00",
+      expectedSymbols: [],
+      minimumExpectedCount: 3_000,
+      now: new Date(),
+      retryDelayMs: 0,
+      primary: { name: "东方财富", getQuotes: async () => quotes },
+      secondary: { name: "腾讯", getQuotes: async () => quotes },
+    });
+
+    expect(result.status).toBe("partial");
+    expect(result.audits[0].coveragePct).toBeCloseTo(3.33, 2);
+  });
+
   it("falls back to Tencent with a partial status when primary fails", async () => {
     const quotes = Array.from({ length: 100 }, (_, index) => quote(index));
     const result = await runDomesticPipeline({

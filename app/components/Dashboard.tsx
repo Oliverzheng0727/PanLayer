@@ -1,15 +1,17 @@
 "use client";
 
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Database, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Database, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { MorningBrief } from "../../lib/ai/morning-brief";
+import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import type { HistoryRow } from "../../lib/history/query";
 import { shouldPoll } from "../../lib/live/polling";
+import { formatBeijingDateTime } from "../../lib/live/market-clock";
 import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
@@ -35,6 +37,8 @@ interface LiveMarketPayload {
   source: string;
   status: Exclude<LiveDataState, "demo" | "failed">;
   message: string;
+  universeSize: number;
+  coveragePct: number;
   marketTime: string | null;
   receivedAt: string;
   isStale: boolean;
@@ -55,13 +59,31 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const liveRequestInFlight = useRef(false);
-  const statusView = statusViews[review.status];
+  const effectiveStatus: DailyReview["status"] = refreshError
+    ? "failed"
+    : review.status === "demo"
+      ? "demo"
+      : review.status !== "complete"
+        ? review.status
+        : liveMarket?.status ?? "complete";
+  const statusView = statusViews[effectiveStatus];
   const persistedTotal = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
-  const total = liveMarket?.breadth ?? persistedTotal;
-  const maxBreadth = Math.max(1, total.rising, total.falling, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
+  const isLiveBreadthUsable = liveMarket !== null
+    && !liveMarket.isStale
+    && liveMarket.universeSize >= 5_000
+    && liveMarket.coveragePct >= 95;
+  const total = liveMarket
+    ? isLiveBreadthUsable ? liveMarket.breadth : null
+    : persistedTotal;
+  const maxBreadth = Math.max(1, total?.rising ?? 0, total?.falling ?? 0, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
   const ladder = [
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
+  const ladderHeight = Math.max(0, ...Object.values(review.ladder).flat().map((item) => item.limitStreak));
+  const ladderNote = ladderHeight >= 2 ? `最高 ${ladderHeight}板` : "暂无连板";
+  const activeSource = liveMarket?.source ?? review.source;
+  const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
+  const marginBalanceValue = review.metrics.marginBalance === null ? "暂缺" : `${review.metrics.marginBalance.toLocaleString("zh-CN")}亿`;
 
   const refreshLiveBreadth = useCallback(async () => {
     if (liveRequestInFlight.current) return;
@@ -124,8 +146,8 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.035] p-4">
             <div className="mb-2 flex items-center gap-2 text-xs text-white/45"><Database size={14} /> 数据状态</div>
             <div className="flex items-center gap-2 text-xs"><span className={`size-1.5 rounded-full ${statusView.dot}`} /><span>{statusView.label}</span></div>
-            <p className="mt-2 text-[10px] leading-5 text-white/35">数据来源：{review.source}</p>
-            <p className="text-[10px] leading-5 text-white/25">更新时间：{review.updatedAt}</p>
+            <p className="mt-2 text-[10px] leading-5 text-white/35">数据来源：{activeSource}</p>
+            <p className="text-[10px] leading-5 text-white/25">更新时间：{formatBeijingDateTime(activeReceivedAt)}</p>
           </div>
           <div className="mt-4 flex items-center justify-between px-2 text-xs text-white/40"><span className="truncate">{userName}</span><Link href="/signout-with-chatgpt?return_to=/" aria-label="退出"><LogOut size={15} /></Link></div>
         </div>
@@ -152,17 +174,17 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
         <div className="dashboard-content">
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">更新时间 {liveMarket?.receivedAt ?? review.updatedAt} · 数据来源 {liveMarket?.source ?? review.source} · 统计范围：沪深京全 A，剔除 ST</p><p className="mt-2 text-[11px] text-white/25">状态口径：完整 / 部分 / 失败 / 演示{refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
+              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {review.date} · {liveMarket ? `实时接收 ${formatBeijingDateTime(liveMarket.receivedAt)}` : `复盘更新 ${formatBeijingDateTime(review.updatedAt)}`} · 数据来源 {activeSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{liveMarket ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""} · 状态口径：完整 / 部分 / 失败 / 演示{refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
               <div className={`rounded-full border px-4 py-2 text-xs ${statusView.pill}`}>{statusView.label} · {statusView.detail}</div>
             </div>
 
             <div className="metric-grid">
-              <Metric label="上涨家数" value={String(total.rising)} trend={+2.8} note={`下跌 ${total.falling}`} />
-              <Metric label="涨停数量" value={String(review.metrics.limitUp)} trend={+10.3} note={`跌停 ${review.metrics.limitDown}`} />
-              <Metric label="连板家数" value={String(review.metrics.consecutive)} trend={+4.1} note="梯队高度 6板" />
-              <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} trend={-12.5} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
-              <Metric label="连板收盘溢价" value={pct(review.premium.closePct)} trend={review.premium.closePct ?? 0} note={`开盘 ${pct(review.premium.openPct)}`} accent />
-              <Metric label="两融余额" value={`${review.metrics.marginBalance?.toLocaleString()}亿`} trend={-1.04} note="沪深京融资余额" />
+              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "实时行情覆盖不足" : `下跌 ${total.falling}`} />
+              <Metric label="涨停数量" value={String(review.metrics.limitUp)} note={`跌停 ${review.metrics.limitDown}`} />
+              <Metric label="连板家数" value={String(review.metrics.consecutive)} note={ladderNote} />
+              <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
+              <Metric label="连板收盘溢价" value={pct(review.premium.closePct)} note={`开盘 ${pct(review.premium.openPct)}`} accent />
+              <Metric label="两融余额" value={marginBalanceValue} note="沪深京融资余额" />
             </div>
           </section>
 
@@ -171,8 +193,10 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
               <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>
             </Panel>
             <Panel title="市场温度" eyebrow="CLOSE SNAPSHOT">
-              <div className="space-y-5 pt-4"><BreadthBar label="上涨" value={total.rising} max={maxBreadth} color="#ef5b58"/><BreadthBar label="下跌" value={total.falling} max={maxBreadth} color="#3bc987"/><BreadthBar label="平盘" value={total.flat} max={maxBreadth} color="#8b8d90"/></div>
-              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise}/><MiniStat label="涨跌比" value={(total.rising / total.falling).toFixed(2)}/></div>
+              {total === null
+                ? <div className="grid min-h-40 place-items-center text-sm text-white/30">实时行情覆盖不足，市场温度暂不计算</div>
+                : <div className="space-y-5 pt-4"><BreadthBar label="上涨" value={total.rising} max={maxBreadth} color="#ef5b58"/><BreadthBar label="下跌" value={total.falling} max={maxBreadth} color="#3bc987"/><BreadthBar label="平盘" value={total.flat} max={maxBreadth} color="#8b8d90"/></div>}
+              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise}/><MiniStat label="涨跌比" value={total === null ? "暂缺" : formatBreadthRatio(total.rising, total.falling)}/></div>
             </Panel>
           </section>
 
@@ -209,7 +233,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   );
 }
 
-function Metric({ label, value, trend, note, accent = false }: { label: string; value: string; trend: number; note: string; accent?: boolean }) { const up = trend >= 0; return <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}><span className="text-xs text-white/35">{label}</span><div className="mt-5 flex items-end justify-between gap-2"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong><span className={`flex items-center text-[11px] ${up ? "rise" : "fall"}`}>{up ? <ArrowUpRight size={12}/> : <ArrowDownRight size={12}/>} {Math.abs(trend).toFixed(1)}%</span></div><p className="mt-3 text-[11px] text-white/25">{note}</p></div> }
+function Metric({ label, value, note, accent = false }: { label: string; value: string; note: string; accent?: boolean }) { return <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}><span className="text-xs text-white/35">{label}</span><div className="mt-5"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong></div><p className="mt-3 text-[11px] text-white/25">{note}</p></div> }
 function Panel({ title, eyebrow, id, children }: { title: string; eyebrow: string; id?: string; children: React.ReactNode }) { return <div id={id} className="panel scroll-mt-24 p-5 sm:p-6"><div className="flex items-center justify-between"><div><p className="text-[9px] font-semibold tracking-[0.2em] text-[#e8702a]">{eyebrow}</p><h3 className="mt-2 text-lg font-medium">{title}</h3></div><Table2 size={17} className="text-white/15"/></div>{children}</div> }
 function BreadthBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) { return <div><div className="mb-2 flex items-center justify-between text-xs"><span className="text-white/40">{label}</span><strong>{value.toLocaleString()}</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]"><div className="h-full rounded-full" style={{ width: `${value / max * 100}%`, background: color }}/></div></div> }
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-2xl bg-white/[0.035] p-4"><span className="text-[10px] text-white/30">{label}</span><strong className="mt-2 block text-lg">{value}</strong></div> }

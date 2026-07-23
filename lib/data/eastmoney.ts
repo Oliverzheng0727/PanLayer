@@ -79,7 +79,11 @@ export function mapEastmoneyQuote(row: EastmoneyQuoteRow): Quote {
   };
 }
 
-const QUOTE_URL = "https://82.push2.eastmoney.com/api/qt/clist/get?pn=1&pz=6000&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f100";
+const QUOTE_PAGE_SIZE = 100;
+
+function quotePageUrl(page: number) {
+  return `https://82.push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=${QUOTE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f100`;
+}
 
 function limitPoolUrl(date: string) {
   return `https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&d=${date.replaceAll("-", "")}`;
@@ -99,9 +103,21 @@ async function fetchJson<T>(fetcher: typeof fetch, url: string): Promise<T> {
 
 export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDataProvider {
   const getQuotes = async (): Promise<Quote[]> => {
-    const payload = await fetchJson<{ data?: { diff?: EastmoneyQuoteRow[] } }>(fetcher, QUOTE_URL);
-    const rows = Array.isArray(payload?.data?.diff) ? payload.data.diff : [];
-    return rows.map(mapEastmoneyQuote).filter((item: Quote) => !item.isST && item.price > 0);
+    const firstPayload = await fetchJson<{ data?: { total?: number; diff?: EastmoneyQuoteRow[] } }>(fetcher, quotePageUrl(1));
+    const firstRows = Array.isArray(firstPayload?.data?.diff) ? firstPayload.data.diff : [];
+    const total = Math.max(firstRows.length, numberValue(firstPayload?.data?.total));
+    const effectivePageSize = Math.max(1, firstRows.length);
+    const pageCount = Math.min(80, Math.max(1, Math.ceil(total / effectivePageSize)));
+    const rows = [...firstRows];
+    for (let start = 2; start <= pageCount; start += 6) {
+      const pages = Array.from({ length: Math.min(6, pageCount - start + 1) }, (_, index) => start + index);
+      const payloads = await Promise.all(pages.map((page) => fetchJson<{ data?: { diff?: EastmoneyQuoteRow[] } }>(fetcher, quotePageUrl(page))));
+      payloads.forEach((payload) => {
+        if (Array.isArray(payload?.data?.diff)) rows.push(...payload.data.diff);
+      });
+    }
+    const uniqueRows = [...new Map(rows.map((row) => [String(row.f12 ?? ""), row])).values()];
+    return uniqueRows.map(mapEastmoneyQuote).filter((item: Quote) => !item.isST && item.price > 0);
   };
 
   return {

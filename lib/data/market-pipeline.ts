@@ -27,6 +27,7 @@ export async function runDomesticPipeline({
   secondary,
   now,
   retryDelayMs = 1_000,
+  minimumExpectedCount = 0,
 }: {
   at: string;
   expectedSymbols: string[];
@@ -34,6 +35,7 @@ export async function runDomesticPipeline({
   secondary: SecondarySource;
   now: Date;
   retryDelayMs?: number;
+  minimumExpectedCount?: number;
 }): Promise<MarketPipelineResult> {
   let primaryQuotes: Quote[] = [];
   let secondaryQuotes: Quote[] = [];
@@ -54,7 +56,7 @@ export async function runDomesticPipeline({
   } else {
     secondaryError = "没有可用证券池";
   }
-  const expectedCount = Math.max(symbols.length, primaryQuotes.length, secondaryQuotes.length);
+  const expectedCount = Math.max(minimumExpectedCount, symbols.length, primaryQuotes.length, secondaryQuotes.length);
   const quality = compareDomesticSnapshots(primaryQuotes, secondaryQuotes, expectedCount, now);
   const audits = quality.audits.map((audit, index) => ({
     ...audit,

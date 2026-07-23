@@ -12,6 +12,8 @@ export async function GET() {
       source: "东方财富 / 腾讯",
       status: "failed",
       message: error instanceof Error ? error.message : "实时市场数据失败",
+      universeSize: 0,
+      coveragePct: 0,
       marketTime: null,
       receivedAt: new Date().toISOString(),
       isStale: true,
