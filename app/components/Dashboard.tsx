@@ -80,7 +80,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
         ? review.status
         : liveMarket?.status ?? "complete";
   const statusView = statusViews[effectiveStatus];
-  const persistedTotal = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
+  const persistedTotal = useMemo(() => review.breadth.at(-1) ?? null, [review]);
   const isLiveBreadthUsable = liveMarket !== null
     && !liveMarket.isStale
     && liveMarket.universeSize >= 5_000
@@ -192,7 +192,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
             </div>
 
             <div className="metric-grid">
-              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "实时行情覆盖不足" : `下跌 ${total.falling}`} />
+              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "涨跌家数数据暂缺" : `下跌 ${total.falling}`} />
               <Metric label="涨停数量" value={String(review.metrics.limitUp)} note={`跌停 ${review.metrics.limitDown}`} />
               <Metric label="连板家数" value={String(review.metrics.consecutive)} note={ladderNote} />
               <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
@@ -203,13 +203,15 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
           <section className="dashboard-section grid gap-5 xl:grid-cols-[1.5fr_1fr]">
             <Panel title="盘中涨跌家数" eyebrow="MARKET BREADTH" id="breadth">
-              <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>
+              {review.breadth.length === 0
+                ? <div className="grid h-[270px] place-items-center text-sm text-white/30">盘中涨跌家数暂缺</div>
+                : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}
             </Panel>
             <Panel title="市场温度" eyebrow="CLOSE SNAPSHOT">
               {total === null
                 ? <div className="grid min-h-40 place-items-center text-sm text-white/30">实时行情覆盖不足，市场温度暂不计算</div>
                 : <div className="space-y-5 pt-4"><BreadthBar label="上涨" value={total.rising} max={maxBreadth} color="#ef5b58"/><BreadthBar label="下跌" value={total.falling} max={maxBreadth} color="#3bc987"/><BreadthBar label="平盘" value={total.flat} max={maxBreadth} color="#8b8d90"/></div>}
-              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise}/><MiniStat label="涨跌比" value={total === null ? "暂缺" : formatBreadthRatio(total.rising, total.falling)}/></div>
+              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise === null ? "暂缺" : review.metrics.largeRise}/><MiniStat label="涨跌比" value={total === null ? "暂缺" : formatBreadthRatio(total.rising, total.falling)}/></div>
             </Panel>
           </section>
 

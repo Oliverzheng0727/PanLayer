@@ -24,7 +24,7 @@ export interface MorningBriefMarketContext {
     receivedAt: string | null;
     status: "complete" | "partial" | "failed" | "demo";
     closeBreadth: { rising: number; falling: number; flat: number } | null;
-    metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
+    metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number | null; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
     ladder: { first: number; second: number; third: number; fourth: number; fivePlus: number };
     sectors: Array<{ name: string; factors: { limitUpCount: number; averagePct: number; amountGrowthPct: number; maxStreak: number } }>;
     leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; isLimitUp: boolean; firstLimitTime: string | null; sector: string } }>;
