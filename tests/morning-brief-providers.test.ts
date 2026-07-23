@@ -100,6 +100,15 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 630.3点的标普500。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.2点；0.82%的标普500来自收盘记录。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
+
+  it("validates punctuation and bounded intervening snapshot phrasing", async () => {
+    const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
+    const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/punctuation" }] } } }));
+    for (const phrase of [" 标普500，报630.3点。", " 标普500指数收报630.3点。", " 标普500上涨至630.3点。"]) {
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(phrase) as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    }
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500，报630.20点；标普500指数收报630.20点；标普500上涨至630.20点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+  });
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
     let request: { parameters?: { enable_search?: boolean }; input?: { messages?: Array<{ content?: string }> } } = {};
     const fetcher: typeof fetch = async (_input, init) => {

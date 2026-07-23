@@ -305,14 +305,15 @@ export async function runPanLayerJob(
   const leaseToken = job.type === "morning-brief" ? await acquireJobLease(db, "morning-brief", date) : null;
   if (job.type === "morning-brief" && !leaseToken) return { ok: false, message: "morning-brief already running" };
   const morningBriefLease: MorningBriefLease | undefined = leaseToken ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) } : undefined;
-  const startedAt = new Date().toISOString();
-  const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
-  const run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
-  const fetcher = options.fetcher ?? fetch;
-  const provider = createEastmoneyProvider(fetcher);
-  let finalStatus: "complete" | "partial" | "failed" = "complete";
-  let finalMessage = "";
+  let run: { id: number } | null = null;
   try {
+    const startedAt = new Date().toISOString();
+    const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
+    run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
+    const fetcher = options.fetcher ?? fetch;
+    const provider = createEastmoneyProvider(fetcher);
+    let finalStatus: "complete" | "partial" | "failed" = "complete";
+    let finalMessage = "";
     if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
@@ -350,12 +351,12 @@ export async function runPanLayerJob(
     } else {
       const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
       if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
-        await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
+        if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         return { ok: true, message: `${label} already complete; skipped` };
       }
       const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key);
       if (selectedKeys.length === 0) {
-        await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
+        if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         return { ok: true, message: `${label} no failed or missing modules; skipped` };
       }
       const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, fetcher), loadMorningBriefMarketContext(db, date)]);
@@ -379,11 +380,11 @@ export async function runPanLayerJob(
       const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);
       finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }
-    await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run?.id).run();
+    if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();
     return { ok: finalStatus !== "failed", message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run?.id).run();
+    if (run?.id) await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
     throw error;
   } finally {
     if (leaseToken) await releaseJobLease(db, "morning-brief", date, leaseToken);

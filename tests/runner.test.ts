@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import { acquireJobLease, buildDailyReview, persistGlobalPoints, persistSourceAudits, releaseJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
+import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
 
@@ -69,7 +70,115 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
   return { db, fetcher, jobUpdates };
 }
 
+function orchestratedLeaseHarness() {
+  let lease: { token: string; expiresAt: string } | null = null;
+  const globalWrites: string[] = [];
+  const sectionWrites: Array<{ key: string; status: string; model: string }> = [];
+  const aggregateWrites: string[] = [];
+  let runId = 0;
+  const db = {
+    prepare(sql: string) {
+      let values: unknown[] = [];
+      return {
+        bind(...bound: unknown[]) { values = bound; return this; },
+        async first() {
+          if (sql.startsWith("INSERT INTO job_leases")) {
+            const [,, token,,, now] = values as string[];
+            const expiresAt = String(values[4]);
+            if (lease && lease.expiresAt > now) return null;
+            lease = { token, expiresAt };
+            return { token };
+          }
+          if (sql.startsWith("UPDATE job_leases")) {
+            const [, expiresAt,,, token, now] = values as string[];
+            if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
+            lease = { token, expiresAt };
+            return { token };
+          }
+          if (sql.startsWith("INSERT INTO job_runs")) return { id: ++runId };
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() {
+          if (sql.startsWith("DELETE FROM job_leases") && lease?.token === values[2]) lease = null;
+          if (sql.includes("global_market_snapshots")) globalWrites.push(String(values[2]));
+          if (sql.includes("morning_brief_sections")) sectionWrites.push({ key: String(values[1]), status: String(values[4]), model: String(values[2]) });
+          if (sql.includes("morning_briefs")) aggregateWrites.push(String(values[1]));
+          return {};
+        },
+      };
+    },
+    async batch() { return []; },
+  } as unknown as D1Database;
+  return { db, globalWrites, sectionWrites, aggregateWrites };
+}
+
+function qwenResponse(key: BriefSectionKey, status = 200) {
+  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key)!;
+  return new Response(JSON.stringify(status === 200 ? {
+    output: { choices: [{ message: { content: JSON.stringify({ key, title: definition.title, summary: "摘要", tags: ["测试"], blocks: [{ type: "paragraph", text: `${definition.requiredTerms.join("、")}。${"客观事实与盘面映射。".repeat(130)}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: `https://example.com/${key}` }] } },
+  } : { message: "provider unavailable" }), { status });
+}
+
 describe("close review aggregation", () => {
+  it("fences a stale orchestrated run before its delayed global snapshot can write", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db, globalWrites, sectionWrites, aggregateWrites } = orchestratedLeaseHarness();
+      const at = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(at);
+      let resume!: () => void;
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => { resume = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      const snapshot = { raw: [{ key: "sp500", label: "标普500", provider: "test", value: 630.2, previousClose: 625.1, pctChange: .8, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", status: "ok" as const, message: "" }], reconciled: [] };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementationOnce(async () => { entered(); await blocked; return snapshot; }).mockImplementationOnce(async () => snapshot);
+      const fetcher: typeof fetch = async (_input, init) => qwenResponse(BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key);
+      const oldRun = runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+      await reached;
+      vi.setSystemTime(new Date("2026-07-22T23:31:00Z"));
+      await expect(runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] })).resolves.toMatchObject({ ok: true });
+      resume();
+
+      await expect(oldRun).rejects.toThrow(/lease/i);
+      expect(globalWrites).toEqual(["标普500"]);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen-plus"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("fences a stale provider failure before failed-section or aggregate persistence", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db, globalWrites, sectionWrites, aggregateWrites } = orchestratedLeaseHarness();
+      const at = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(at);
+      const snapshot = { raw: [{ key: "sp500", label: "标普500", provider: "test", value: 630.2, previousClose: 625.1, pctChange: .8, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", status: "ok" as const, message: "" }], reconciled: [] };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementation(async () => snapshot);
+      let resume!: () => void;
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => { resume = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      let calls = 0;
+      const fetcher: typeof fetch = async (_input, init) => {
+        const key = BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key;
+        calls += 1;
+        if (calls === 1) { entered(); await blocked; return qwenResponse(key, 503); }
+        return qwenResponse(key);
+      };
+      const oldRun = runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+      await reached;
+      vi.setSystemTime(new Date("2026-07-22T23:31:00Z"));
+      await expect(runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] })).resolves.toMatchObject({ ok: true });
+      resume();
+
+      await expect(oldRun).rejects.toThrow(/lease/i);
+      expect(globalWrites).toHaveLength(2);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen-plus"]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("keeps an active morning lease through a stale release so an overlap cannot take its writes", async () => {
     let lease: { token: string; expiresAt: string } | null = null;
     const db = {
@@ -98,6 +207,28 @@ describe("close review aggregation", () => {
     expect(overlapping).toBeNull();
     await releaseJobLease(db, "morning-brief", "2026-07-23", "stale-token");
     expect(lease?.token).toBe(first);
+  });
+
+  it("releases an acquired morning lease when job-run creation fails", async () => {
+    let released = false;
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() {
+            if (sql.includes("job_leases")) return { token: String(values[2]) };
+            if (sql.startsWith("INSERT INTO job_runs")) throw new Error("D1 unavailable");
+            return null;
+          },
+          async run() { if (sql.startsWith("DELETE FROM job_leases")) released = true; return {}; },
+        };
+      },
+      async batch() { return []; },
+    } as unknown as D1Database;
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" })).rejects.toThrow("D1 unavailable");
+    expect(released).toBe(true);
   });
 
   it("loads the persisted security universe for provider fallback", async () => {
