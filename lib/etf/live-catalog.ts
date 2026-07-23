@@ -1,5 +1,15 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
 import type { EtfSnapshot } from "../data/provider";
+import { isStale, SERVER_LIVE_CACHE_MS } from "../live/refresh-policy";
+
+export interface EtfCatalogEnvelope {
+  items: EtfSnapshot[];
+  source: "东方财富";
+  status: "complete";
+  receivedAt: string;
+  marketTime: string | null;
+  isStale: boolean;
+}
 
 export function createEtfCatalogCache<T>(ttlMs: number) {
   let value: T | undefined;
@@ -24,8 +34,19 @@ export function createEtfCatalogCache<T>(ttlMs: number) {
   };
 }
 
-const liveCatalogCache = createEtfCatalogCache<EtfSnapshot[]>(5 * 60 * 1_000);
+const liveCatalogCache = createEtfCatalogCache<Omit<EtfCatalogEnvelope, "isStale">>(SERVER_LIVE_CACHE_MS);
 
-export function loadLiveEtfCatalog(date = new Date().toISOString().slice(0, 10)): Promise<EtfSnapshot[]> {
-  return liveCatalogCache.get(() => createEastmoneyProvider().getEtfs(date));
+export async function loadLiveEtfCatalogEnvelope(date = new Date().toISOString().slice(0, 10)): Promise<EtfCatalogEnvelope> {
+  const cached = await liveCatalogCache.get(async () => ({
+    items: await createEastmoneyProvider().getEtfs(date),
+    source: "东方财富" as const,
+    status: "complete" as const,
+    receivedAt: new Date().toISOString(),
+    marketTime: null,
+  }));
+  return { ...cached, isStale: isStale(cached.receivedAt) };
+}
+
+export async function loadLiveEtfCatalog(date?: string): Promise<EtfSnapshot[]> {
+  return (await loadLiveEtfCatalogEnvelope(date)).items;
 }

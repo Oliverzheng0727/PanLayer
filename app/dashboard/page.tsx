@@ -4,7 +4,7 @@ import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHighDetailsByDate, demoHistory, demoReview } from "../../lib/data/demo";
 import { readBrief, readHighDetails, readHistory, readLatestReview } from "../../lib/data/repository";
 import { queryEtfs } from "../../lib/etf/catalog";
-import { loadLiveEtfCatalog } from "../../lib/etf/live-catalog";
+import { loadLiveEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
 import { beijingDateParts } from "../../lib/jobs/schedule";
 
 export const dynamic = "force-dynamic";
@@ -16,11 +16,11 @@ export default async function DashboardPage() {
   const start = new Date(`${date}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - 550);
   const from = start.toISOString().slice(0, 10);
-  const [storedReview, storedBrief, storedHistory, liveEtfs] = await Promise.all([
+  const [storedReview, storedBrief, storedHistory, liveEtfCatalog] = await Promise.all([
     readLatestReview(date),
     readBrief(date),
     readHistory(from, date),
-    loadLiveEtfCatalog(date).catch(() => process.env.NODE_ENV === "development" ? demoEtfs : []),
+    loadLiveEtfCatalogEnvelope(date).catch(() => ({ items: process.env.NODE_ENV === "development" ? demoEtfs : [] })),
   ]);
   const review = storedReview ?? { ...demoReview, date };
   const brief = storedBrief ?? { ...demoBrief, date };
@@ -28,7 +28,7 @@ export default async function DashboardPage() {
   const highDetailsByDate = storedHistory.length > 0
     ? Object.fromEntries(await Promise.all(history.slice(0, 60).map(async (row) => [row.date, await readHighDetails(row.date)] as const)))
     : demoHighDetailsByDate;
-  const etfs = queryEtfs(liveEtfs, {
+  const etfs = queryEtfs(liveEtfCatalog.items, {
     category: "全部",
     query: "",
     sort: "amount",

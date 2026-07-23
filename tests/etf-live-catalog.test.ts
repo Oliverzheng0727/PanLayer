@@ -28,4 +28,14 @@ describe("ETF live catalog cache", () => {
     await expect(cache.get(loader, 10_000)).rejects.toThrow("source down");
     await expect(cache.get(loader, 10_001)).resolves.toEqual([2]);
   });
+
+  it("returns the same timestamped envelope inside the one-minute cache", async () => {
+    const cache = createEtfCatalogCache<{ items: number[]; receivedAt: string }>(60_000);
+    let calls = 0;
+    const loader = async () => ({ items: [++calls], receivedAt: new Date(10_000).toISOString() });
+
+    expect(await cache.get(loader, 10_000)).toEqual(await cache.get(loader, 69_999));
+    expect(calls).toBe(1);
+    expect((await cache.get(loader, 70_001)).items).toEqual([2]);
+  });
 });

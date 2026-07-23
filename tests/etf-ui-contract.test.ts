@@ -12,4 +12,17 @@ describe("ETF workspace UI contract", () => {
     expect(chart).toMatch(/onAdd/);
     expect(workspace).toMatch(/onAdd=\{/);
   });
+
+  it("exposes source and freshness metadata from the full-market endpoint", async () => {
+    const [route, catalog] = await Promise.all([
+      readFile(new URL("../app/api/v1/etfs/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/etf/live-catalog.ts", import.meta.url), "utf8"),
+    ]);
+
+    expect(route).toMatch(/loadLiveEtfCatalogEnvelope/);
+    expect(catalog).toMatch(/receivedAt/);
+    expect(catalog).toMatch(/marketTime/);
+    expect(catalog).toMatch(/isStale/);
+    expect(catalog).toMatch(/SERVER_LIVE_CACHE_MS/);
+  });
 });
