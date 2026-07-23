@@ -88,6 +88,13 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 const BEIJING_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\+08:00$/;
 
+export function hasInvestmentAdviceLanguage(text: string): boolean {
+  return RECOMMENDATION_LANGUAGE.test(text)
+    || DIRECT_STOCK_ATTENTION_LANGUAGE.test(text)
+    || (READER_DIRECTIVE_LANGUAGE.test(text) && INVESTMENT_ACTION_LANGUAGE.test(text))
+    || (RETURN_GUARANTEE_LANGUAGE.test(text) && RETURN_LANGUAGE.test(text));
+}
+
 function blockText(block: BriefBlock): string[] {
   switch (block.type) {
     case "heading":
@@ -247,10 +254,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
     const text = blockText(block).join("");
-    if (RECOMMENDATION_LANGUAGE.test(text)
-      || DIRECT_STOCK_ATTENTION_LANGUAGE.test(text)
-      || (READER_DIRECTIVE_LANGUAGE.test(text) && INVESTMENT_ACTION_LANGUAGE.test(text))
-      || (RETURN_GUARANTEE_LANGUAGE.test(text) && RETURN_LANGUAGE.test(text))) {
+    if (hasInvestmentAdviceLanguage(text)) {
       errors.push(`${section.title}包含投资建议语言`);
     }
   });

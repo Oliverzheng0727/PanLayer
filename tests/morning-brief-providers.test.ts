@@ -483,7 +483,7 @@ describe("independent morning-brief section providers", () => {
     }
   });
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
-    let request: { parameters?: { enable_search?: boolean }; input?: { messages?: Array<{ content?: string }> } } = {};
+    let request: { parameters?: { enable_search?: boolean; enable_thinking?: boolean; max_tokens?: number; temperature?: number }; input?: { messages?: Array<{ content?: string }> } } = {};
     const fetcher: typeof fetch = async (_input, init) => {
       request = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
@@ -503,13 +503,54 @@ describe("independent morning-brief section providers", () => {
     });
 
     expect(request.parameters?.enable_search).toBe(true);
+    expect(request.parameters).toMatchObject({ enable_thinking: false, max_tokens: 4096, temperature: 0.2 });
     expect(request.input?.messages?.[1]?.content).toContain("global-industry");
+    expect(request.input?.messages?.[1]?.content).toContain("6 至 7 个有事实内容的 paragraph 或 bullet item");
+    expect(request.input?.messages?.[1]?.content).toContain("180 至 230 个中文字符");
+    expect(request.input?.messages?.[1]?.content).toContain("每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组");
     expect(request.input?.messages?.[1]?.content).not.toContain("secret");
     expect(result.sources[0]?.id).toBe("global-industry_ref_1");
     expect(JSON.stringify(result.section)).toContain("global-industry_ref_1");
     expect(result.section.status).toBe("complete");
     expect(result.section.generatedAt).toMatch(/\+08:00$/);
     expect(result.sources[0]).toMatchObject({ publishedAt: "2026-07-23T07:15:00+08:00", retrievedAt: result.section.generatedAt });
+  });
+
+  it("recovers only explicit Qwen inline search references for all sourced block shapes", async () => {
+    const section = modelSection("risk");
+    section.blocks = [
+      { type: "heading", text: "事实梳理" },
+      { type: "paragraph", text: `${section.blocks[1].text} [ref_1]`, sourceIds: "not-an-array" as never },
+      { type: "callout", tone: "insight", text: "北向资金流向为客观事实，仍需结合来源核验。[ref_1]", sourceIds: undefined as never },
+      { type: "bullets", items: [{ text: "产业催化仍需结合来源交叉验证。[ref_1]", sourceIds: undefined as never }] },
+    ];
+    const fetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/inline" }] } },
+    }));
+
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+    expect(JSON.stringify(result.section.blocks)).not.toContain("[ref_1]");
+    expect(result.section.blocks.slice(1, 4).every((block) => JSON.stringify(block).includes("risk_ref_1"))).toBe(true);
+
+    const unknown = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text}[ref_9]`, sourceIds: undefined }] };
+    const unknownFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(unknown) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/inline" }] } },
+    }));
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: unknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+  });
+
+  it("removes investment-advice sentences only on Qwen's final attempt while retaining facts", async () => {
+    const section = modelSection("risk");
+    section.blocks[1] = { type: "paragraph", text: `${section.blocks[1].text} 北向资金买入额仅记录资金流向这一客观事实。建议买入相关标的。`, sourceIds: ["ref_1"] };
+    const fetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/advice" }] } },
+    }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).rejects.toThrow(/投资建议/);
+    const normalized = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 3 });
+    const text = JSON.stringify(normalized.section);
+    expect(text).toContain("北向资金买入额");
+    expect(text).not.toContain("建议买入");
   });
 
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
