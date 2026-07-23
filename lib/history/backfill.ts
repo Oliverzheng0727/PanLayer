@@ -1,0 +1,204 @@
+import { createEastmoneyProvider } from "../data/eastmoney";
+import { bucketLimitLadder, rankLeaders, rankSectors } from "../domain/metrics";
+import type { Board, DailyReview, Exchange, Quote, SectorMetric } from "../domain/types";
+import {
+  fetchHistoricalBoardPools,
+  fetchRecentTradingDates,
+  type HistoricalBoardPools,
+  type HistoricalPoolItem,
+} from "./backfill-sources";
+
+const PROGRESS_KEY = "history-backfill-v1";
+
+export interface HistoryBackfillProgress {
+  target: number;
+  completed: number;
+  remaining: number;
+  dates: string[];
+}
+
+interface StoredProgress {
+  endDate: string;
+  days: number;
+  dates: string[];
+  completed: string[];
+}
+
+function securityMeta(code: string): { exchange: Exchange; board: Board; limitRate: number } {
+  if (/^(9|8|4)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: .3 };
+  if (/^688/.test(code)) return { exchange: "SH", board: "STAR", limitRate: .2 };
+  if (/^(300|301)/.test(code)) return { exchange: "SZ", board: "CHINEXT", limitRate: .2 };
+  if (/^6/.test(code)) return { exchange: "SH", board: "MAIN", limitRate: .1 };
+  return { exchange: "SZ", board: "MAIN", limitRate: .1 };
+}
+
+function poolItemToQuote(item: HistoricalPoolItem): Quote {
+  const meta = securityMeta(item.code);
+  const price = 1;
+  const previousClose = price / (1 + meta.limitRate);
+  return {
+    symbol: `${item.code}.${meta.exchange}`,
+    name: item.name,
+    exchange: meta.exchange,
+    board: meta.board,
+    isST: false,
+    isNoLimitDay: false,
+    previousClose,
+    open: price,
+    price,
+    high: price,
+    low: previousClose,
+    pctChange: item.pctChange,
+    amount: item.amount,
+    turnoverRate: 0,
+    limitUpPrice: price,
+    limitDownPrice: previousClose * (1 - meta.limitRate),
+    sector: item.industry || "未分类",
+    firstLimitTime: item.firstLimitTime,
+    limitStreak: Math.max(1, item.limitStreak),
+  };
+}
+
+function buildBackfillSectors(items: HistoricalPoolItem[]): SectorMetric[] {
+  const groups = new Map<string, HistoricalPoolItem[]>();
+  for (const item of items) {
+    const sector = item.industry || "未分类";
+    groups.set(sector, [...(groups.get(sector) ?? []), item]);
+  }
+  return rankSectors([...groups].map(([name, group]) => ({
+    name,
+    limitUpCount: group.length,
+    averagePct: Number((group.reduce((sum, item) => sum + item.pctChange, 0) / group.length).toFixed(2)),
+    amountGrowthPct: 0,
+    maxStreak: Math.max(0, ...group.map((item) => item.limitStreak)),
+  }))).slice(0, 20);
+}
+
+export function buildBackfilledReview(
+  date: string,
+  pools: HistoricalBoardPools,
+  marginBalance: number | null,
+  receivedAt: string,
+): DailyReview {
+  const limitUps = pools.limitUp.map(poolItemToQuote);
+  return {
+    date,
+    status: "partial",
+    source: "历史回补 · 东方财富涨跌停池 / 新浪交易日历",
+    updatedAt: receivedAt,
+    breadth: [],
+    metrics: {
+      limitUp: pools.limitUp.length,
+      limitDown: pools.limitDown.length,
+      consecutive: pools.limitUp.filter((item) => item.limitStreak >= 2).length,
+      largeRise: null,
+      high120: null,
+      allTimeHigh: null,
+      marginBalance,
+    },
+    premium: { openPct: null, closePct: null, sampleSize: 0 },
+    ladder: bucketLimitLadder(limitUps),
+    sectors: buildBackfillSectors(pools.limitUp),
+    leaders: rankLeaders(limitUps).slice(0, 20),
+    historyMeta: { backfilled: true, receivedAt },
+  };
+}
+
+function parseStoredProgress(value: string | undefined, endDate: string, days: number): StoredProgress | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as StoredProgress;
+    if (parsed.endDate !== endDate || parsed.days !== days || !Array.isArray(parsed.dates) || !Array.isArray(parsed.completed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function loadProgress(db: D1Database, endDate: string, days: number, fetcher: typeof fetch): Promise<StoredProgress> {
+  const row = await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?").bind(PROGRESS_KEY).first<{ value: string }>();
+  const stored = parseStoredProgress(row?.value, endDate, days);
+  if (stored) return stored;
+  const dates = await fetchRecentTradingDates(endDate, days, fetcher);
+  if (dates.length !== days) throw new Error(`history backfill trading dates ${dates.length}/${days}`);
+  return { endDate, days, dates, completed: [] };
+}
+
+async function saveProgress(db: D1Database, progress: StoredProgress) {
+  await db.prepare(
+    "INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+  ).bind(PROGRESS_KEY, JSON.stringify(progress), new Date().toISOString()).run();
+}
+
+async function readExistingReview(db: D1Database, date: string): Promise<DailyReview | null> {
+  const row = await db.prepare("SELECT payload FROM daily_reviews WHERE trade_date = ?").bind(date).first<{ payload: string }>();
+  if (!row?.payload) return null;
+  try {
+    return JSON.parse(row.payload) as DailyReview;
+  } catch {
+    return null;
+  }
+}
+
+async function persistBackfilledReview(db: D1Database, review: DailyReview) {
+  await db.prepare(
+    "INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) " +
+    "ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, " +
+    "status=excluded.status, updated_at=excluded.updated_at",
+  ).bind(review.date, JSON.stringify(review), review.source, review.status, review.updatedAt).run();
+}
+
+function normalizeMarginBalance(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value) || value <= 0) return null;
+  return value > 1_000_000 ? Number((value / 100_000_000).toFixed(2)) : value;
+}
+
+export async function runHistoryBackfillBatch({
+  db,
+  endDate,
+  days,
+  batchSize = 5,
+  fetcher = fetch,
+}: {
+  db: D1Database;
+  endDate: string;
+  days: number;
+  batchSize?: number;
+  fetcher?: typeof fetch;
+}): Promise<HistoryBackfillProgress> {
+  const progress = await loadProgress(db, endDate, days, fetcher);
+  const completed = new Set(progress.completed);
+  const pending = progress.dates.filter((date) => !completed.has(date)).slice(0, Math.max(1, batchSize));
+  const provider = createEastmoneyProvider(fetcher);
+
+  for (let offset = 0; offset < pending.length; offset += 2) {
+    const pair = pending.slice(offset, offset + 2);
+    const results = await Promise.all(pair.map(async (date) => {
+      const existing = await readExistingReview(db, date);
+      if (existing && existing.historyMeta?.backfilled !== true) return { date, completed: true };
+      try {
+        const [pools, marginBalance] = await Promise.all([
+          fetchHistoricalBoardPools(date, fetcher),
+          provider.getMarginBalance(date).catch(() => null),
+        ]);
+        const receivedAt = new Date().toISOString();
+        const review = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt);
+        await persistBackfilledReview(db, review);
+        return { date, completed: true };
+      } catch {
+        return { date, completed: false };
+      }
+    }));
+    for (const result of results) if (result.completed) completed.add(result.date);
+  }
+
+  const nextProgress = { ...progress, completed: progress.dates.filter((date) => completed.has(date)) };
+  await saveProgress(db, nextProgress);
+  return {
+    target: progress.dates.length,
+    completed: nextProgress.completed.length,
+    remaining: progress.dates.length - nextProgress.completed.length,
+    dates: progress.dates,
+  };
+}

@@ -18,6 +18,7 @@ import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
+import { runHistoryBackfillBatch } from "../history/backfill";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
@@ -443,7 +444,18 @@ export async function runPanLayerJob(
     const provider = createEastmoneyProvider(fetcher);
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
-    if (job.type === "breadth") {
+    if (job.type === "history-backfill") {
+      const progress = await runHistoryBackfillBatch({
+        db,
+        endDate: date,
+        days: job.days,
+        batchSize: 5,
+        fetcher,
+      });
+      const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
+      if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
+      return { ok: true, message };
+    } else if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
         at: job.time,

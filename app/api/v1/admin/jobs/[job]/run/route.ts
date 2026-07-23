@@ -7,13 +7,29 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   const denied = await authorizeAdminApi();
   if (denied) return denied;
   const { job } = await context.params;
-  const mapped: ScheduledJob | null = job === "morning-brief" ? { type: "morning-brief" } : job === "close-review" ? { type: "close-review" } : job.startsWith("breadth-") ? { type: "breadth", time: job.slice(8) } : null;
-  if (!mapped) return Response.json({ error: "unknown job" }, { status: 400 });
   const searchParams = new URL(request.url).searchParams;
-  const allowedParams = new Set(["force", "section", "mode"]);
+  const daysParam = searchParams.get("days");
+  const days = daysParam === null ? 20 : Number(daysParam);
+  if (daysParam !== null && (!Number.isInteger(days) || days < 1 || days > 20)) {
+    return Response.json({ error: "days must be an integer from 1 to 20" }, { status: 400 });
+  }
+  const mapped: ScheduledJob | null = job === "morning-brief"
+    ? { type: "morning-brief" }
+    : job === "close-review"
+      ? { type: "close-review" }
+      : job === "history-backfill"
+        ? { type: "history-backfill", days }
+        : job.startsWith("breadth-")
+          ? { type: "breadth", time: job.slice(8) }
+          : null;
+  if (!mapped) return Response.json({ error: "unknown job" }, { status: 400 });
+  const allowedParams = new Set(["force", "section", "mode", "days"]);
   for (const key of new Set(searchParams.keys())) {
     if (!allowedParams.has(key)) return Response.json({ error: "unknown query parameter" }, { status: 400 });
     if (searchParams.getAll(key).length !== 1) return Response.json({ error: `duplicate query parameter: ${key}` }, { status: 400 });
+  }
+  if (daysParam !== null && mapped.type !== "history-backfill") {
+    return Response.json({ error: "days is only supported for history-backfill" }, { status: 400 });
   }
   const forceParam = searchParams.get("force");
   if (forceParam !== null && forceParam !== "true" && forceParam !== "false") {
@@ -21,6 +37,9 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   }
   const section = searchParams.get("section");
   const mode = searchParams.get("mode");
+  if (mapped.type === "history-backfill" && (forceParam !== null || section !== null || mode !== null)) {
+    return Response.json({ error: "history-backfill only supports days" }, { status: 400 });
+  }
   let sectionKeys: BriefSectionKey[] | undefined;
   if (section !== null) {
     if (mapped.type !== "morning-brief") {

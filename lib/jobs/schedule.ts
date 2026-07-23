@@ -1,7 +1,8 @@
 export type ScheduledJob =
   | { type: "morning-brief" }
   | { type: "breadth"; time: string }
-  | { type: "close-review" };
+  | { type: "close-review" }
+  | { type: "history-backfill"; days: number };
 
 const BREADTH_TIMES = new Set(["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"]);
 

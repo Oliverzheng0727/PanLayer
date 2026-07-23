@@ -2,6 +2,13 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("admin morning brief regeneration API", () => {
+  it("accepts a bounded history-backfill days parameter", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+    expect(adminRouteSource).toContain('job === "history-backfill"');
+    expect(adminRouteSource).toContain('searchParams.get("days")');
+    expect(adminRouteSource).toMatch(/days[\s\S]*1[\s\S]*20/);
+  });
+
   it("validates a requested brief section before passing it to the runner", async () => {
     const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
 

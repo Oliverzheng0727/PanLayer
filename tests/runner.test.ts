@@ -5,10 +5,15 @@ import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
+import { runHistoryBackfillBatch } from "../lib/history/backfill";
 
 vi.mock("../lib/data/global/overnight", () => ({
   loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
 }));
+vi.mock("../lib/history/backfill", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/history/backfill")>();
+  return { ...original, runHistoryBackfillBatch: vi.fn(original.runHistoryBackfillBatch) };
+});
 
 const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
   symbol, name: symbol, exchange: "SH", board: "MAIN", isST: false, isNoLimitDay: false,
@@ -122,6 +127,44 @@ function qwenResponse(key: BriefSectionKey, status = 200) {
 }
 
 describe("close review aggregation", () => {
+  it("runs one resumable history-backfill batch and reports progress", async () => {
+    const jobUpdates: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() { return sql.startsWith("INSERT INTO job_runs") ? { id: 1 } : null; },
+          async run() {
+            if (sql.startsWith("UPDATE job_runs")) jobUpdates.push(String(values[0] ?? ""));
+            return {};
+          },
+        };
+      },
+      async batch() { return []; },
+    } as unknown as D1Database;
+    vi.mocked(runHistoryBackfillBatch).mockResolvedValueOnce({
+      target: 20,
+      completed: 5,
+      remaining: 15,
+      dates: [],
+    });
+
+    await expect(runPanLayerJob(
+      { type: "history-backfill", days: 20 },
+      new Date("2026-07-23T08:00:00Z"),
+      { DB: db },
+    )).resolves.toEqual({ ok: true, message: "history-backfill 5/20; remaining 15" });
+
+    expect(runHistoryBackfillBatch).toHaveBeenCalledWith(expect.objectContaining({
+      db,
+      endDate: "2026-07-23",
+      days: 20,
+      batchSize: 5,
+    }));
+    expect(jobUpdates.at(-1)).toBe("history-backfill 5/20; remaining 15");
+  });
+
   it("bounds a completely hung global snapshot request and clears its timer", async () => {
     vi.useFakeTimers();
     try {
