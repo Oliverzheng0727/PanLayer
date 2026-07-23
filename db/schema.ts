@@ -36,6 +36,26 @@ export const morningBriefs = sqliteTable("morning_briefs", {
   updatedAt: text("updated_at").notNull(),
 });
 
+export const morningBriefSections = sqliteTable("morning_brief_sections", {
+  tradeDate: text("trade_date").notNull(),
+  sectionKey: text("section_key").notNull(),
+  model: text("model").notNull(),
+  payload: text("payload").notNull(),
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error").notNull().default(""),
+  generatedAt: text("generated_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.tradeDate, table.sectionKey] })]);
+
+export const jobLeases = sqliteTable("job_leases", {
+  job: text("job").notNull(),
+  tradeDate: text("trade_date").notNull(),
+  token: text("token").notNull(),
+  acquiredAt: text("acquired_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.job, table.tradeDate] })]);
+
 export const etfSnapshots = sqliteTable("etf_snapshots", {
   tradeDate: text("trade_date").notNull(),
   symbol: text("symbol").notNull(),
@@ -47,6 +67,15 @@ export const etfSnapshots = sqliteTable("etf_snapshots", {
   scale: text("scale"),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol] }), index("etf_trade_date_idx").on(table.tradeDate)]);
+
+export const etfCatalogCache = sqliteTable("etf_catalog_cache", {
+  tradeDate: text("trade_date").primaryKey(),
+  payload: text("payload").notNull(),
+  source: text("source").notNull(),
+  status: text("status").notNull(),
+  receivedAt: text("received_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
 
 export const userEtfWatchlist = sqliteTable("user_etf_watchlist", {
   userEmail: text("user_email").notNull(),

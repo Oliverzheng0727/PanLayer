@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateMorningBrief, generateQwenMorningBrief, resolveBriefSources, validateMorningBrief } from "../lib/ai/morning-brief";
+import { generateMorningBrief, generateQwenMorningBrief, resolveBriefSources, validateLegacyMorningBrief } from "../lib/ai/morning-brief";
 
 const validBrief = {
   date: "2026-07-22",
@@ -24,14 +24,14 @@ const validBrief = {
 
 describe("morning brief contract", () => {
   it("accepts five sourced sections and the required disclaimer", () => {
-    expect(validateMorningBrief(validBrief)).toEqual({ ok: true, errors: [] });
+    expect(validateLegacyMorningBrief(validBrief)).toEqual({ ok: true, errors: [] });
   });
 
   it("rejects unsourced claims and recommendation language", () => {
     const invalid = structuredClone(validBrief);
     invalid.sections[0].items[0].sourceIds = [];
     invalid.sections[1].items[0].text = "建议买入并加仓";
-    const result = validateMorningBrief(invalid);
+    const result = validateLegacyMorningBrief(invalid);
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toContain("来源");
     expect(result.errors.join(" ")).toContain("投资建议");
@@ -147,7 +147,7 @@ describe("Qwen morning brief generation", () => {
       apiKey: process.env.DASHSCOPE_API_KEY ?? "",
       globalSnapshot: [],
     });
-    expect(validateMorningBrief(result)).toEqual({ ok: true, errors: [] });
+    expect(validateLegacyMorningBrief(result)).toEqual({ ok: true, errors: [] });
     expect(result.sources.length).toBeGreaterThan(0);
   }, 120_000);
 });

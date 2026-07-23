@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { MorningBrief } from "../../lib/ai/morning-brief";
+import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
@@ -17,6 +17,7 @@ import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
+import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 
@@ -51,7 +52,18 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
   demo: { label: "演示", detail: "演示模式，定时任务采集后自动替换", dot: "bg-orange-400 shadow-[0_0_10px_#fb923c]", pill: "border-orange-400/15 bg-orange-400/[0.07] text-orange-300" },
 };
 
-export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
+const briefStatusLabel = { complete: "完整", partial: "部分", failed: "失败" } as const;
+
+function briefItemCount(section: BriefSection) {
+  return section.blocks.reduce((count, block) => count + (block.type === "heading" ? 0 : block.type === "bullets" ? block.items.length : 1), 0);
+}
+
+function briefSourceCount(section: BriefSection) {
+  const blockSourceIds = section.blocks.flatMap((block) => block.type === "heading" ? [] : block.type === "bullets" ? block.items.flatMap((item) => item.sourceIds) : block.sourceIds);
+  return new Set([...section.sourceIds, ...blockSourceIds]).size;
+}
+
+export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -59,6 +71,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const liveRequestInFlight = useRef(false);
+  const closeBriefDrawer = useCallback(() => setBriefSectionIndex(null), []);
   const effectiveStatus: DailyReview["status"] = refreshError
     ? "failed"
     : review.status === "demo"
@@ -67,7 +80,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
         ? review.status
         : liveMarket?.status ?? "complete";
   const statusView = statusViews[effectiveStatus];
-  const persistedTotal = useMemo(() => review.breadth.at(-1) ?? { time: "15:00", rising: 0, falling: 0, flat: 0 }, [review]);
+  const persistedTotal = useMemo(() => review.breadth.at(-1) ?? null, [review]);
   const isLiveBreadthUsable = liveMarket !== null
     && !liveMarket.isStale
     && liveMarket.universeSize >= 5_000
@@ -179,7 +192,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
             </div>
 
             <div className="metric-grid">
-              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "实时行情覆盖不足" : `下跌 ${total.falling}`} />
+              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "涨跌家数数据暂缺" : `下跌 ${total.falling}`} />
               <Metric label="涨停数量" value={String(review.metrics.limitUp)} note={`跌停 ${review.metrics.limitDown}`} />
               <Metric label="连板家数" value={String(review.metrics.consecutive)} note={ladderNote} />
               <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
@@ -190,20 +203,23 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
           <section className="dashboard-section grid gap-5 xl:grid-cols-[1.5fr_1fr]">
             <Panel title="盘中涨跌家数" eyebrow="MARKET BREADTH" id="breadth">
-              <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>
+              {review.breadth.length === 0
+                ? <div className="grid h-[270px] place-items-center text-sm text-white/30">盘中涨跌家数暂缺</div>
+                : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}
             </Panel>
             <Panel title="市场温度" eyebrow="CLOSE SNAPSHOT">
               {total === null
                 ? <div className="grid min-h-40 place-items-center text-sm text-white/30">实时行情覆盖不足，市场温度暂不计算</div>
                 : <div className="space-y-5 pt-4"><BreadthBar label="上涨" value={total.rising} max={maxBreadth} color="#ef5b58"/><BreadthBar label="下跌" value={total.falling} max={maxBreadth} color="#3bc987"/><BreadthBar label="平盘" value={total.flat} max={maxBreadth} color="#8b8d90"/></div>}
-              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise}/><MiniStat label="涨跌比" value={total === null ? "暂缺" : formatBreadthRatio(total.rising, total.falling)}/></div>
+              <div className="mt-8 grid grid-cols-2 gap-3"><MiniStat label="大涨股" value={review.metrics.largeRise === null ? "暂缺" : review.metrics.largeRise}/><MiniStat label="涨跌比" value={total === null ? "暂缺" : formatBreadthRatio(total.rising, total.falling)}/></div>
             </Panel>
           </section>
 
-          <section id="brief" className="dashboard-section scroll-mt-24">
-            <SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" />
-            <div className="brief-grid">{brief.sections.map((section, index) => <button type="button" key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.slice(0, 2).map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<span className="brief-card-action">打开详情 · {new Set(section.items.flatMap((item) => item.sourceIds)).size} 个来源 <ArrowUpRight size={11}/></span></button>)}</div>
-            <BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} />
+          <section id="brief" className="dashboard-section scroll-mt-24" data-can-manage-brief={canManageBrief ? "true" : "false"}>
+            <div className="brief-heading-row"><SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" /><div className="flex flex-wrap gap-2">{canManageBrief && <BriefRegenerateButton />}{canManageBrief && brief && brief.status !== "complete" && <BriefRegenerateButton mode="failed" label="仅重试失败模块" />}</div></div>
+            {brief
+              ? <><div className="brief-grid">{brief.sections.map((section, index) => <article key={section.key} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`}><button type="button" className="brief-card-open" onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="brief-card-top"><span>0{index + 1}</span><span className={`brief-card-status is-${section.status}`}>{briefStatusLabel[section.status]}</span><Sparkles size={15} aria-hidden="true"/></div><h3>{section.title}</h3><p className="brief-card-summary">{section.summary}</p><div className="brief-tags">{section.tags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="brief-card-meta"><span>{briefItemCount(section)} 条</span><span>{briefSourceCount(section)} 个来源</span><span>{section.generatedAt.slice(11, 16)} 生成</span></div><span className="brief-card-action">打开详情 <ArrowUpRight size={11}/></span></button>{canManageBrief && section.status === "failed" && <BriefRegenerateButton section={section.key} label="重试此模块" />}</article>)}</div><BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={closeBriefDrawer} /></>
+              : <div className="brief-unavailable panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">暂不可用，生成后将显示五个模块。</p></div></div>}
           </section>
 
           <section id="ladder" className="dashboard-section scroll-mt-24">
@@ -223,7 +239,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
             <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="像 Excel 一样排序、滚动并回看每个交易日。" />
-            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} />
+            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} canManageHistory={canManageBrief} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

@@ -1,4 +1,5 @@
 import type { Board, Exchange, Quote } from "../domain/types";
+import type { EtfSnapshot } from "./provider";
 
 const TENCENT_URL = "https://qt.gtimg.cn/q=";
 
@@ -105,4 +106,35 @@ export async function fetchTencentQuotes(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
   return results.flat();
+}
+
+export async function refreshEtfCatalogFromTencent(
+  catalog: EtfSnapshot[],
+  fetcher: typeof fetch = fetch,
+  options: { minimumCoverage?: number; now?: Date } = {},
+): Promise<EtfSnapshot[]> {
+  if (catalog.length === 0) throw new Error("Tencent ETF universe is empty");
+  const quotes = await fetchTencentQuotes(
+    catalog.map((item) => `${item.symbol}.${item.exchange}`),
+    fetcher,
+  );
+  const quoteBySymbol = new Map(quotes.map((quote) => [quote.symbol.split(".")[0], quote]));
+  const coverage = quoteBySymbol.size / catalog.length;
+  const minimumCoverage = options.minimumCoverage ?? 0.7;
+  if (coverage < minimumCoverage) {
+    throw new Error(`Tencent ETF coverage ${(coverage * 100).toFixed(1)}% is below ${(minimumCoverage * 100).toFixed(1)}%`);
+  }
+  const updatedAt = (options.now ?? new Date()).toISOString();
+  return catalog.map((item) => {
+    const quote = quoteBySymbol.get(item.symbol);
+    return quote ? {
+      ...item,
+      name: quote.name || item.name,
+      price: quote.price,
+      pctChange: quote.pctChange,
+      amount: quote.amount,
+      turnoverRate: quote.turnoverRate || item.turnoverRate,
+      updatedAt,
+    } : item;
+  });
 }

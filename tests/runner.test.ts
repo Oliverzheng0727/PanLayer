@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { describe, expect, it, vi } from "vitest";
+import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
+import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
+import { runHistoryBackfillBatch } from "../lib/history/backfill";
+
+vi.mock("../lib/data/global/overnight", () => ({
+  loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
+}));
+vi.mock("../lib/history/backfill", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/history/backfill")>();
+  return { ...original, runHistoryBackfillBatch: vi.fn(original.runHistoryBackfillBatch) };
+});
 
 const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
   symbol, name: symbol, exchange: "SH", board: "MAIN", isST: false, isNoLimitDay: false,
@@ -12,7 +23,370 @@ const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
   firstLimitTime: streak ? "09:35:00" : null, limitStreak: streak,
 });
 
+function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
+  const jobUpdates: Array<{ status: string; message: string }> = [];
+  const requests: Partial<Record<BriefSectionKey, number>> = {};
+  let nextJobRunId = 1;
+  const db = {
+    prepare(sql: string) {
+      let values: unknown[] = [];
+      return {
+        bind(...bound: unknown[]) { values = bound; return this; },
+        async first() {
+          if (sql.startsWith("INSERT INTO job_runs")) return { id: nextJobRunId++ };
+          if (sql.includes("job_leases")) return { token: String(sql.startsWith("UPDATE") ? values[4] : values[2]) };
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() {
+          if (sql.startsWith("UPDATE job_runs")) {
+            jobUpdates.push({ status: String(values[0]), message: String(values[1] ?? "") });
+          }
+          return {};
+        },
+      };
+    },
+    async batch() { return []; },
+  } as unknown as D1Database;
+  const fetcher: typeof fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+    const prompt = request.input.messages[1].content;
+    const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
+    if (definition) requests[definition.key] = (requests[definition.key] ?? 0) + 1;
+    if (!definition || failedKeys.includes(definition.key)) {
+      return new Response(JSON.stringify({ message: "provider unavailable" }), { status: 503 });
+    }
+    const section = {
+      key: definition.key,
+      title: definition.title,
+      summary: "已核验的隔夜市场信息摘要。",
+      tags: ["市场"],
+      blocks: [{
+        type: "paragraph",
+        text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(100)}`,
+        sourceIds: ["ref_1"],
+      }],
+    };
+    return new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(section) } }],
+        search_info: { search_results: [{ index: 1, title: "可靠来源", url: `https://example.com/${definition.key}` }] },
+      },
+    }), { status: 200 });
+  };
+  return { db, fetcher, jobUpdates, requests };
+}
+
+function orchestratedLeaseHarness() {
+  let lease: { token: string; acquiredAt: string; expiresAt: string } | null = null;
+  const globalWrites: string[] = [];
+  const sectionWrites: Array<{ key: string; status: string; model: string }> = [];
+  const aggregateWrites: string[] = [];
+  let runId = 0;
+  const db = {
+    prepare(sql: string) {
+      let values: unknown[] = [];
+      return {
+        bind(...bound: unknown[]) { values = bound; return this; },
+        async first() {
+          if (sql.startsWith("INSERT INTO job_leases")) {
+            const [,, token, acquiredAt, expiresAt, now, staleAt] = values as string[];
+            if (lease && lease.expiresAt > now && lease.acquiredAt > staleAt) return null;
+            lease = { token, acquiredAt, expiresAt };
+            return { token };
+          }
+          if (sql.startsWith("UPDATE job_leases")) {
+            const [acquiredAt, expiresAt,,, token, now] = values as string[];
+            if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
+            lease = { token, acquiredAt, expiresAt };
+            return { token };
+          }
+          if (sql.startsWith("INSERT INTO job_runs")) return { id: ++runId };
+          return null;
+        },
+        async all() { return { results: [] }; },
+        async run() {
+          if (sql.startsWith("DELETE FROM job_leases") && lease?.token === values[2]) lease = null;
+          if (sql.includes("global_market_snapshots")) globalWrites.push(String(values[2]));
+          if (sql.includes("morning_brief_sections")) sectionWrites.push({ key: String(values[1]), status: String(values[4]), model: String(values[2]) });
+          if (sql.includes("morning_briefs")) aggregateWrites.push(String(values[1]));
+          return {};
+        },
+      };
+    },
+    async batch() { return []; },
+  } as unknown as D1Database;
+  return { db, globalWrites, sectionWrites, aggregateWrites };
+}
+
+function qwenResponse(key: BriefSectionKey, status = 200) {
+  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key)!;
+  return new Response(JSON.stringify(status === 200 ? {
+    output: { choices: [{ message: { content: JSON.stringify({ key, title: definition.title, summary: "摘要", tags: ["测试"], blocks: [{ type: "paragraph", text: `${definition.requiredTerms.join("、")}。${"客观事实与盘面映射。".repeat(130)}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: `https://example.com/${key}` }] } },
+  } : { message: "provider unavailable" }), { status });
+}
+
 describe("close review aggregation", () => {
+  it("runs one resumable history-backfill batch and reports progress", async () => {
+    const jobUpdates: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() { return sql.startsWith("INSERT INTO job_runs") ? { id: 1 } : null; },
+          async run() {
+            if (sql.startsWith("UPDATE job_runs")) jobUpdates.push(String(values[0] ?? ""));
+            return {};
+          },
+        };
+      },
+      async batch() { return []; },
+    } as unknown as D1Database;
+    vi.mocked(runHistoryBackfillBatch).mockResolvedValueOnce({
+      target: 20,
+      completed: 5,
+      remaining: 15,
+      dates: [],
+    });
+
+    await expect(runPanLayerJob(
+      { type: "history-backfill", days: 20 },
+      new Date("2026-07-23T08:00:00Z"),
+      { DB: db },
+    )).resolves.toEqual({ ok: true, message: "history-backfill 5/20; remaining 15" });
+
+    expect(runHistoryBackfillBatch).toHaveBeenCalledWith(expect.objectContaining({
+      db,
+      endDate: "2026-07-23",
+      days: 20,
+      batchSize: 5,
+    }));
+    expect(jobUpdates.at(-1)).toBe("history-backfill 5/20; remaining 15");
+  });
+
+  it("bounds a completely hung global snapshot request and clears its timer", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetcher: typeof fetch = async (_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => { aborted = true; reject(new DOMException("aborted", "AbortError")); }, { once: true });
+      });
+      const buffered = createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000);
+      const pending = buffered("https://example.com/snapshot");
+      const rejected = expect(pending).rejects.toThrow(/Global snapshot request timed out/);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await rejected;
+      expect(aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds a global snapshot response whose headers arrive but body never finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: typeof fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"data":')); },
+      }), { headers: { "content-type": "application/json", "x-provider": "snapshot" } });
+      const buffered = createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000);
+      const pending = buffered("https://example.com/snapshot");
+      const rejected = expect(pending).rejects.toThrow(/Global snapshot request timed out/);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("buffers a normal global snapshot response without changing status, headers, or body", async () => {
+    const fetcher: typeof fetch = async () => new Response('{"ok":true}', { status: 201, headers: { "content-type": "application/json", "x-provider": "snapshot" } });
+    const response = await createDeadlineAwareBufferedFetcher(fetcher, Date.now() + 110_000)("https://example.com/snapshot");
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-provider")).toBe("snapshot");
+    await expect(response.text()).resolves.toBe('{"ok":true}');
+  });
+
+  it("continues to morning modules after a timed-out snapshot request becomes unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db } = morningBriefJobHarness([]);
+      let generated = 0;
+      const fetcher: typeof fetch = async (input, init) => {
+        if (String(input).includes("snapshot-hang")) return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+        const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+        const definition = BRIEF_SECTION_DEFINITIONS.find((item) => request.input.messages[1].content.includes(`key 必须为 "${item.key}"`))!;
+        generated += 1;
+        return qwenResponse(definition.key);
+      };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementationOnce(async (_env, snapshotFetcher) => {
+        await snapshotFetcher("https://example.com/snapshot-hang").catch(() => undefined);
+        return { raw: [], reconciled: [] };
+      });
+      const pending = runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      await expect(pending).resolves.toMatchObject({ ok: true });
+      expect(generated).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("loads prior review and ETF snapshot provenance from persisted dates and update times", async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() { return this; },
+          async first() {
+            return sql.includes("daily_reviews") ? {
+              trade_date: "2026-07-22",
+              updated_at: "2026-07-22T16:10:00+08:00",
+              status: "complete",
+              payload: JSON.stringify({ date: "2026-07-22", status: "complete", breadth: [], metrics: { limitUp: 1, limitDown: 0, consecutive: 0, largeRise: 0, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] }, sectors: [], leaders: [] }),
+            } : null;
+          },
+          async all() {
+            return { results: [{ category: "人工智能", name: "AI ETF", symbol: "159819", trade_date: "2026-07-21", updated_at: "2026-07-21T16:05:00+08:00" }] };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    const context = await loadMorningBriefMarketContext(db, "2026-07-23");
+    expect(context.review).toMatchObject({ marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T08:10:00.000Z" });
+    expect(context.etfSnapshot).toEqual({ marketTime: "2026-07-21T00:00:00+08:00", receivedAt: "2026-07-21T08:05:00.000Z" });
+  });
+
+  it("fences a stale orchestrated run before its delayed global snapshot can write", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db, globalWrites, sectionWrites, aggregateWrites } = orchestratedLeaseHarness();
+      const at = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(at);
+      let resume!: () => void;
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => { resume = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      const snapshot = { raw: [{ key: "sp500", label: "标普500", provider: "test", value: 630.2, previousClose: 625.1, pctChange: .8, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", status: "ok" as const, message: "" }], reconciled: [] };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementationOnce(async () => { entered(); await blocked; return snapshot; }).mockImplementationOnce(async () => snapshot);
+      const fetcher: typeof fetch = async (_input, init) => qwenResponse(BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key);
+      const oldRun = runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+      await reached;
+      vi.setSystemTime(new Date("2026-07-22T23:31:00Z"));
+      await expect(runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] })).resolves.toMatchObject({ ok: true });
+      resume();
+
+      await expect(oldRun).rejects.toThrow(/lease/i);
+      expect(globalWrites).toEqual(["标普500"]);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen-plus"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("fences a stale provider failure before failed-section or aggregate persistence", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db, globalWrites, sectionWrites, aggregateWrites } = orchestratedLeaseHarness();
+      const at = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(at);
+      const snapshot = { raw: [{ key: "sp500", label: "标普500", provider: "test", value: 630.2, previousClose: 625.1, pctChange: .8, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", status: "ok" as const, message: "" }], reconciled: [] };
+      vi.mocked(loadGlobalOvernightSnapshot).mockImplementation(async () => snapshot);
+      let resume!: () => void;
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => { resume = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      let calls = 0;
+      const fetcher: typeof fetch = async (_input, init) => {
+        const key = BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key;
+        calls += 1;
+        if (calls === 1) { entered(); await blocked; return qwenResponse(key, 503); }
+        return qwenResponse(key);
+      };
+      const oldRun = runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+      await reached;
+      vi.setSystemTime(new Date("2026-07-22T23:31:00Z"));
+      await expect(runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] })).resolves.toMatchObject({ ok: true });
+      resume();
+
+      await expect(oldRun).rejects.toThrow(/lease/i);
+      expect(globalWrites).toHaveLength(2);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen-plus"]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reclaims cancelled leases after three minutes but preserves renewed active leases", async () => {
+    let lease: { token: string; acquiredAt: string; expiresAt: string } | null = null;
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() {
+            if (!sql.includes("job_leases")) return null;
+            if (sql.startsWith("INSERT")) {
+              const [,, token, acquiredAt, expiresAt, now, staleAt] = values as string[];
+              if (lease && lease.expiresAt > now && lease.acquiredAt > staleAt) return null;
+              lease = { token, acquiredAt, expiresAt };
+              return { token };
+            }
+            const [acquiredAt, expiresAt,,, token, now] = values as string[];
+            if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
+            lease = { token, acquiredAt, expiresAt };
+            return { token };
+          },
+          async run() {
+            if (sql.startsWith("DELETE") && lease?.token === values[2]) lease = null;
+            return {};
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const start = new Date("2026-07-22T23:00:00Z");
+    const first = await acquireJobLease(db, "morning-brief", "2026-07-23", start);
+    const beforeExpiry = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:02:59Z"));
+
+    expect(first).toBeTruthy();
+    expect(beforeExpiry).toBeNull();
+    const recovered = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:03:00Z"));
+    expect(recovered).toBeTruthy();
+    expect(recovered).not.toBe(first);
+
+    await expect(renewJobLease(db, "morning-brief", "2026-07-23", recovered!, new Date("2026-07-22T23:05:00Z"))).resolves.toBe(true);
+    const protectedOverlap = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:07:00Z"));
+    expect(protectedOverlap).toBeNull();
+    await releaseJobLease(db, "morning-brief", "2026-07-23", "stale-token");
+    expect(lease?.token).toBe(recovered);
+  });
+
+  it("releases an acquired morning lease when job-run creation fails", async () => {
+    let released = false;
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) { values = bound; return this; },
+          async first() {
+            if (sql.includes("job_leases")) return { token: String(values[2]) };
+            if (sql.startsWith("INSERT INTO job_runs")) throw new Error("D1 unavailable");
+            return null;
+          },
+          async run() { if (sql.startsWith("DELETE FROM job_leases")) released = true; return {}; },
+        };
+      },
+      async batch() { return []; },
+    } as unknown as D1Database;
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" })).rejects.toThrow("D1 unavailable");
+    expect(released).toBe(true);
+  });
+
   it("loads the persisted security universe for provider fallback", async () => {
     const loadExpectedSymbols = (runnerModule as unknown as {
       loadExpectedSymbols?: (db: D1Database) => Promise<string[]>;
@@ -103,5 +477,226 @@ describe("close review aggregation", () => {
       marginBalance: null, high120: null, allTimeHigh: null, source: "东方财富",
     });
     expect(review.breadth).toEqual([{ time: "15:00", rising: 1, falling: 1, flat: 1 }]);
+  });
+
+  it("persists a partial morning job run and names its failed module", async () => {
+    const { db, fetcher, jobUpdates } = morningBriefJobHarness(["mapping"]);
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
+      .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
+
+    expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "failed modules: mapping" });
+  });
+
+  it("keeps Qwen at one external attempt per module for a multi-module batch", async () => {
+    const { db, fetcher, requests } = morningBriefJobHarness(["risk", "mapping"]);
+
+    await runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk", "mapping"] });
+
+    expect(requests.risk).toBe(1);
+    expect(requests.mapping).toBe(1);
+  });
+
+  it("does not call Firecrawl when the first Qwen generation succeeds", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        return Response.json({ success: true, data: { news: [] } });
+      }
+      calls.qwen += 1;
+      return qwenResponse("risk");
+    };
+
+    await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
+  });
+
+  it("calls Firecrawl once and performs one search-disabled Qwen correction after failure", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const qwenBodies: Array<{ parameters: { enable_search: boolean }; input: { messages: Array<{ content: string }> } }> = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer firecrawl-secret");
+        return Response.json({
+          success: true,
+          data: {
+            news: [{
+              title: "Risk source",
+              url: "https://example.com/risk-source",
+              markdown: "Verified risk context. ".repeat(40),
+            }],
+          },
+        });
+      }
+      calls.qwen += 1;
+      const body = JSON.parse(String(init?.body)) as typeof qwenBodies[number];
+      qwenBodies.push(body);
+      if (calls.qwen === 1) return Response.json({ message: "provider unavailable" }, { status: 503 });
+      const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === "risk")!;
+      return Response.json({
+        output: {
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                key: definition.key,
+                title: definition.title,
+                summary: "已核验的风险摘要。",
+                tags: ["市场"],
+                blocks: [{
+                  type: "paragraph",
+                  text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`,
+                  sourceIds: ["firecrawl_risk_1"],
+                }],
+              }),
+            },
+          }],
+        },
+      });
+    };
+
+    const result = await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl-secret",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
+    expect(qwenBodies[0].parameters.enable_search).toBe(true);
+    expect(qwenBodies[1].parameters.enable_search).toBe(false);
+    expect(qwenBodies[1].input.messages[1].content).toContain("firecrawl_risk_1");
+  });
+
+  it("uses Firecrawl at most once when the correction also fails", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, firecrawl: 0 };
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("firecrawl.example")) {
+        calls.firecrawl += 1;
+        return Response.json({
+          success: true,
+          data: {
+            news: [{
+              title: "Risk source",
+              url: "https://example.com/risk-source",
+              markdown: "Verified risk context. ".repeat(40),
+            }],
+          },
+        });
+      }
+      calls.qwen += 1;
+      return Response.json({ message: "provider unavailable" }, { status: 503 });
+    };
+
+    await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        FIRECRAWL_API_KEY: "firecrawl",
+        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
+  });
+
+  it("skips Firecrawl when fewer than 40 seconds remain in the batch budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-07-22T23:15:00Z");
+      vi.setSystemTime(now);
+      const { db } = morningBriefJobHarness([]);
+      const calls = { qwen: 0, firecrawl: 0 };
+      const fetcher: typeof fetch = async (input) => {
+        if (String(input).includes("firecrawl.example")) {
+          calls.firecrawl += 1;
+          return Response.json({ success: true, data: { news: [] } });
+        }
+        calls.qwen += 1;
+        vi.setSystemTime(new Date(now.getTime() + 71_000));
+        return Response.json({ message: "provider unavailable" }, { status: 503 });
+      };
+
+      await runPanLayerJob(
+        { type: "morning-brief" },
+        now,
+        {
+          DB: db,
+          DASHSCOPE_API_KEY: "qwen",
+          FIRECRAWL_API_KEY: "firecrawl",
+          FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
+        },
+        { fetcher, sectionKeys: ["risk"] },
+      );
+
+      expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not perform a redundant outer retry for an explicit Qwen module", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const requests: string[] = [];
+    let calls = 0;
+    const fetcher: typeof fetch = async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+      const prompt = request.input.messages[1].content;
+      requests.push(prompt);
+      calls += 1;
+      const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`))!;
+      const terms = calls === 1 ? definition.requiredTerms.filter((term) => term !== "关键") : definition.requiredTerms;
+      const section = {
+        key: definition.key,
+        title: definition.title,
+        summary: "已核验的隔夜市场信息摘要。",
+        tags: ["市场"],
+        blocks: [{ type: "paragraph", text: `${terms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`, sourceIds: ["ref_1"] }],
+      };
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可靠来源", url: "https://example.com/risk" }] } },
+      }));
+    };
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] }))
+      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
+
+    expect(calls).toBe(1);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("persists a failed morning job run and names every failed module", async () => {
+    const failedKeys = BRIEF_SECTION_DEFINITIONS.map((item) => item.key);
+    const { db, fetcher, jobUpdates } = morningBriefJobHarness(failedKeys);
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
+      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
+
+    expect(jobUpdates.at(-1)).toEqual({ status: "failed", message: `failed modules: ${failedKeys.join(", ")}` });
   });
 });

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { globalMarketSnapshots, marketSourceAudits } from "../db/schema";
+import { globalMarketSnapshots, marketSourceAudits, morningBriefSections } from "../db/schema";
 import { summarizeDataHealth } from "../lib/data/repository";
 
 describe("persisted data health", () => {
-  it("exports source-audit and global-snapshot tables", () => {
+  it("exports source-audit, global-snapshot, and brief-section tables", () => {
     expect(marketSourceAudits).toBeDefined();
     expect(globalMarketSnapshots).toBeDefined();
+    expect(morningBriefSections).toBeDefined();
   });
 
   it("reports domestic, global, macro and AI health independently", () => {

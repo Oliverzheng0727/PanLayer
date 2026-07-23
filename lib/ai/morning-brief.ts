@@ -1,25 +1,29 @@
 import type { ReconciledGlobalPoint } from "../data/global/types";
 
-export interface BriefSource {
+// V2 callers can adopt the contract without disrupting the legacy generators
+// until their provider and assembly modules are migrated.
+export * from "./morning-brief-contract";
+
+export interface LegacyBriefSource {
   id: string;
   title: string;
   url: string;
-  publishedAt: string;
+  publishedAt: string | null;
 }
 
-export interface BriefItem {
+export interface LegacyBriefItem {
   text: string;
   sourceIds: string[];
 }
 
-export interface MorningBrief {
+export interface LegacyMorningBrief {
   date: string;
-  sections: Array<{ title: string; items: BriefItem[] }>;
-  sources: BriefSource[];
+  sections: Array<{ title: string; items: LegacyBriefItem[] }>;
+  sources: LegacyBriefSource[];
   disclaimer: string;
 }
 
-export function resolveBriefSources(brief: MorningBrief, item: BriefItem): BriefSource[] {
+export function resolveBriefSources(brief: LegacyMorningBrief, item: LegacyBriefItem): LegacyBriefSource[] {
   const byId = new Map(brief.sources.map((source) => [source.id, source]));
   const seen = new Set<string>();
   return item.sourceIds.flatMap((id) => {
@@ -43,7 +47,7 @@ const RECOMMENDATION_LANGUAGE = /建议(买入|卖出|加仓|减仓)|买点|卖�
 export const QWEN_MORNING_BRIEF_MODEL = "qwen-plus";
 export const DASHSCOPE_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 
-export function validateMorningBrief(input: MorningBrief): { ok: boolean; errors: string[] } {
+export function validateLegacyMorningBrief(input: LegacyMorningBrief): { ok: boolean; errors: string[] } {
   const errors: string[] = [];
   const titles = input.sections.map((section) => section.title);
   REQUIRED_SECTIONS.forEach((title) => {
@@ -115,7 +119,7 @@ export async function generateMorningBrief({
   apiKey: string;
   fetcher?: typeof fetch;
   globalSnapshot?: ReconciledGlobalPoint[];
-}): Promise<MorningBrief> {
+}): Promise<LegacyMorningBrief> {
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
   const numericContext = JSON.stringify(globalSnapshot);
   const prompt = `生成 ${date} 北京时间 07:15 的A股隔夜早参。主动检索从上一交易日收盘至当前的全球与国内可靠来源。
@@ -146,8 +150,8 @@ export async function generateMorningBrief({
   const payload = await response.json() as { output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }> };
   const text = payload.output?.flatMap((item) => item.content ?? []).find((item) => item.type === "output_text")?.text;
   if (!text) throw new Error("OpenAI response did not include structured output text");
-  const brief = JSON.parse(text) as MorningBrief;
-  const validation = validateMorningBrief(brief);
+  const brief = JSON.parse(text) as LegacyMorningBrief;
+  const validation = validateLegacyMorningBrief(brief);
   if (!validation.ok) throw new Error(`Morning brief validation failed: ${validation.errors.join("; ")}`);
   return brief;
 }
@@ -198,7 +202,7 @@ export async function generateQwenMorningBrief({
   fetcher?: typeof fetch;
   globalSnapshot?: ReconciledGlobalPoint[];
   endpoint?: string;
-}): Promise<MorningBrief> {
+}): Promise<LegacyMorningBrief> {
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
   const prompt = buildMorningBriefPrompt(date, globalSnapshot);
   const response = await fetcher(endpoint, {
@@ -235,7 +239,7 @@ export async function generateQwenMorningBrief({
   }
   const text = payload.output?.choices?.[0]?.message?.content;
   if (!text) throw new Error("DashScope response did not include structured output text");
-  const brief = JSON.parse(text) as MorningBrief;
+  const brief = JSON.parse(text) as LegacyMorningBrief;
   const generatedSources = new Map((brief.sources ?? []).map((source) => [source.url, source]));
   brief.sources = (payload.output?.search_info?.search_results ?? [])
     .filter((source): source is QwenSearchResult & { index: number; title: string; url: string } =>
@@ -246,7 +250,7 @@ export async function generateQwenMorningBrief({
       url: source.url,
       publishedAt: source.published_time ?? source.publish_time ?? source.published_at ?? generatedSources.get(source.url)?.publishedAt ?? "",
     }));
-  const validation = validateMorningBrief(brief);
+  const validation = validateLegacyMorningBrief(brief);
   if (!validation.ok) throw new Error(`Morning brief validation failed: ${validation.errors.join("; ")}`);
   return brief;
 }

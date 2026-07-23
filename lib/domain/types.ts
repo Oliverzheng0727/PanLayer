@@ -47,7 +47,7 @@ export interface DailyReview {
     limitUp: number;
     limitDown: number;
     consecutive: number;
-    largeRise: number;
+    largeRise: number | null;
     high120: number | null;
     allTimeHigh: number | null;
     marginBalance: number | null;
@@ -56,4 +56,8 @@ export interface DailyReview {
   ladder: Record<"first" | "second" | "third" | "fourth" | "fivePlus", Quote[]>;
   sectors: SectorMetric[];
   leaders: Quote[];
+  historyMeta?: {
+    backfilled: boolean;
+    receivedAt: string;
+  };
 }

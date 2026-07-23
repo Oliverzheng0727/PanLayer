@@ -1,4 +1,15 @@
-import { generateMorningBrief, generateQwenMorningBrief, QWEN_MORNING_BRIEF_MODEL } from "../ai/morning-brief";
+import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
+import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
+import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
+import {
+  generateOpenAIBriefSection,
+  generateQwenBriefSection,
+  QWEN_BRIEF_SECTION_MODEL,
+  type BriefSectionGenerator,
+  type GeneratedBriefSection,
+  type MorningBriefMarketContext,
+} from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
@@ -7,14 +18,34 @@ import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
+import { runHistoryBackfillBatch } from "../history/backfill";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
+// The 110s batch deadline stays below the 180s stale lease window, so a live job cannot be reclaimed.
+export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
+export const MORNING_BRIEF_BATCH_DEADLINE_MS = 110 * 1_000;
+const GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS = 8 * 1_000;
+const DEADLINE_REQUEST_SAFETY_MS = 1_000;
+const FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS = 40 * 1_000;
+export interface MorningBriefLease {
+  token: string;
+  renew: () => Promise<boolean>;
+}
+
+export class LeaseLostError extends Error {
+  constructor() {
+    super("Morning brief lease is no longer current");
+    this.name = "LeaseLostError";
+  }
+}
 
 export interface PanLayerEnv {
   DB?: D1Database;
   DASHSCOPE_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  FIRECRAWL_API_KEY?: string;
+  FIRECRAWL_API_URL?: string;
   TWELVE_DATA_API_KEY?: string;
   ALPHA_VANTAGE_API_KEY?: string;
   FRED_API_KEY?: string;
@@ -27,7 +58,7 @@ export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_AP
   model: string;
 } {
   if (env.DASHSCOPE_API_KEY) {
-    return { provider: "qwen", apiKey: env.DASHSCOPE_API_KEY, model: QWEN_MORNING_BRIEF_MODEL };
+    return { provider: "qwen", apiKey: env.DASHSCOPE_API_KEY, model: QWEN_BRIEF_SECTION_MODEL };
   }
   if (env.OPENAI_API_KEY) {
     return { provider: "openai", apiKey: env.OPENAI_API_KEY, model: "gpt-5.6-terra" };
@@ -39,14 +70,272 @@ export function shouldSkipMorningBrief(existingStatus: string | null | undefined
   return existingStatus === "complete" && !force;
 }
 
+function createQwenBriefGenerator(input: {
+  apiKey: string;
+  firecrawlApiKey?: string;
+  firecrawlEndpoint?: string;
+  fetcher: typeof fetch;
+}): BriefSectionGenerator {
+  const fallbackUsed = new Set<BriefSectionKey>();
+  return async (sectionInput) => {
+    try {
+      return await generateQwenBriefSection({
+        ...sectionInput,
+        apiKey: input.apiKey,
+        fetcher: input.fetcher,
+      });
+    } catch (primaryError) {
+      const remaining = sectionInput.deadlineAt === undefined
+        ? Number.POSITIVE_INFINITY
+        : sectionInput.deadlineAt - Date.now();
+      if (!input.firecrawlApiKey
+        || fallbackUsed.has(sectionInput.key)
+        || remaining < FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS) {
+        throw primaryError;
+      }
+      fallbackUsed.add(sectionInput.key);
+      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
+      let externalSources;
+      try {
+        externalSources = await searchFirecrawlBriefSources({
+          date: sectionInput.date,
+          key: sectionInput.key,
+          apiKey: input.firecrawlApiKey,
+          endpoint: input.firecrawlEndpoint,
+          fetcher: input.fetcher,
+          deadlineAt: sectionInput.deadlineAt,
+        });
+      } catch (fallbackSearchError) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackSearchError)}`);
+      }
+      if (externalSources.length === 0) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback returned no usable sources`);
+      }
+      try {
+        return await generateQwenBriefSection({
+          ...sectionInput,
+          attempt: Math.max(sectionInput.attempt, 2),
+          previousError: primaryDiagnostic,
+          apiKey: input.apiKey,
+          fetcher: input.fetcher,
+          externalSources,
+        });
+      } catch (fallbackGenerationError) {
+        throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackGenerationError)}`);
+      }
+    }
+  };
+}
+
+export async function acquireJobLease(db: D1Database, job: string, tradeDate: string, now = new Date()): Promise<string | null> {
+  const token = crypto.randomUUID();
+  const acquiredAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + MORNING_BRIEF_LEASE_MS).toISOString();
+  const staleAt = new Date(now.getTime() - MORNING_BRIEF_LEASE_MS).toISOString();
+  const row = await db.prepare(`INSERT INTO job_leases (job, trade_date, token, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job, trade_date) DO UPDATE SET token=excluded.token, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at WHERE job_leases.expires_at <= ? OR job_leases.acquired_at <= ? RETURNING token`)
+    .bind(job, tradeDate, token, acquiredAt, expiresAt, acquiredAt, staleAt).first<{ token: string }>();
+  return row?.token === token ? token : null;
+}
+
+export async function releaseJobLease(db: D1Database, job: string, tradeDate: string, token: string): Promise<void> {
+  await db.prepare("DELETE FROM job_leases WHERE job = ? AND trade_date = ? AND token = ?").bind(job, tradeDate, token).run();
+}
+
+export async function renewJobLease(db: D1Database, job: string, tradeDate: string, token: string, now = new Date()): Promise<boolean> {
+  const acquiredAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + MORNING_BRIEF_LEASE_MS).toISOString();
+  const row = await db.prepare("UPDATE job_leases SET acquired_at = ?, expires_at = ? WHERE job = ? AND trade_date = ? AND token = ? AND expires_at > ? RETURNING token")
+    .bind(acquiredAt, expiresAt, job, tradeDate, token, acquiredAt).first<{ token: string }>();
+  return row?.token === token;
+}
+
+function awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal, onAbort?: () => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (callback: (value: T) => void, value: T) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback(value);
+    };
+    const abort = () => {
+      onAbort?.();
+      settle(reject, new Error("global snapshot request aborted") as T);
+    };
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then((value) => settle(resolve, value), (error) => settle(reject, error));
+  });
+}
+
+export function createDeadlineAwareBufferedFetcher(fetcher: typeof fetch, deadlineAt: number): typeof fetch {
+  return async (input, init) => {
+    const remaining = deadlineAt - Date.now() - DEADLINE_REQUEST_SAFETY_MS;
+    if (remaining <= 0) throw new Error("Morning brief deadline budget exhausted before global snapshot request");
+    const timeoutMs = Math.min(GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS, remaining);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await awaitWithAbort(fetcher(input, { ...init, signal: controller.signal }), controller.signal);
+      const body = await awaitWithAbort(response.arrayBuffer(), controller.signal, () => { void response.body?.cancel().catch(() => undefined); });
+      return new Response(body.byteLength ? body : null, { status: response.status, statusText: response.statusText, headers: response.headers });
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error(`Global snapshot request timed out after ${timeoutMs}ms`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+async function assertMorningBriefLease(lease: MorningBriefLease | undefined): Promise<void> {
+  if (lease && !await lease.renew()) throw new LeaseLostError();
+}
+
+function isLeaseLost(error: unknown): boolean {
+  return error instanceof Error && error.name === "LeaseLostError";
+}
+
+export async function failedOrMissingBriefSectionKeys(db: D1Database, date: string): Promise<BriefSectionKey[]> {
+  const persisted = new Map((await readPersistedBriefSections(db, date)).map((item) => [item.section.key, item.section.status]));
+  return BRIEF_SECTION_DEFINITIONS.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
+}
+
+type RejectedSection = { key: BriefSectionKey; error: string };
+type SectionRunResult = GeneratedBriefSection | RejectedSection;
+
+function beijingTimestamp(now = new Date()): string {
+  return new Date(now.getTime() + 8 * 60 * 60 * 1_000).toISOString().replace("Z", "+08:00");
+}
+
+function isGeneratedSection(result: SectionRunResult): result is GeneratedBriefSection {
+  return "section" in result;
+}
+
+function marketContextTime(value: string): string | null {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00+08:00` : null;
+}
+
+function receivedContextTime(value: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+export async function loadMorningBriefMarketContext(db: D1Database, date: string): Promise<MorningBriefMarketContext> {
+  const fallback: MorningBriefMarketContext = { review: null, etfs: [], etfSnapshot: null };
+  try {
+    const reviewRow = await db.prepare("SELECT trade_date, payload, status, updated_at FROM daily_reviews WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1").bind(date).first<{ trade_date: string; payload: string; status: DailyReview["status"]; updated_at: string }>().catch(() => null);
+    const etfResult = await db.prepare("SELECT category, name, symbol, trade_date, updated_at FROM etf_snapshots WHERE trade_date = (SELECT MAX(trade_date) FROM etf_snapshots WHERE trade_date < ?) ORDER BY category, symbol LIMIT 120").bind(date).all<{ category: string; name: string; symbol: string; trade_date: string; updated_at: string }>().catch(() => ({ results: [] }));
+    let review: MorningBriefMarketContext["review"] = null;
+    if (reviewRow?.payload) {
+      const parsed = JSON.parse(reviewRow.payload) as DailyReview;
+      const closeBreadth = parsed.breadth?.at(-1);
+      if (parsed && typeof parsed.date === "string" && Array.isArray(parsed.sectors) && Array.isArray(parsed.leaders) && parsed.metrics && parsed.ladder) {
+        review = {
+          date: parsed.date, marketTime: marketContextTime(reviewRow.trade_date), receivedAt: receivedContextTime(reviewRow.updated_at), status: parsed.status, closeBreadth: closeBreadth ? { rising: closeBreadth.rising, falling: closeBreadth.falling, flat: closeBreadth.flat } : null,
+          metrics: { ...parsed.metrics },
+          ladder: { first: parsed.ladder.first.length, second: parsed.ladder.second.length, third: parsed.ladder.third.length, fourth: parsed.ladder.fourth.length, fivePlus: parsed.ladder.fivePlus.length },
+          sectors: parsed.sectors.slice(0, 20).map((item) => ({ name: item.name, factors: { limitUpCount: item.limitUpCount, averagePct: item.averagePct, amountGrowthPct: item.amountGrowthPct, maxStreak: item.maxStreak } })),
+          leaders: parsed.leaders.slice(0, 20).map((item) => ({ name: item.name, symbol: item.symbol, factors: { pctChange: item.pctChange, amount: item.amount, limitStreak: item.limitStreak, isLimitUp: classifyLimitStatus(item) === "limit-up", firstLimitTime: item.firstLimitTime, sector: item.sector } })),
+        };
+      }
+    }
+    const etfRows = etfResult.results ?? [];
+    const etfSnapshot = etfRows[0]
+      ? { marketTime: marketContextTime(etfRows[0].trade_date), receivedAt: etfRows.map((item) => receivedContextTime(item.updated_at)).filter((value): value is string => value !== null).sort().at(-1) ?? null }
+      : null;
+    return { review, etfs: etfRows.flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []), etfSnapshot };
+  } catch { return fallback; }
+}
+
+export async function generateFullMorningBrief(input: {
+  date: string;
+  model: string;
+  sectionKeys: BriefSectionKey[];
+  generator: BriefSectionGenerator;
+  db: D1Database;
+  concurrency?: number;
+  retries?: number;
+  globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
+  marketContext?: MorningBriefMarketContext;
+  lease?: MorningBriefLease;
+  deadlineAt?: number;
+}): Promise<MorningBrief> {
+  const requestedKeys = input.sectionKeys;
+  if (new Set(requestedKeys).size !== requestedKeys.length) throw new Error("Duplicate brief section keys are not allowed");
+  const globalSnapshot = input.globalSnapshot ?? (await loadGlobalOvernightSnapshot({}, fetch)).reconciled;
+  await assertMorningBriefLease(input.lease);
+  const persistedSections = await readPersistedBriefSections(input.db, input.date);
+  const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
+  const results: SectionRunResult[] = Array(requestedKeys.length);
+  const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
+  const workerCount = Math.min(3, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
+  let cursor = 0;
+  const deadlineError = "Morning brief batch deadline exceeded";
+  const deadlineExceeded = () => input.deadlineAt !== undefined && Date.now() >= input.deadlineAt;
+
+  const runSectionWithRetry = async (key: BriefSectionKey): Promise<SectionRunResult> => {
+    let attempts = 0;
+    let previousError: string | undefined;
+    let error = "未知错误";
+    while (attempts < maxAttempts) {
+      if (deadlineExceeded()) {
+        error = deadlineError;
+        break;
+      }
+      attempts += 1;
+      try {
+        const result = await input.generator({ date: input.date, key, attempt: attempts, previousError, globalSnapshot, marketContext: input.marketContext, deadlineAt: input.deadlineAt });
+        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources, input.lease);
+        return result;
+      } catch (caught) {
+        if (isLeaseLost(caught)) throw caught;
+        await assertMorningBriefLease(input.lease);
+        error = sanitizeMorningBriefDiagnostic(caught);
+        previousError = error;
+        if (deadlineExceeded()) break;
+      }
+    }
+    const failed = failedBriefSection(key, error, beijingTimestamp());
+    await persistBriefSection(input.db, input.date, input.model, failed, attempts, error, [], input.lease);
+    return { key, error };
+  };
+
+  const worker = async () => {
+    while (cursor < requestedKeys.length) {
+      const index = cursor++;
+      results[index] = await runSectionWithRetry(requestedKeys[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, worker));
+
+  const generatedByKey = new Map(results.map((result) => [isGeneratedSection(result) ? result.section.key : result.key, result]));
+  const assembled = assembleMorningBrief(input.date, BRIEF_SECTION_DEFINITIONS.map(({ key }) => {
+    const generated = generatedByKey.get(key);
+    if (generated) return generated;
+    const persisted = persistedByKey.get(key);
+    if (persisted) return persisted;
+    return { key, error: "模块尚未生成" };
+  }), beijingTimestamp());
+  await assertMorningBriefLease(input.lease);
+  await input.db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`)
+    .bind(input.date, input.model, JSON.stringify(assembled), assembled.status, new Date().toISOString())
+    .run();
+  return assembled;
+}
+
 export async function persistSourceAudits(db: D1Database, date: string, snapshotTime: string, audits: SourceAudit[]) {
   await Promise.all(audits.map((audit) => db.prepare(`INSERT INTO market_source_audits (trade_date, snapshot_time, source, market_time, received_at, raw_count, valid_count, invalid_count, coverage_pct, direction_agreement_pct, price_agreement_pct, breadth_difference, status, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, snapshot_time, source) DO UPDATE SET market_time=excluded.market_time, received_at=excluded.received_at, raw_count=excluded.raw_count, valid_count=excluded.valid_count, invalid_count=excluded.invalid_count, coverage_pct=excluded.coverage_pct, direction_agreement_pct=excluded.direction_agreement_pct, price_agreement_pct=excluded.price_agreement_pct, breadth_difference=excluded.breadth_difference, status=excluded.status, message=excluded.message`)
     .bind(date, snapshotTime, audit.source, audit.marketTime, audit.receivedAt, audit.rawCount, audit.validCount, audit.invalidCount, audit.coveragePct, audit.directionAgreementPct, audit.priceAgreementPct, audit.breadthDifference, audit.status, audit.message).run()));
 }
 
-export async function persistGlobalPoints(db: D1Database, date: string, points: GlobalPoint[]) {
-  await Promise.all(points.map((point) => db.prepare(`INSERT INTO global_market_snapshots (trade_date, symbol, label, provider, market_time, received_at, value, previous_close, pct_change, period, status, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, symbol, provider) DO UPDATE SET label=excluded.label, market_time=excluded.market_time, received_at=excluded.received_at, value=excluded.value, previous_close=excluded.previous_close, pct_change=excluded.pct_change, period=excluded.period, status=excluded.status, message=excluded.message`)
-    .bind(date, point.key, point.label, point.provider, point.marketTime, point.receivedAt, point.value, point.previousClose, point.pctChange, point.period, point.status, point.message).run()));
+export async function persistGlobalPoints(db: D1Database, date: string, points: GlobalPoint[], lease?: MorningBriefLease) {
+  for (const point of points) {
+    await assertMorningBriefLease(lease);
+    await db.prepare(`INSERT INTO global_market_snapshots (trade_date, symbol, label, provider, market_time, received_at, value, previous_close, pct_change, period, status, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, symbol, provider) DO UPDATE SET label=excluded.label, market_time=excluded.market_time, received_at=excluded.received_at, value=excluded.value, previous_close=excluded.previous_close, pct_change=excluded.pct_change, period=excluded.period, status=excluded.status, message=excluded.message`)
+      .bind(date, point.key, point.label, point.provider, point.marketTime, point.receivedAt, point.value, point.previousClose, point.pctChange, point.period, point.status, point.message).run();
+  }
 }
 
 export function buildDailyReview({
@@ -101,6 +390,8 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS breadth_snapshots (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, rising INTEGER NOT NULL, falling INTEGER NOT NULL, flat INTEGER NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (trade_date, snapshot_time))`,
   `CREATE TABLE IF NOT EXISTS daily_reviews (trade_date TEXT PRIMARY KEY, payload TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS morning_briefs (trade_date TEXT PRIMARY KEY, model TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS morning_brief_sections (trade_date TEXT NOT NULL, section_key TEXT NOT NULL, model TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', generated_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (trade_date, section_key))`,
+  `CREATE TABLE IF NOT EXISTS job_leases (job TEXT NOT NULL, trade_date TEXT NOT NULL, token TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (job, trade_date))`,
   `CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, trade_date TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS new_high_details (trade_date TEXT NOT NULL, type TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL, sector TEXT NOT NULL, pct_change REAL NOT NULL, close REAL NOT NULL, high_price REAL NOT NULL, amount REAL NOT NULL, interval_pct REAL NOT NULL, high_date TEXT NOT NULL, is_all_time INTEGER NOT NULL, PRIMARY KEY (trade_date, type, symbol))`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
@@ -135,19 +426,36 @@ export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
   env: PanLayerEnv,
-  options: { force?: boolean; fetcher?: typeof fetch } = {},
+  options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[]; mode?: "failed" } = {},
 ): Promise<{ ok: boolean; message: string }> {
   if (!env.DB) throw new Error("DB binding is unavailable");
   const db = env.DB;
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
-  const startedAt = new Date().toISOString();
-  const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
-  const run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
-  const fetcher = options.fetcher ?? fetch;
-  const provider = createEastmoneyProvider(fetcher);
+  const leaseToken = job.type === "morning-brief" ? await acquireJobLease(db, "morning-brief", date) : null;
+  if (job.type === "morning-brief" && !leaseToken) return { ok: false, message: "morning-brief already running" };
+  const morningBriefLease: MorningBriefLease | undefined = leaseToken ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) } : undefined;
+  let run: { id: number } | null = null;
   try {
-    if (job.type === "breadth") {
+    const startedAt = new Date().toISOString();
+    const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
+    run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
+    const fetcher = options.fetcher ?? fetch;
+    const provider = createEastmoneyProvider(fetcher);
+    let finalStatus: "complete" | "partial" | "failed" = "complete";
+    let finalMessage = "";
+    if (job.type === "history-backfill") {
+      const progress = await runHistoryBackfillBatch({
+        db,
+        endDate: date,
+        days: job.days,
+        batchSize: 5,
+        fetcher,
+      });
+      const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
+      if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
+      return { ok: true, message };
+    } else if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
         at: job.time,
@@ -182,25 +490,55 @@ export async function runPanLayerJob(
       const review = buildDailyReview({ date, quotes: market.quotes, limitPool, breadth, marginBalance, high120: null, allTimeHigh: null, source: market.source });
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), market.source, review.status, new Date().toISOString()).run();
     } else {
+      const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
       const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
-      if (shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
-        await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
+      if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
+        if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         return { ok: true, message: `${label} already complete; skipped` };
       }
-      const global = await loadGlobalOvernightSnapshot(env, fetcher);
-      await persistGlobalPoints(db, date, global.raw);
+      const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key);
+      if (selectedKeys.length === 0) {
+        if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
+        return { ok: true, message: `${label} no failed or missing modules; skipped` };
+      }
+      const snapshotFetcher = createDeadlineAwareBufferedFetcher(fetcher, deadlineAt);
+      const [global, marketContext] = await Promise.all([loadGlobalOvernightSnapshot(env, snapshotFetcher), loadMorningBriefMarketContext(db, date)]);
+      await assertMorningBriefLease(morningBriefLease);
+      await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
-      const brief = ai.provider === "qwen"
-        ? await generateQwenMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled })
-        : await generateMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled });
-      await db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, 'complete', ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`).bind(date, ai.model, JSON.stringify(brief), new Date().toISOString()).run();
+      const generator: BriefSectionGenerator = ai.provider === "qwen"
+        ? createQwenBriefGenerator({
+          apiKey: ai.apiKey,
+          firecrawlApiKey: env.FIRECRAWL_API_KEY,
+          firecrawlEndpoint: env.FIRECRAWL_API_URL,
+          fetcher,
+        })
+        : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
+      const brief = await generateFullMorningBrief({
+        date,
+        model: ai.model,
+        sectionKeys: selectedKeys,
+        generator,
+        db,
+        globalSnapshot: global.reconciled,
+        marketContext,
+        lease: morningBriefLease,
+        concurrency: ai.provider === "qwen" ? 3 : 2,
+        retries: ai.provider === "qwen" ? 0 : undefined,
+        deadlineAt,
+      });
+      finalStatus = brief.status;
+      const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);
+      finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }
-    await db.prepare("UPDATE job_runs SET status='complete', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
-    return { ok: true, message: `${label} complete` };
+    if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();
+    return { ok: finalStatus !== "failed", message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run?.id).run();
+    if (run?.id) await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
     throw error;
+  } finally {
+    if (leaseToken) await releaseJobLease(db, "morning-brief", date, leaseToken);
   }
 }
 

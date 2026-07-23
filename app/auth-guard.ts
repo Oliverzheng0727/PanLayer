@@ -23,10 +23,13 @@ export async function authorizeAdminApi(): Promise<Response | null> {
   if (process.env.NODE_ENV === "development") return null;
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "authentication required" }, { status: 401 });
-  const adminEmail = await resolveAdminEmail();
-  return canRunAdminJob(user.email, adminEmail)
+  return await isAdminUser(user.email)
     ? null
     : Response.json({ error: "administrator required" }, { status: 403 });
+}
+
+export async function isAdminUser(email: string): Promise<boolean> {
+  return canRunAdminJob(email, await resolveAdminEmail());
 }
 
 async function resolveAdminEmail(): Promise<string> {

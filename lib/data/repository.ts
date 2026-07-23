@@ -1,4 +1,5 @@
-import type { MorningBrief } from "../ai/morning-brief";
+import { isValidPersistedMorningBrief } from "../ai/morning-brief-assembly";
+import type { MorningBrief } from "../ai/morning-brief-contract";
 import type { DailyReview } from "../domain/types";
 import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
@@ -69,7 +70,13 @@ export async function readBrief(date: string): Promise<MorningBrief | null> {
   const db = await getD1();
   if (!db) return null;
   const row = await db.prepare("SELECT payload FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ payload: string }>();
-  return row?.payload ? JSON.parse(row.payload) : null;
+  if (!row?.payload) return null;
+  try {
+    const brief = JSON.parse(row.payload) as unknown;
+    return isValidPersistedMorningBrief(brief) ? brief : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function readHistory(from: string, to: string): Promise<HistoryRow[]> {

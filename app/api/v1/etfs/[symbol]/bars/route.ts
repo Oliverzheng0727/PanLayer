@@ -1,5 +1,5 @@
 import { authorizeApi } from "../../../../../auth-guard";
-import { aggregateBars, createDemoBars, fetchEastmoneyDailyBars, fetchEastmoneyMinuteBars, type Adjustment, type BarPeriod } from "../../../../../../lib/etf/bars";
+import { createDemoBars, loadEtfBarsWithFallback, type Adjustment, type BarPeriod } from "../../../../../../lib/etf/bars";
 
 const periods: BarPeriod[] = ["minute", "day", "week", "month"];
 
@@ -15,12 +15,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
   if (adjustment !== "none" && adjustment !== "forward") return Response.json({ error: "invalid adjustment" }, { status: 400 });
 
   try {
-    const daily = period === "minute" ? [] : await fetchEastmoneyDailyBars(symbol, adjustment);
-    const bars = period === "minute" ? await fetchEastmoneyMinuteBars(symbol) : period === "day" ? daily : aggregateBars(daily, period);
-    if (bars.length === 0) throw new Error("empty market bars");
-    return Response.json({ symbol, period, adjustment, bars, source: "东方财富", status: "complete", marketTime: bars.at(-1)?.time ?? null, receivedAt: new Date().toISOString(), isStale: false });
+    const result = await loadEtfBarsWithFallback(symbol, period, adjustment);
+    return Response.json({
+      symbol,
+      period,
+      adjustment: result.appliedAdjustment,
+      requestedAdjustment: adjustment,
+      bars: result.bars,
+      source: result.source,
+      status: result.status,
+      marketTime: result.bars.at(-1)?.time ?? null,
+      receivedAt: new Date().toISOString(),
+      isStale: false,
+    });
   } catch (error) {
-    if (process.env.NODE_ENV !== "development") return Response.json({ symbol, period, adjustment, bars: [], source: "东方财富", status: "failed", error: error instanceof Error ? error.message : "market data failed", marketTime: null, receivedAt: new Date().toISOString(), isStale: true }, { status: 502 });
-    return Response.json({ symbol, period, adjustment, bars: createDemoBars(symbol, period), source: "本机演示行情", status: "demo", marketTime: null, receivedAt: new Date().toISOString(), isStale: true });
+    if (process.env.NODE_ENV !== "development") return Response.json({ symbol, period, adjustment, requestedAdjustment: adjustment, bars: [], source: "东方财富 / 新浪财经", status: "failed", error: error instanceof Error ? error.message : "market data failed", marketTime: null, receivedAt: new Date().toISOString(), isStale: true }, { status: 502 });
+    return Response.json({ symbol, period, adjustment, requestedAdjustment: adjustment, bars: createDemoBars(symbol, period), source: "本机演示行情", status: "demo", marketTime: null, receivedAt: new Date().toISOString(), isStale: true });
   }
 }

@@ -11,6 +11,15 @@ export interface MarketBar {
   amount: number;
 }
 
+export interface EtfBarsResult {
+  bars: MarketBar[];
+  source: string;
+  status: "complete" | "partial";
+  appliedAdjustment: Adjustment;
+}
+
+const UPSTREAM_TIMEOUT_MS = 4_500;
+
 const numberValue = (value: string | number | undefined) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -47,9 +56,55 @@ function secidFor(symbol: string): string {
 }
 
 async function fetchJson<T>(url: string, fetcher: typeof fetch): Promise<T> {
-  const response = await fetcher(url, { headers: { accept: "application/json", "user-agent": "PanLayer/1.0" } });
+  const response = await fetcher(url, {
+    headers: { accept: "application/json", "user-agent": "PanLayer/1.0" },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`Eastmoney ${response.status}`);
   return response.json() as Promise<T>;
+}
+
+function sinaSymbol(symbol: string): string {
+  const code = symbol.split(".")[0];
+  return `${code.startsWith("5") || code.startsWith("6") ? "sh" : "sz"}${code}`;
+}
+
+interface SinaBar {
+  day?: string;
+  open?: string | number;
+  high?: string | number;
+  low?: string | number;
+  close?: string | number;
+  volume?: string | number;
+  amount?: string | number;
+}
+
+function mapSinaBars(rows: SinaBar[]): MarketBar[] {
+  return rows.flatMap((row) => {
+    const bar = {
+      time: (row.day ?? "").replace(/:00$/, ""),
+      open: numberValue(row.open),
+      high: numberValue(row.high),
+      low: numberValue(row.low),
+      close: numberValue(row.close),
+      volume: numberValue(row.volume),
+      amount: numberValue(row.amount),
+    };
+    return bar.time && bar.close > 0 ? [bar] : [];
+  });
+}
+
+async function fetchSinaText(url: string, fetcher: typeof fetch): Promise<string> {
+  const response = await fetcher(url, {
+    headers: {
+      accept: "application/json,text/javascript,*/*;q=0.8",
+      referer: "https://finance.sina.com.cn/",
+      "user-agent": "PanLayer/1.0",
+    },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Sina ${response.status}`);
+  return response.text();
 }
 
 export async function fetchEastmoneyDailyBars(symbol: string, adjustment: Adjustment, fetcher: typeof fetch = fetch): Promise<MarketBar[]> {
@@ -70,6 +125,78 @@ export async function fetchEastmoneyMinuteBars(symbol: string, fetcher: typeof f
     const bar = { time, open: numberValue(open), high: numberValue(high), low: numberValue(low), close: numberValue(close), volume: numberValue(volume), amount: numberValue(amount) };
     return bar.time && bar.close > 0 ? [bar] : [];
   });
+}
+
+export async function fetchSinaDailyBars(symbol: string, fetcher: typeof fetch = fetch): Promise<MarketBar[]> {
+  const marketSymbol = sinaSymbol(symbol);
+  const url = `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=${marketSymbol}&scale=240&ma=no&datalen=1023`;
+  const text = await fetchSinaText(url, fetcher);
+  try {
+    const rows = JSON.parse(text) as SinaBar[];
+    if (!Array.isArray(rows)) throw new Error("not an array");
+    return mapSinaBars(rows);
+  } catch (error) {
+    throw new Error(`Sina JSON: ${error instanceof Error ? error.message : "invalid response"}`);
+  }
+}
+
+export async function fetchSinaMinuteBars(symbol: string, fetcher: typeof fetch = fetch): Promise<MarketBar[]> {
+  const marketSymbol = sinaSymbol(symbol);
+  const url = `https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_${marketSymbol}_5_240/CN_MarketDataService.getKLineData?symbol=${marketSymbol}&scale=5&ma=no&datalen=240`;
+  const text = await fetchSinaText(url, fetcher);
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) throw new Error("Sina JSONP: invalid response");
+  try {
+    const rows = JSON.parse(text.slice(start, end + 1)) as SinaBar[];
+    if (!Array.isArray(rows)) throw new Error("not an array");
+    return mapSinaBars(rows);
+  } catch (error) {
+    throw new Error(`Sina JSONP: ${error instanceof Error ? error.message : "invalid response"}`);
+  }
+}
+
+export async function loadEtfBarsWithFallback(
+  symbol: string,
+  period: BarPeriod,
+  adjustment: Adjustment,
+  fetcher: typeof fetch = fetch,
+): Promise<EtfBarsResult> {
+  try {
+    const daily = period === "minute" ? [] : await fetchEastmoneyDailyBars(symbol, adjustment, fetcher);
+    const bars = period === "minute"
+      ? await fetchEastmoneyMinuteBars(symbol, fetcher)
+      : period === "day"
+        ? daily
+        : aggregateBars(daily, period);
+    if (bars.length === 0) throw new Error("empty market bars");
+    return {
+      bars,
+      source: "东方财富",
+      status: "complete",
+      appliedAdjustment: period === "minute" ? "none" : adjustment,
+    };
+  } catch (primaryError) {
+    try {
+      const daily = period === "minute" ? [] : await fetchSinaDailyBars(symbol, fetcher);
+      const bars = period === "minute"
+        ? await fetchSinaMinuteBars(symbol, fetcher)
+        : period === "day"
+          ? daily
+          : aggregateBars(daily, period);
+      if (bars.length === 0) throw new Error("empty market bars");
+      return {
+        bars,
+        source: period === "minute" ? "新浪财经（5分钟）" : "新浪财经（不复权）",
+        status: "partial",
+        appliedAdjustment: "none",
+      };
+    } catch (fallbackError) {
+      const primaryMessage = primaryError instanceof Error ? primaryError.message : "primary source failed";
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "fallback source failed";
+      throw new Error(`ETF bars unavailable: ${primaryMessage}; ${fallbackMessage}`);
+    }
+  }
 }
 
 export function createDemoBars(symbol: string, period: BarPeriod, lastPrice = 1): MarketBar[] {

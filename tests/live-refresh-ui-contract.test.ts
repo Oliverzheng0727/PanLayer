@@ -25,9 +25,18 @@ describe("live refresh UI contract", () => {
     expect(dashboard).toMatch(/isLiveBreadthUsable/);
     expect(dashboard).toMatch(/liveMarket\.universeSize >= 5_000/);
     expect(dashboard).toMatch(/marginBalance === null \? "暂缺"/);
+    expect(dashboard).toMatch(/review\.breadth\.at\(-1\) \?\? null/);
+    expect(dashboard).not.toMatch(/rising:\s*0,\s*falling:\s*0,\s*flat:\s*0/);
+    expect(dashboard).toMatch(/review\.metrics\.largeRise === null \? "暂缺"/);
+    expect(dashboard).toContain("盘中涨跌家数暂缺");
     expect(dashboard).not.toMatch(/trend=\{\+2\.8\}|trend=\{\+10\.3\}|trend=\{\+4\.1\}|trend=\{-12\.5\}|trend=\{-1\.04\}/);
     expect(dashboard).not.toContain("梯队高度 6板");
     expect(dashboard).not.toMatch(/total\.rising\s*\/\s*total\.falling/);
+  });
+
+  it("allows historical backfill context to keep large-rise counts unavailable", async () => {
+    const providers = await readFile(new URL("../lib/ai/morning-brief-providers.ts", import.meta.url), "utf8");
+    expect(providers).toMatch(/largeRise:\s*number\s*\|\s*null/);
   });
 
   it("announces source, timestamps, and stale failures politely", async () => {

@@ -29,6 +29,27 @@
       "when": 1784746334019,
       "tag": "0003_wide_hannibal_king",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784794740976,
+      "tag": "0004_married_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1784795474950,
+      "tag": "0005_shiny_archangel",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784816964072,
+      "tag": "0006_fearless_beyonder",
+      "breakpoints": true
     }
   ]
 }

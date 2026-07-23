@@ -1,8 +1,8 @@
 import type { DailyReview } from "../domain/types";
 
 export const HISTORY_SORT_FIELDS = [
-  "date", "rising", "falling", "limitUp", "limitDown", "consecutive",
-  "maxStreak", "openPremium", "closePremium", "high120", "allTimeHigh",
+  "date", "rising", "falling", "riseFallRatio", "limitUp", "limitDown", "consecutive",
+  "maxStreak", "openPremium", "closePremium", "high120", "allTimeHigh", "marginBalance",
 ] as const;
 
 export type HistorySortField = (typeof HISTORY_SORT_FIELDS)[number];
@@ -10,19 +10,22 @@ export type SortOrder = "asc" | "desc";
 
 export interface HistoryRow {
   date: string;
-  rising: number;
-  falling: number;
-  flat: number;
+  rising: number | null;
+  falling: number | null;
+  flat: number | null;
+  riseFallRatio: number | null;
   limitUp: number;
   limitDown: number;
-  largeRise: number;
+  largeRise: number | null;
   consecutive: number;
   maxStreak: number;
   openPremium: number | null;
   closePremium: number | null;
   high120: number | null;
   allTimeHigh: number | null;
+  marginBalance: number | null;
   topSector: string;
+  backfilled: boolean;
   status: "complete" | "partial" | "failed" | "demo";
   source: string;
   updatedAt: string;
@@ -42,13 +45,18 @@ export interface HistoryPage {
 }
 
 export function reviewToHistoryRow(review: DailyReview): HistoryRow {
-  const closeBreadth = review.breadth.at(-1) ?? { rising: 0, falling: 0, flat: 0 };
+  const closeBreadth = review.breadth.at(-1);
+  const rising = closeBreadth?.rising ?? null;
+  const falling = closeBreadth?.falling ?? null;
   const ladderItems = Object.values(review.ladder).flat();
   return {
     date: review.date,
-    rising: closeBreadth.rising,
-    falling: closeBreadth.falling,
-    flat: closeBreadth.flat,
+    rising,
+    falling,
+    flat: closeBreadth?.flat ?? null,
+    riseFallRatio: rising !== null && falling !== null && falling > 0
+      ? Number((rising / falling).toFixed(2))
+      : null,
     limitUp: review.metrics.limitUp,
     limitDown: review.metrics.limitDown,
     largeRise: review.metrics.largeRise,
@@ -58,7 +66,9 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     closePremium: review.premium.closePct,
     high120: review.metrics.high120,
     allTimeHigh: review.metrics.allTimeHigh,
+    marginBalance: review.metrics.marginBalance,
     topSector: review.sectors[0]?.name ?? "—",
+    backfilled: review.historyMeta?.backfilled === true,
     status: review.status,
     source: review.source,
     updatedAt: review.updatedAt,
@@ -82,9 +92,6 @@ export function parseHistoryQuery(params: URLSearchParams): HistoryQuery {
 }
 
 function compareValue(left: string | number | null, right: string | number | null): number {
-  if (left === null && right === null) return 0;
-  if (left === null) return 1;
-  if (right === null) return -1;
   return typeof left === "number" && typeof right === "number"
     ? left - right
     : String(left).localeCompare(String(right), "zh-CN");
@@ -97,7 +104,13 @@ export function queryHistoryRows(rows: HistoryRow[], query: HistoryQuery): Histo
     : rows;
   const direction = query.order === "asc" ? 1 : -1;
   const sorted = filtered.toSorted((left, right) => {
-    const compared = compareValue(left[query.sort], right[query.sort]);
+    const leftValue = left[query.sort];
+    const rightValue = right[query.sort];
+    if (leftValue === null || rightValue === null) {
+      if (leftValue === null && rightValue === null) return right.date.localeCompare(left.date);
+      return leftValue === null ? 1 : -1;
+    }
+    const compared = compareValue(leftValue, rightValue);
     return compared === 0 ? right.date.localeCompare(left.date) : compared * direction;
   });
   const items = sorted.slice(query.cursor, query.cursor + query.limit);

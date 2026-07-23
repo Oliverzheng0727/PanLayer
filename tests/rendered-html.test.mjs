@@ -47,14 +47,16 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /行业 ETF/);
   assert.match(html, /ETF 全品类/);
   assert.match(html, /近20日均成交/);
-  assert.match(html, /分时/);
-  assert.match(html, /周K/);
-  assert.match(html, /月K/);
   assert.match(html, /历史数据表/);
+  assert.match(html, /回补近20日/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
   const historyTable = html.match(/<table class="history-table">[\s\S]*?<\/table>/)?.[0] ?? "";
-  assert.ok(historyTable.indexOf("热点板块") < historyTable.indexOf("日期"), "历史表应将热点板块放在日期之前，方便优先选择");
+  assert.ok(historyTable.indexOf("日期") < historyTable.indexOf("热点板块"), "历史表应先显示日期，再显示热点板块");
+  assert.match(historyTable, /涨跌比/);
+  assert.match(historyTable, /两融余额/);
+  assert.match(historyTable, /数据来源/);
+  assert.match(historyTable, /更新时间/);
   assert.match(html, /固定表头/);
   assert.match(html, /查看120日新高股票/);
   assert.match(html, /查看历史新高股票/);
@@ -63,18 +65,32 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /数据来源/);
   assert.match(html, /更新时间/);
   assert.match(html, /状态口径/);
-  assert.match(html, /打开早参详情/);
+  assert.match(html, /当天早参尚未生成/);
+  assert.doesNotMatch(html, /演示来源占位/);
   assert.match(html, /完整/);
   assert.match(html, /部分/);
   assert.match(html, /失败/);
   assert.match(html, /演示/);
-  assert.doesNotMatch(html, /OPENAI_API_KEY|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
+  assert.doesNotMatch(html, /OPENAI_API_KEY|FIRECRAWL_API_KEY|fc-[A-Za-z0-9_-]+|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
+});
+
+test("keeps the historical review header and first two columns frozen", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.history-table th \{[^}]*position:sticky;[^}]*top:0;/);
+  assert.match(css, /\.history-table \.history-date \{[^}]*position:sticky;[^}]*left:0;/);
+  assert.match(css, /\.history-table \.history-sector-cell \{[^}]*position:sticky;[^}]*left:102px;/);
+  assert.match(css, /\.history-table-scroll \{[^}]*max-height:548px;[^}]*overflow:auto;/);
 });
 
 test("binds morning brief cards to source-aware details instead of a placeholder URL", async () => {
-  const dashboard = await readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8");
+  const [dashboard, renderer] = await Promise.all([
+    readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/brief/BriefBlockRenderer.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(dashboard, /BriefDetailDrawer/);
+  assert.match(dashboard, /BriefRegenerateButton/);
   assert.doesNotMatch(dashboard, /href="https:\/\/example\.com"/);
+  assert.doesNotMatch(renderer, /dangerouslySetInnerHTML|innerHTML/);
 });
 
 test("removes the disposable starter preview", async () => {

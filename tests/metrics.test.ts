@@ -5,6 +5,7 @@ import {
   calculateLimitPremium,
   classifyLimitStatus,
   findNewHighs,
+  LEADER_RANKING_BASIS,
   rankLeaders,
   rankSectors,
 } from "../lib/domain/metrics";
@@ -81,6 +82,7 @@ describe("market metric rules", () => {
 
 describe("objective rankings", () => {
   it("ranks leaders by streak, seal status, first seal time, then amount", () => {
+    expect(LEADER_RANKING_BASIS).toEqual(["连板高度", "涨停状态", "首次封板时间", "成交额"]);
     const leaders = rankLeaders([
       quote({ symbol: "A", price: 11, limitStreak: 2, firstLimitTime: "10:02:00", amount: 4 }),
       quote({ symbol: "B", price: 11, limitStreak: 3, firstLimitTime: "10:20:00", amount: 3 }),
