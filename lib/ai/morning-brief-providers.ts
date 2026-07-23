@@ -61,7 +61,7 @@ const OPENAI_SECTION_SCHEMA = {
           { type: "object", additionalProperties: false, properties: { type: { const: "heading" }, text: { type: "string" } }, required: ["type", "text"] },
           {
             type: "object", additionalProperties: false,
-            properties: { type: { const: "paragraph" }, text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } } },
+            properties: { type: { const: "paragraph" }, text: { type: "string" }, sourceUrls: { type: "array", minItems: 1, items: { type: "string" } } },
             required: ["type", "text", "sourceUrls"],
           },
           {
@@ -72,7 +72,7 @@ const OPENAI_SECTION_SCHEMA = {
                 type: "array",
                 items: {
                   type: "object", additionalProperties: false,
-                  properties: { text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } } },
+                  properties: { text: { type: "string" }, sourceUrls: { type: "array", minItems: 1, items: { type: "string" } } },
                   required: ["text", "sourceUrls"],
                 },
               },
@@ -82,7 +82,7 @@ const OPENAI_SECTION_SCHEMA = {
           {
             type: "object", additionalProperties: false,
             properties: {
-              type: { const: "callout" }, tone: { type: "string", enum: ["insight", "risk", "missing"] }, text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } },
+              type: { const: "callout" }, tone: { type: "string", enum: ["insight", "risk", "missing"] }, text: { type: "string" }, sourceUrls: { type: "array", minItems: 1, items: { type: "string" } },
             },
             required: ["type", "tone", "text", "sourceUrls"],
           },
@@ -180,8 +180,8 @@ function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: Re
 {"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","${citationField}":[${citationField === "sourceIds" ? '"ref_1"' : '"https://example.com/cited-page"'}]}]}`;
 }
 
-function stringArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error(`Provider section JSON has invalid ${label}`);
+function stringArray(value: unknown, label: string, minimum = 0): string[] {
+  if (!Array.isArray(value) || value.length < minimum || value.some((item) => typeof item !== "string")) throw new Error(`Provider section JSON has invalid ${label}`);
   return value;
 }
 
@@ -190,16 +190,16 @@ function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"):
   return value.map((block, index) => {
     if (!isRecord(block) || typeof block.type !== "string") throw new Error(`Provider section JSON has invalid block ${index + 1}`);
     if (block.type === "heading" && typeof block.text === "string") return { type: "heading", text: block.text };
-    if (block.type === "paragraph" && typeof block.text === "string") return { type: "paragraph", text: block.text, sourceIds: stringArray(block[citationField], citationField) };
+    if (block.type === "paragraph" && typeof block.text === "string") return { type: "paragraph", text: block.text, sourceIds: stringArray(block[citationField], citationField, 1) };
     if (block.type === "callout" && typeof block.text === "string" && (block.tone === "insight" || block.tone === "risk" || block.tone === "missing")) {
-      return { type: "callout", tone: block.tone, text: block.text, sourceIds: stringArray(block[citationField], citationField) };
+      return { type: "callout", tone: block.tone, text: block.text, sourceIds: stringArray(block[citationField], citationField, 1) };
     }
     if (block.type === "bullets" && Array.isArray(block.items)) {
       return {
         type: "bullets",
         items: block.items.map((item, itemIndex) => {
           if (!isRecord(item) || typeof item.text !== "string") throw new Error(`Provider section JSON has invalid bullet ${index + 1}.${itemIndex + 1}`);
-          return { text: item.text, sourceIds: stringArray(item[citationField], citationField) };
+          return { text: item.text, sourceIds: stringArray(item[citationField], citationField, 1) };
         }),
       };
     }
@@ -312,7 +312,11 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
     status: "complete",
     generatedAt,
   };
-  const validation = validateBriefSection(section, new Set(sources.map((source) => source.id)));
+  const knownSourceIds = new Set(sources.map((source) => source.id));
+  if (!section.sourceIds.some((id) => knownSourceIds.has(id))) {
+    throw new Error(`Brief section validation failed: ${section.title}完整模块必须至少引用一个有效来源`);
+  }
+  const validation = validateBriefSection(section, knownSourceIds);
   if (!validation.ok) throw new Error(`Brief section validation failed: ${validation.errors.join("; ")}`);
   return { section, sources };
 }

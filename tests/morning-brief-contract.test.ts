@@ -53,6 +53,23 @@ describe("V2 morning brief contract", () => {
     expect(result.errors.join(" ")).toMatch(/来源|投资建议|字数|覆盖/);
   });
 
+  it("requires complete sections and complete missing callouts to cite a valid source", () => {
+    const invalid = structuredClone(brief);
+    invalid.sections[0].blocks = [{
+      type: "callout",
+      tone: "missing",
+      text: `${BRIEF_SECTION_DEFINITIONS[0].requiredTerms.join("、")}。${"未查到可靠更新。".repeat(120)}`,
+      sourceIds: [],
+    }];
+    invalid.sections[0].sourceIds = [];
+    const result = validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id)));
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(" ")).toMatch(/来源|有效来源/);
+
+    invalid.sections[0].status = "failed";
+    expect(validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id))).ok).toBe(true);
+  });
+
   it("resolves block sources once and in citation order", () => {
     const block = { type: "paragraph" as const, text: "事实", sourceIds: ["s3", "missing", "s1", "s3"] };
     expect(resolveBlockSources(brief, block).map((item) => item.id)).toEqual(["s3", "s1"]);

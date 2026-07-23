@@ -35,6 +35,17 @@ function openAIModelSection(key: BriefSectionKey, urls: [string, string]) {
   };
 }
 
+function missingOnlySection(key: BriefSectionKey, citationField: "sourceIds" | "sourceUrls") {
+  const section = modelSection(key);
+  return {
+    ...section,
+    blocks: [
+      { type: "heading", text: "检索说明" },
+      { type: "callout", tone: "missing", text: `${section.blocks[1].text}${"未查到可靠更新。".repeat(20)}`, [citationField]: [] },
+    ],
+  };
+}
+
 describe("independent morning-brief section providers", () => {
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
     let request: { parameters?: { enable_search?: boolean }; input?: { messages?: Array<{ content?: string }> } } = {};
@@ -177,6 +188,40 @@ describe("independent morning-brief section providers", () => {
       globalSnapshot: [],
     });
     expect(result.sources[0]).toMatchObject({ publishedAt: null, retrievedAt: result.section.generatedAt });
+  });
+
+  it("rejects headings and missing-callout-only complete responses without citations for both providers", async () => {
+    const qwenFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(missingOnlySection("risk", "sourceIds")) } }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/qwen", published_time: "2026-07-23T07:15:00+08:00" }] },
+      },
+    }));
+    const openAIFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: [
+        { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai" }] } },
+        { type: "message", content: [{ type: "output_text", text: JSON.stringify(missingOnlySection("risk", "sourceUrls")), annotations: [{ type: "url_citation", title: "来源", url: "https://example.com/openai" }] }] },
+      ],
+    }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: qwenFetcher, globalSnapshot: [] }))
+      .rejects.toThrow(/sourceIds|来源/);
+    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: openAIFetcher, globalSnapshot: [] }))
+      .rejects.toThrow(/sourceUrls|来源/);
+  });
+
+  it("rejects complete provider sections with no validated section source", async () => {
+    const qwenFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(modelSection("risk")) } }], search_info: { search_results: [] } },
+    }));
+    const openAIFetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", ["https://example.com/missing", "https://example.com/missing"])), annotations: [] }] }],
+    }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: qwenFetcher, globalSnapshot: [] }))
+      .rejects.toThrow("有效来源");
+    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: openAIFetcher, globalSnapshot: [] }))
+      .rejects.toThrow(/search source|URL citation/);
   });
 
   it("rejects OpenAI model-generated tables while preserving server snapshot tables", async () => {

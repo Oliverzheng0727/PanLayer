@@ -107,9 +107,9 @@ function blockSourceIds(block: BriefBlock): string[] {
   }
 }
 
-function requiresSources(block: BriefBlock): boolean {
+function requiresSources(block: BriefBlock, sectionStatus: BriefStatus): boolean {
   return block.type !== "heading"
-    && !(block.type === "callout" && block.tone === "missing")
+    && !(block.type === "callout" && block.tone === "missing" && sectionStatus !== "complete")
     && !(block.type === "table" && block.provenance?.kind === "snapshot");
 }
 
@@ -213,7 +213,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
 
   section.blocks.forEach((block, index) => {
     if (block.type === "table") validateTableProvenance(errors, section.title, index, block);
-    if (requiresSources(block)) {
+    if (requiresSources(block, section.status)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
     const text = blockText(block).join("");
@@ -230,6 +230,9 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
   }
 
   if (section.status === "complete") {
+    if (!section.sourceIds.some((id) => knownSourceIds.has(id))) {
+      errors.push(`${section.title}完整模块必须至少引用一个有效来源`);
+    }
     const length = briefTextLength(section);
     if (length < 1_000 || length > 1_600) {
       errors.push(`${section.title}字数应为1000至1600字符`);
