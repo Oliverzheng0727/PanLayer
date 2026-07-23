@@ -535,6 +535,8 @@ function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<
     });
 }
 
+const MARKET_DIRECTION_LABEL_MODIFIERS = /^(?:盘中|隔夜|开盘|收盘|早盘|尾盘|今日|昨日|盘前|盘后)*$/;
+
 function quoteDirectionPhraseStart(sentence: string, directionStart: number, labels: string[]): number | null {
   const clauseStart = Math.max(
     sentence.lastIndexOf("，", directionStart - 1),
@@ -549,11 +551,14 @@ function quoteDirectionPhraseStart(sentence: string, directionStart: number, lab
   const beforeDirection = sentence.slice(clauseStart, directionStart);
   const subject = /(?:股价|该股|标的)[^，,。；;！？\n]{0,12}$/.exec(beforeDirection)
     ?? /其(?:盘中|大幅|昨日|今日|股价)?\s*$/.exec(beforeDirection);
-  const label = labels.find((candidate) => beforeDirection.endsWith(candidate));
+  const label = labels.find((candidate) => {
+    const index = beforeDirection.lastIndexOf(candidate);
+    return index >= 0 && MARKET_DIRECTION_LABEL_MODIFIERS.test(beforeDirection.slice(index + candidate.length));
+  });
   const subjectStart = subject
     ? clauseStart + (subject.index ?? 0)
     : label
-      ? directionStart - label.length
+      ? clauseStart + beforeDirection.lastIndexOf(label)
       : null;
   if (subjectStart === null) return null;
   const bridge = /(?:并|且)?(?:带动|推动|拖累|令|使|引发|支撑|压制|刺激|导致)\s*$/.exec(sentence.slice(clauseStart, subjectStart));

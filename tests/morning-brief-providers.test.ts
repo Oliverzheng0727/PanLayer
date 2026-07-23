@@ -216,6 +216,22 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedBusinessDriverText).toContain("美光利润增长30%并受其产品价格上涨支撑");
     expect(normalizedBusinessDriverText).not.toMatch(/且带动|股价上涨3%/);
     expect(normalizedBusinessDriverText).toContain("以服务端快照表为准");
+
+    const intradayRise = "美光盘中上涨3%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    const normalizedIntradayRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedIntradayRiseText = JSON.stringify(normalizedIntradayRise.section.blocks[0]);
+    expect(normalizedIntradayRiseText).not.toMatch(/盘中上涨|3%/);
+    expect(normalizedIntradayRiseText).toContain("以服务端快照表为准");
+
+    const intradayFall = "美光盘中下跌3%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    const normalizedIntradayFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 3 });
+    const normalizedIntradayFallText = JSON.stringify(normalizedIntradayFall.section.blocks[0]);
+    expect(normalizedIntradayFallText).not.toMatch(/盘中下跌|3%/);
+    expect(normalizedIntradayFallText).toContain("以服务端快照表为准");
   });
 
   it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {
