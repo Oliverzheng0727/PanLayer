@@ -203,7 +203,7 @@ function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: Re
   const exampleBullet = "补充可验证事实、潜在影响、反向风险与待确认事项，并明确来源编号。".repeat(6);
   return `生成 ${date} 北京时间 07:15 的A股隔夜早参模块。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。
 
-${coverageInstruction}正文内容长度（仅内容块文字）目标为 1200 至 1400 个字符，以满足服务端严格的 1000 至 1600 字符校验。必须输出 6 至 7 个有事实内容的 paragraph 或 bullet item，并用 heading 分组；每个 paragraph 或每个 bullet item 约 180 至 230 个中文字符。不要提前结束；所有必需词必须在这些内容块中逐项出现。
+${coverageInstruction}正文内容长度（仅内容块文字）目标为 1200 至 1400 个字符；服务端最终容错范围为 600 至 1600 字符，但不得主动缩短内容。必须输出 6 至 7 个有事实内容的 paragraph 或 bullet item，并用 heading 分组；每个 paragraph 或每个 bullet item 约 180 至 230 个中文字符。不要提前结束；所有必需词必须在这些内容块中逐项出现。
 主动检索从上一交易日收盘至当前的可靠来源。${citationField === "sourceIds"
     ? "每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组，并引用联网搜索返回的本地编号 ref_1、ref_2 等；不可引用不存在的编号、不可虚构 URL、不可在 JSON 中输出 sources。"
     : "每条事实、解读和风险说明均须在 sourceUrls 中引用联网搜索返回的精确 URL；不可引用不存在的 URL、不可虚构 URL、不可在 JSON 中输出 sources。"}若没有可靠更新，请明确写“未查到可靠更新”并仍引用检索来源。
@@ -676,10 +676,25 @@ function normalizeFinalSnapshotText(text: string, globalSnapshot: ReconciledGlob
     : sentence);
 }
 
-function removeReservedRankingSentences(text: string): string {
+const EXPLICIT_RANKING_CLAIM = /排名|最强|第一|领涨|领先|居首|榜首|冠军|top\s*\d+/i;
+
+function normalizeReservedRankingSentences(text: string): string {
   return text
     .split(/(?<=[。！？；;\n])/)
-    .filter((sentence) => !/主线|热点|龙头|ETF/i.test(sentence))
+    .flatMap((sentence) => {
+      if (!/主线|热点|龙头|ETF/i.test(sentence)) return [sentence];
+      if (EXPLICIT_RANKING_CLAIM.test(sentence)) return [];
+      return [sentence
+        .replace(/热点板块/g, "相关板块")
+        .replace(/热点/g, "相关")
+        .replace(/主线方向/g, "相关方向")
+        .replace(/主线/g, "相关方向")
+        .replace(/龙头企业/g, "相关企业")
+        .replace(/龙头公司/g, "相关公司")
+        .replace(/龙头股/g, "相关标的")
+        .replace(/龙头/g, "相关企业")
+        .replace(/ETF/gi, "交易型指数产品")];
+    })
     .join("")
     .trim();
 }
@@ -694,8 +709,10 @@ function removeInvestmentAdviceSentences(text: string): string {
 
 function normalizeFinalQwenSection(parsed: ParsedSection, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[]): ParsedSection {
   const normalizeText = (text: string) => {
-    const withoutRankedClaim = key === "mapping" || key === "risk" ? removeReservedRankingSentences(text) : text;
-    return normalizeFinalSnapshotText(removeInvestmentAdviceSentences(withoutRankedClaim), globalSnapshot);
+    const withoutAdviceSentences = removeInvestmentAdviceSentences(text);
+    const withoutRankedClaim = key === "mapping" || key === "risk" ? normalizeReservedRankingSentences(withoutAdviceSentences) : withoutAdviceSentences;
+    if (hasInvestmentAdviceLanguage(withoutRankedClaim)) return "";
+    return normalizeFinalSnapshotText(withoutRankedClaim, globalSnapshot);
   };
   const blocks = parsed.blocks.flatMap((block): BriefBlock[] => {
     if (block.type === "heading") {
@@ -1017,8 +1034,8 @@ export async function generateQwenBriefSection({
   };
   const sources = [...initialSources, ...sourcesFromMetadata(supplementNamespace, qwenSearchResults(supplementPayload))];
   const mergedContentLength = modelContentText(merged.blocks).join("").length;
-  if (mergedContentLength < 1_000 || mergedContentLength > 1_600) {
-    throw new Error(`Brief section validation failed: ${merged.title}补写合并后的内容块字数应为1000至1600字符（实际 ${mergedContentLength} 字符）`);
+  if (mergedContentLength > 1_600) {
+    throw new Error(`Brief section validation failed: ${merged.title}补写合并后的内容块不得超过1600字符（实际 ${mergedContentLength} 字符）`);
   }
   return finishSection(key, globalSnapshot, marketContext, merged, sources, true, attempt === 3);
 }

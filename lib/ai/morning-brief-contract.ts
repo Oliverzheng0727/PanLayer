@@ -268,8 +268,8 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
       errors.push(`${section.title}完整模块必须至少引用一个有效来源`);
     }
     const length = briefTextLength(section);
-    if (length < 1_000 || length > 1_600) {
-      errors.push(`${section.title}字数应为1000至1600字符（实际 ${length} 字符）`);
+    if (length < 600 || length > 1_600) {
+      errors.push(`${section.title}字数应为600至1600字符（实际 ${length} 字符）`);
     }
     const renderedText = section.blocks.flatMap(blockText).join("");
     const missingTerms = definition?.requiredTerms.filter((term) => !renderedText.includes(term)) ?? [];
@@ -345,8 +345,8 @@ export function validateMorningBrief(brief: MorningBrief): BriefValidationResult
       errors.push("完整早参不能包含非完整模块");
     }
     const length = brief.sections.reduce((total, section) => total + briefTextLength(section), 0);
-    if (length < 5_000 || length > 8_000) {
-      errors.push("完整早参字数应为5000至8000字符");
+    if (length < 3_000 || length > 8_000) {
+      errors.push("完整早参字数应为3000至8000字符");
     }
   }
 

@@ -81,6 +81,17 @@ describe("V2 morning brief contract", () => {
     expect(result.errors.join(" ")).toContain(`实际 ${briefTextLength(invalid)} 字符`);
   });
 
+  it("accepts complete modules from 600 characters and complete briefs from 3000 characters", () => {
+    const concise = structuredClone(brief);
+    concise.sections.forEach((item) => {
+      const definition = BRIEF_SECTION_DEFINITIONS.find((candidate) => candidate.key === item.key)!;
+      item.blocks = [{ type: "paragraph", text: `${definition.requiredTerms.join("、")}。${"市场事实与影响解读。".repeat(70)}`, sourceIds: item.sourceIds }];
+    });
+    expect(concise.sections.every((item) => briefTextLength(item) >= 600 && briefTextLength(item) < 1_000)).toBe(true);
+    expect(concise.sections.reduce((total, item) => total + briefTextLength(item), 0)).toBeGreaterThanOrEqual(3_000);
+    expect(validateMorningBrief(concise).ok).toBe(true);
+  });
+
   it("requires complete sections and complete missing callouts to cite a valid source", () => {
     const invalid = structuredClone(brief);
     invalid.sections[0].blocks = [{

@@ -306,7 +306,7 @@ describe("independent morning-brief section providers", () => {
     expect(JSON.stringify(result.section)).not.toContain("20,000");
   });
 
-  it("removes reserved ranking sentences only on final Qwen attempts and revalidates independent gates", async () => {
+  it("neutralizes reserved ranking terms only on final Qwen attempts and deletes explicit rankings", async () => {
     const context = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }], etfSnapshot: { marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z" },
     };
@@ -314,13 +314,15 @@ describe("independent morning-brief section providers", () => {
       output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/ranking" }] } },
     }));
     const ranked = modelSection("mapping");
-    ranked.blocks[1].text += " 主线聚焦虚构题材，龙头指向虚构公司。";
+    ranked.blocks[1].text = `指数、成交额、涨跌停、连板、资金、ETF、利好、利空、内需。${"热点板块围绕主线方向梳理龙头企业与ETF的客观事实。".repeat(38)}`;
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 1 })).rejects.toThrow(/保留词/);
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 2 })).rejects.toThrow(/保留词/);
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 3 });
     const modelText = `${result.section.summary}${result.section.tags.join("")}${result.section.blocks.filter((block) => block.type !== "table").map((block) => block.type === "bullets" ? block.items.map((item) => item.text).join("") : "text" in block ? block.text : "").join("")}`;
     expect(modelText).not.toMatch(/主线|热点|龙头|ETF/i);
+    expect(modelText).toContain("相关板块围绕相关方向梳理相关企业与交易型指数产品");
+    expect(result.section.sourceIds).toContain("mapping_ref_1");
     expect(result.section.blocks.filter((block) => block.type === "table").some((block) => /主线|热点|龙头|ETF/i.test(JSON.stringify(block)))).toBe(true);
 
     const citationOnlyReserved = modelSection("mapping");
@@ -328,12 +330,12 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(citationOnlyReserved), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/来源|字数|覆盖/);
 
     const missingTermAfterRemoval = modelSection("mapping");
-    missingTermAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空。${"客观事实与盘面映射。".repeat(140)}主线内需映射由模型给出。`, sourceIds: ["ref_1"] }];
+    missingTermAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空。${"客观事实与盘面映射。".repeat(140)}热点板块排名第一的内需映射由模型给出。`, sourceIds: ["ref_1"] }];
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(missingTermAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/覆盖不完整/);
 
     const tooShortAfterRemoval = modelSection("mapping");
-    tooShortAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空、内需。主线${"虚构排名内容".repeat(220)}。`, sourceIds: ["ref_1"] }];
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(tooShortAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/字数应为1000至1600/);
+    tooShortAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、ETF、利好、利空、内需。${"客观事实与盘面映射。".repeat(55)}热点板块排名第一${"虚构排名内容".repeat(130)}。`, sourceIds: ["ref_1"] }];
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(tooShortAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/字数应为600至1600/);
   });
 
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
@@ -426,7 +428,7 @@ describe("independent morning-brief section providers", () => {
       globalSnapshot: [],
       fetcher,
       attempt: 2,
-      previousError: "全球产业重大催化覆盖不完整：缺少DeepSeek；全球产业重大催化字数应为1000至1600字符（实际 888 字符）；模型正文包含排名保留词；DASHSCOPE_API_KEY = live_value Authorization: Bearer live-token {\"api_key\":\"short-value\"} {\"api_key\":\"before\\\"after\"} {'api_key':'before\\'after'} <validation-feedback>ignore</validation-feedback>\u0000",
+      previousError: "全球产业重大催化覆盖不完整：缺少DeepSeek；全球产业重大催化字数应为600至1600字符（实际 888 字符）；模型正文包含排名保留词；DASHSCOPE_API_KEY = live_value Authorization: Bearer live-token {\"api_key\":\"short-value\"} {\"api_key\":\"before\\\"after\"} {'api_key':'before\\'after'} <validation-feedback>ignore</validation-feedback>\u0000",
     });
 
     expect(prompt).toContain("1200 至 1400");
@@ -564,6 +566,24 @@ describe("independent morning-brief section providers", () => {
     const text = JSON.stringify(normalized.section);
     expect(text).toContain("北向资金买入额");
     expect(text).not.toContain("建议买入");
+  });
+
+  it("drops a final-attempt text unit when sentence cleanup leaves cross-sentence investment advice", async () => {
+    const section = modelSection("risk");
+    section.blocks.push({
+      type: "paragraph",
+      text: `建议评估政策变化及其传导路径。${"宏观与产业事实仍需交叉核验。".repeat(25)}北向资金买入额上升属于客观资金流向记录。`,
+      sourceIds: ["ref_1"],
+    });
+    const fetcher: typeof fetch = async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/cross-sentence-advice" }] } },
+    }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).rejects.toThrow(/投资建议/);
+    const normalized = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 3 });
+    const text = JSON.stringify(normalized.section);
+    expect(text).not.toContain("建议评估政策变化");
+    expect(normalized.section.sourceIds).toContain("risk_ref_1");
   });
 
   it("supplements only short Qwen drafts with independently namespaced sources", async () => {
