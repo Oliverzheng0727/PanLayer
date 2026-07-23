@@ -446,7 +446,7 @@ export async function runPanLayerJob(
         marketContext,
         lease: morningBriefLease,
         concurrency: ai.provider === "qwen" ? 3 : 2,
-        retries: ai.provider === "qwen" ? 0 : undefined,
+        retries: ai.provider === "qwen" ? (selectedKeys.length === 1 ? 1 : 0) : undefined,
         deadlineAt,
       });
       finalStatus = brief.status;

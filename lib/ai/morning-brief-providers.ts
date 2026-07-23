@@ -58,7 +58,7 @@ export interface ProviderSectionInput {
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
 export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 22_000;
+const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 28_000;
 const OPENAI_PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 

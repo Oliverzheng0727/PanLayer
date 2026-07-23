@@ -445,12 +445,44 @@ describe("close review aggregation", () => {
     expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "failed modules: mapping" });
   });
 
-  it("makes one external Qwen attempt per failed module", async () => {
-    const { db, fetcher, requests } = morningBriefJobHarness(["risk"]);
+  it("keeps Qwen at one external attempt per module for a multi-module batch", async () => {
+    const { db, fetcher, requests } = morningBriefJobHarness(["risk", "mapping"]);
 
-    await runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+    await runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk", "mapping"] });
 
     expect(requests.risk).toBe(1);
+    expect(requests.mapping).toBe(1);
+  });
+
+  it("retries an explicit single Qwen module once with its coverage diagnostic", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const requests: string[] = [];
+    let calls = 0;
+    const fetcher: typeof fetch = async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
+      const prompt = request.input.messages[1].content;
+      requests.push(prompt);
+      calls += 1;
+      const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`))!;
+      const terms = calls === 1 ? definition.requiredTerms.filter((term) => term !== "关键") : definition.requiredTerms;
+      const section = {
+        key: definition.key,
+        title: definition.title,
+        summary: "已核验的隔夜市场信息摘要。",
+        tags: ["市场"],
+        blocks: [{ type: "paragraph", text: `${terms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`, sourceIds: ["ref_1"] }],
+      };
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可靠来源", url: "https://example.com/risk" }] } },
+      }));
+    };
+
+    await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] }))
+      .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
+
+    expect(calls).toBe(2);
+    expect(requests[1]).toContain("第 2 次生成必须修正上一轮问题");
+    expect(requests[1]).toContain("缺少关键");
   });
 
   it("persists a failed morning job run and names every failed module", async () => {
