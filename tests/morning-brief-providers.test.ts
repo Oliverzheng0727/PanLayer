@@ -71,6 +71,31 @@ describe("independent morning-brief section providers", () => {
     expect(prompt).not.toContain("secret");
   });
 
+  it("normalizes common Qwen block aliases without weakening source validation", async () => {
+    const section = modelSection("risk");
+    const compatible = {
+      ...section,
+      blocks: [
+        { type: "subheading", title: "事实梳理" },
+        { type: "paragraph", content: section.blocks[1].text, sourceIds: ["ref_1"] },
+        { type: "callout", content: "补充客观事实与风险提示。".repeat(12), sourceIds: ["ref_1"] },
+        { type: "bullets", items: [{ content: "可验证的补充事实。".repeat(10), sourceIds: ["ref_1"] }, `${"含来源的补充事实。".repeat(10)}[ref_1]`] },
+      ],
+    };
+    const provider = (payload: unknown): typeof fetch => async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(payload) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/aliases" }] } },
+    }));
+
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(compatible), globalSnapshot: [] });
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "heading", text: "事实梳理" }));
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "paragraph", text: expect.stringContaining("补充客观事实") }));
+    expect(JSON.stringify(result.section.blocks)).toContain("含来源的补充事实");
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider({ ...compatible, blocks: [{ type: "heading", text: "事实" }, { type: "quote", content: "secret original text" }] }), globalSnapshot: [] })).rejects.toThrow(/invalid block 2.*type=quote.*keys=/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider({ ...compatible, blocks: [{ type: "paragraph", content: section.blocks[1].text, sourceIds: ["ref_1"] }, { type: "bullets", items: ["secret original text"] }] }), globalSnapshot: [] })).rejects.toThrow(/invalid bullet 2\.1/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider({ ...compatible, blocks: [{ type: "paragraph", content: section.blocks[1].text, sourceIds: ["ref_99"] }] }), globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+  });
+
   it("appends server-authored ranked context tables and normalizes Qwen ranking-token bypasses", async () => {
     const marketContext = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },
@@ -693,7 +718,9 @@ describe("independent morning-brief section providers", () => {
       const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
       const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
 
-      await vi.advanceTimersByTimeAsync(18_000);
+      await vi.advanceTimersByTimeAsync(21_999);
+      expect(aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
 
       await rejected;
       expect(aborted).toBe(true);
@@ -745,7 +772,9 @@ describe("independent morning-brief section providers", () => {
       const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
       const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
 
-      await vi.advanceTimersByTimeAsync(18_000);
+      await vi.advanceTimersByTimeAsync(21_999);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
 
       await rejected;
       expect(vi.getTimerCount()).toBe(0);

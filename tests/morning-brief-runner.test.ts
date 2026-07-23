@@ -126,6 +126,23 @@ describe("full morning brief runner", () => {
     expect(new Set(sectionWrites.map((call) => call.values[1])).size).toBe(5);
   });
 
+  it("permits three simultaneous provider calls when the production Qwen runner requests it", async () => {
+    const { db } = memoryD1();
+    let active = 0;
+    let maximum = 0;
+    const generator: BriefSectionGenerator = async ({ key }) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return generated(key);
+    };
+
+    await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: BRIEF_SECTION_DEFINITIONS.map((item) => item.key), generator, db, concurrency: 3, retries: 0 });
+
+    expect(maximum).toBe(3);
+  });
+
   it("retries a transient section failure twice before persisting its final result", async () => {
     const { db, sections } = memoryD1();
     let attempts = 0;

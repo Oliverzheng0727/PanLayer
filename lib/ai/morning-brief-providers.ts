@@ -58,7 +58,8 @@ export interface ProviderSectionInput {
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
 export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
+const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 22_000;
+const OPENAI_PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 
 type ProviderSearchResult = {
@@ -243,30 +244,68 @@ function sourcedText(text: string, value: unknown, citationField: "sourceIds" | 
     : { text, sourceIds: stringArray(value, citationField, 1) };
 }
 
+function safeStructureName(value: unknown): string {
+  if (typeof value !== "string") return "non-string";
+  const normalized = value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+  return normalized || "invalid";
+}
+
+function safeStructureKeys(value: unknown): string {
+  if (!isRecord(value)) return "none";
+  return Object.keys(value)
+    .filter((key) => /^[A-Za-z0-9_-]{1,40}$/.test(key))
+    .sort()
+    .join(",") || "none";
+}
+
+function invalidStructure(kind: "block" | "bullet", index: string, value: unknown): Error {
+  const type = isRecord(value) ? safeStructureName(value.type) : "non-record";
+  return new Error(`Provider section JSON has invalid ${kind} ${index} (type=${type}; keys=${safeStructureKeys(value)})`);
+}
+
+function blockText(block: Record<string, unknown>, fields: string[]): string | null {
+  for (const field of fields) {
+    if (typeof block[field] === "string") return block[field];
+  }
+  return null;
+}
+
 function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"): BriefBlock[] {
   if (!Array.isArray(value)) throw new Error("Provider section JSON has invalid blocks");
   return value.map((block, index) => {
-    if (!isRecord(block) || typeof block.type !== "string") throw new Error(`Provider section JSON has invalid block ${index + 1}`);
-    if (block.type === "heading" && typeof block.text === "string") return { type: "heading", text: block.text };
-    if (block.type === "paragraph" && typeof block.text === "string") {
-      const parsed = sourcedText(block.text, block[citationField], citationField);
+    if (!isRecord(block) || typeof block.type !== "string") throw invalidStructure("block", String(index + 1), block);
+    const qwenCompatible = citationField === "sourceIds";
+    const headingText = blockText(block, ["text", "title"]);
+    if ((block.type === "heading" || (qwenCompatible && block.type === "subheading")) && headingText !== null) return { type: "heading", text: headingText };
+    const paragraphText = blockText(block, qwenCompatible ? ["text", "content"] : ["text"]);
+    if (block.type === "paragraph" && paragraphText !== null) {
+      const parsed = sourcedText(paragraphText, block[citationField], citationField);
       return { type: "paragraph", ...parsed };
     }
-    if (block.type === "callout" && typeof block.text === "string" && (block.tone === "insight" || block.tone === "risk" || block.tone === "missing")) {
-      const parsed = sourcedText(block.text, block[citationField], citationField);
-      return { type: "callout", tone: block.tone, ...parsed };
+    const calloutText = blockText(block, qwenCompatible ? ["text", "content"] : ["text"]);
+    if (block.type === "callout" && calloutText !== null) {
+      const parsed = sourcedText(calloutText, block[citationField], citationField);
+      if (block.tone === "insight" || block.tone === "risk" || block.tone === "missing") return { type: "callout", tone: block.tone, ...parsed };
+      if (qwenCompatible && block.tone === undefined) return { type: "paragraph", ...parsed };
+      throw invalidStructure("block", String(index + 1), block);
     }
     if (block.type === "bullets" && Array.isArray(block.items)) {
       return {
         type: "bullets",
         items: block.items.map((item, itemIndex) => {
-          if (!isRecord(item) || typeof item.text !== "string") throw new Error(`Provider section JSON has invalid bullet ${index + 1}.${itemIndex + 1}`);
-          return sourcedText(item.text, item[citationField], citationField);
+          if (typeof item === "string" && qwenCompatible) {
+            if (!/\[ref_\d+\]/.test(item)) throw invalidStructure("bullet", `${index + 1}.${itemIndex + 1}`, item);
+            return sourcedText(item, undefined, citationField);
+          }
+          if (!isRecord(item)) throw invalidStructure("bullet", `${index + 1}.${itemIndex + 1}`, item);
+          const itemText = blockText(item, qwenCompatible ? ["text", "content"] : ["text"]);
+          if (itemText === null) throw invalidStructure("bullet", `${index + 1}.${itemIndex + 1}`, item);
+          return sourcedText(itemText, item[citationField], citationField);
         }),
       };
     }
     if (block.type === "table") throw new Error("Provider section JSON must not contain model-generated tables");
-    throw new Error(`Provider section JSON has invalid block ${index + 1}`);
+    throw invalidStructure("block", String(index + 1), block);
   });
 }
 
@@ -898,10 +937,11 @@ function qwenSupplementPrompt(date: string, key: BriefSectionKey, globalSnapshot
 }
 
 function requestTimeoutMs(provider: "Qwen" | "OpenAI", deadlineAt?: number): number {
-  if (deadlineAt === undefined) return PROVIDER_REQUEST_TIMEOUT_MS;
+  const providerTimeoutMs = provider === "Qwen" ? QWEN_PROVIDER_REQUEST_TIMEOUT_MS : OPENAI_PROVIDER_REQUEST_TIMEOUT_MS;
+  if (deadlineAt === undefined) return providerTimeoutMs;
   const remaining = deadlineAt - Date.now() - DEADLINE_REQUEST_SAFETY_MS;
   if (remaining <= 0) throw new Error(`Morning brief deadline budget exhausted before ${provider} request`);
-  return Math.min(PROVIDER_REQUEST_TIMEOUT_MS, remaining);
+  return Math.min(providerTimeoutMs, remaining);
 }
 
 async function fetchJsonWithDeadline(fetcher: typeof fetch, endpoint: string, init: RequestInit, provider: "Qwen" | "OpenAI", deadlineAt?: number): Promise<{ response: Response; payload: unknown }> {

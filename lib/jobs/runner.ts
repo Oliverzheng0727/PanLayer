@@ -208,7 +208,7 @@ export async function generateFullMorningBrief(input: {
   const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
   const results: SectionRunResult[] = Array(requestedKeys.length);
   const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
-  const workerCount = Math.min(2, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
+  const workerCount = Math.min(3, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
   let cursor = 0;
   const deadlineError = "Morning brief batch deadline exceeded";
   const deadlineExceeded = () => input.deadlineAt !== undefined && Date.now() >= input.deadlineAt;
@@ -445,7 +445,7 @@ export async function runPanLayerJob(
         globalSnapshot: global.reconciled,
         marketContext,
         lease: morningBriefLease,
-        concurrency: 2,
+        concurrency: ai.provider === "qwen" ? 3 : 2,
         retries: ai.provider === "qwen" ? 0 : undefined,
         deadlineAt,
       });
