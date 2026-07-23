@@ -535,7 +535,7 @@ function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<
     });
 }
 
-function quoteDirectionPhraseStart(sentence: string, directionStart: number): number {
+function quoteDirectionPhraseStart(sentence: string, directionStart: number, labels: string[]): number | null {
   const clauseStart = Math.max(
     sentence.lastIndexOf("，", directionStart - 1),
     sentence.lastIndexOf(",", directionStart - 1),
@@ -546,25 +546,39 @@ function quoteDirectionPhraseStart(sentence: string, directionStart: number): nu
     sentence.lastIndexOf("？", directionStart - 1),
     sentence.lastIndexOf("\n", directionStart - 1),
   ) + 1;
-  const subject = /(?:股价|该股|标的|其)[^，,。；;！？\n]{0,12}$/.exec(sentence.slice(clauseStart, directionStart));
-  return subject ? clauseStart + (subject.index ?? 0) : directionStart;
+  const beforeDirection = sentence.slice(clauseStart, directionStart);
+  const subject = /(?:股价|该股|标的)[^，,。；;！？\n]{0,12}$/.exec(beforeDirection)
+    ?? /其(?:盘中|大幅|昨日|今日|股价)?\s*$/.exec(beforeDirection);
+  const label = labels.find((candidate) => beforeDirection.endsWith(candidate));
+  const subjectStart = subject
+    ? clauseStart + (subject.index ?? 0)
+    : label
+      ? directionStart - label.length
+      : null;
+  if (subjectStart === null) return null;
+  const bridge = /(?:并|且)?(?:带动|推动|拖累|令|使|引发|支撑|压制|刺激|导致)\s*$/.exec(sentence.slice(clauseStart, subjectStart));
+  return bridge ? subjectStart - bridge[0].length : subjectStart;
 }
 
 function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
   const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
   const directions = [...sentence.matchAll(/上涨|下跌|涨幅|跌幅|涨|跌/g)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  const quoteDirections = directions.flatMap((direction) => {
+    const phraseStart = quoteDirectionPhraseStart(sentence, direction.start, labels);
+    return phraseStart === null ? [] : [{ ...direction, phraseStart }];
+  });
   const replacementRanges = tokens.map((token) => {
-    const direction = directions.find((candidate) => {
+    const direction = quoteDirections.find((candidate) => {
       const gap = candidate.end <= token.start
         ? sentence.slice(candidate.end, token.start)
         : candidate.start >= token.end
           ? sentence.slice(token.end, candidate.start)
           : "";
-      return gap.length <= 12 && !/[，,。；;！？\n]/.test(gap);
+      return gap.length <= 12 && !/[，,。；;！？\n\d]/.test(gap);
     });
     if (!direction) return token;
     return {
-      start: Math.min(quoteDirectionPhraseStart(sentence, direction.start), token.start),
+      start: Math.min(direction.phraseStart, token.start),
       end: Math.max(direction.end, token.end),
     };
   }).sort((left, right) => right.start - left.start);

@@ -200,6 +200,22 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedMetricText).toContain("美光营收同比增长30%");
     expect(normalizedMetricText).not.toMatch(/股价|上涨|3%/);
     expect(normalizedMetricText).toContain("以服务端快照表为准");
+
+    const connectedMetricAndQuote = "美光营收同比增长30%并带动股价上涨3%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    const normalizedConnectedMetric = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedConnectedMetricText = JSON.stringify(normalizedConnectedMetric.section.blocks[0]);
+    expect(normalizedConnectedMetricText).toContain("美光营收同比增长30%");
+    expect(normalizedConnectedMetricText).not.toMatch(/并带动|股价|上涨|3%/);
+    expect(normalizedConnectedMetricText).toContain("以服务端快照表为准");
+
+    const businessDriverAndQuote = "美光利润增长30%并受其产品价格上涨支撑且带动股价上涨3%。";
+    const normalizedBusinessDriver = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(businessDriverAndQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedBusinessDriverText = JSON.stringify(normalizedBusinessDriver.section.blocks[0]);
+    expect(normalizedBusinessDriverText).toContain("美光利润增长30%并受其产品价格上涨支撑");
+    expect(normalizedBusinessDriverText).not.toMatch(/且带动|股价上涨3%/);
+    expect(normalizedBusinessDriverText).toContain("以服务端快照表为准");
   });
 
   it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {
