@@ -20,7 +20,9 @@ import { fetchTencentQuotes } from "../data/tencent";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
-const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
+// The 110s batch deadline stays below the 180s stale lease window, so a live job cannot be reclaimed.
+export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
+export const MORNING_BRIEF_BATCH_DEADLINE_MS = 110 * 1_000;
 export interface MorningBriefLease {
   token: string;
   renew: () => Promise<boolean>;
@@ -155,6 +157,7 @@ export async function generateFullMorningBrief(input: {
   globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
   marketContext?: MorningBriefMarketContext;
   lease?: MorningBriefLease;
+  deadlineAt?: number;
 }): Promise<MorningBrief> {
   const requestedKeys = input.sectionKeys;
   if (new Set(requestedKeys).size !== requestedKeys.length) throw new Error("Duplicate brief section keys are not allowed");
@@ -166,15 +169,21 @@ export async function generateFullMorningBrief(input: {
   const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
   const workerCount = Math.min(2, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
   let cursor = 0;
+  const deadlineError = "Morning brief batch deadline exceeded";
+  const deadlineExceeded = () => input.deadlineAt !== undefined && Date.now() >= input.deadlineAt;
 
   const runSectionWithRetry = async (key: BriefSectionKey): Promise<SectionRunResult> => {
     let attempts = 0;
     let previousError: string | undefined;
     let error = "未知错误";
     while (attempts < maxAttempts) {
+      if (deadlineExceeded()) {
+        error = deadlineError;
+        break;
+      }
       attempts += 1;
       try {
-        const result = await input.generator({ date: input.date, key, attempt: attempts, previousError, globalSnapshot, marketContext: input.marketContext });
+        const result = await input.generator({ date: input.date, key, attempt: attempts, previousError, globalSnapshot, marketContext: input.marketContext, deadlineAt: input.deadlineAt });
         await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources, input.lease);
         return result;
       } catch (caught) {
@@ -182,6 +191,7 @@ export async function generateFullMorningBrief(input: {
         await assertMorningBriefLease(input.lease);
         error = sanitizeMorningBriefDiagnostic(caught);
         previousError = error;
+        if (deadlineExceeded()) break;
       }
     }
     const failed = failedBriefSection(key, error, beijingTimestamp());
@@ -366,6 +376,7 @@ export async function runPanLayerJob(
       const review = buildDailyReview({ date, quotes: market.quotes, limitPool, breadth, marginBalance, high120: null, allTimeHigh: null, source: market.source });
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), market.source, review.status, new Date().toISOString()).run();
     } else {
+      const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
       const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
       if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
@@ -381,8 +392,8 @@ export async function runPanLayerJob(
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
       const generator: BriefSectionGenerator = ai.provider === "qwen"
-        ? ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext }) => generateQwenBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext })
-        : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext });
+        ? ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateQwenBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline })
+        : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,
@@ -394,6 +405,7 @@ export async function runPanLayerJob(
         lease: morningBriefLease,
         concurrency: 2,
         retries: ai.provider === "qwen" ? 0 : undefined,
+        deadlineAt,
       });
       finalStatus = brief.status;
       const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);

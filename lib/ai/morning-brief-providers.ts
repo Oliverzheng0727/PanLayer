@@ -39,6 +39,7 @@ export type BriefSectionGenerator = (input: {
   previousError?: string;
   globalSnapshot: ReconciledGlobalPoint[];
   marketContext?: MorningBriefMarketContext;
+  deadlineAt?: number;
 }) => Promise<GeneratedBriefSection>;
 
 export interface ProviderSectionInput {
@@ -51,11 +52,14 @@ export interface ProviderSectionInput {
   previousError?: string;
   fetcher?: typeof fetch;
   endpoint?: string;
+  deadlineAt?: number;
 }
 
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
 export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
+const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 
 type ProviderSearchResult = {
   index?: number;
@@ -893,8 +897,29 @@ function qwenSupplementPrompt(date: string, key: BriefSectionKey, globalSnapshot
 仅返回合法 JSON 对象，不要 Markdown 代码块。JSON 必须含 key、title、summary、tags、blocks；blocks 仅包含新增内容。`;
 }
 
-async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, apiKey: string, prompt: string): Promise<unknown> {
-  const response = await fetcher(endpoint, {
+function requestTimeoutMs(provider: "Qwen" | "OpenAI", deadlineAt?: number): number {
+  if (deadlineAt === undefined) return PROVIDER_REQUEST_TIMEOUT_MS;
+  const remaining = deadlineAt - Date.now() - DEADLINE_REQUEST_SAFETY_MS;
+  if (remaining <= 0) throw new Error(`Morning brief deadline budget exhausted before ${provider} request`);
+  return Math.min(PROVIDER_REQUEST_TIMEOUT_MS, remaining);
+}
+
+async function fetchWithTimeout(fetcher: typeof fetch, endpoint: string, init: RequestInit, provider: "Qwen" | "OpenAI", deadlineAt?: number): Promise<Response> {
+  const timeoutMs = requestTimeoutMs(provider, deadlineAt);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetcher(endpoint, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`${provider} request timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, apiKey: string, prompt: string, deadlineAt?: number): Promise<unknown> {
+  const response = await fetchWithTimeout(fetcher, endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -922,7 +947,7 @@ async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, ap
         },
       },
     }),
-  });
+  }, "Qwen", deadlineAt);
   const payload: unknown = await response.json();
   if (!response.ok) {
     const detail = isRecord(payload) && (typeof payload.message === "string" || typeof payload.code === "string")
@@ -1032,6 +1057,7 @@ export async function generateQwenBriefSection({
   previousError,
   fetcher = fetch,
   endpoint = DASHSCOPE_SECTION_GENERATION_URL,
+  deadlineAt,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
   const initialPayload = await qwenGenerationPayload(
@@ -1039,6 +1065,7 @@ export async function generateQwenBriefSection({
     endpoint,
     apiKey,
     promptForSection(date, key, globalSnapshot, "sourceIds", attempt, previousError),
+    deadlineAt,
   );
   const initial = parseSection(qwenText(initialPayload), key);
   const initialSources = sourcesFromMetadata(key, qwenSearchResults(initialPayload));
@@ -1046,7 +1073,7 @@ export async function generateQwenBriefSection({
     return finishSection(key, globalSnapshot, marketContext, initial, initialSources, true, true);
   }
 
-  const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, qwenSupplementPrompt(date, key, globalSnapshot, initial));
+  const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, qwenSupplementPrompt(date, key, globalSnapshot, initial), deadlineAt);
   const supplement = parseSection(qwenText(supplementPayload), key);
   const supplementNamespace = `${key}_supp`;
   const merged: ParsedSection = {
@@ -1069,9 +1096,10 @@ export async function generateOpenAIBriefSection({
   previousError,
   fetcher = fetch,
   endpoint = OPENAI_RESPONSES_URL,
+  deadlineAt,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const response = await fetcher(endpoint, {
+  const response = await fetchWithTimeout(fetcher, endpoint, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
@@ -1086,7 +1114,7 @@ export async function generateOpenAIBriefSection({
         format: { type: "json_schema", name: "panlayer_morning_brief_section", strict: true, schema: strictOpenAISectionSchema(key) },
       },
     }),
-  });
+  }, "OpenAI", deadlineAt);
   const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
   const parsed = parseSection(openAIText(payload), key, "sourceUrls");

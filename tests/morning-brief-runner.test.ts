@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSection, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import type { BriefSectionGenerator, GeneratedBriefSection } from "../lib/ai/morning-brief-providers";
-import { acquireJobLease, generateFullMorningBrief, renewJobLease } from "../lib/jobs/runner";
+import { acquireJobLease, generateFullMorningBrief, MORNING_BRIEF_BATCH_DEADLINE_MS, MORNING_BRIEF_LEASE_MS, renewJobLease } from "../lib/jobs/runner";
 
 vi.mock("../lib/data/global/overnight", () => ({
   loadGlobalOvernightSnapshot: vi.fn(async () => ({ raw: [], reconciled: [] })),
@@ -212,5 +212,44 @@ describe("full morning brief runner", () => {
     expect(brief.status).toBe("partial");
     expect(sections.get(`${DATE}:mapping`)).toMatchObject({ status: "failed", attempts: 3, error: "permanent provider failure" });
     expect(briefs.get(DATE)).toMatchObject({ status: "partial" });
+  });
+
+  it("persists failed sections for modules left after the batch deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const { db, sections } = memoryD1();
+      const start = new Date("2026-07-23T00:00:00Z");
+      vi.setSystemTime(start);
+      const generatedKeys: BriefSectionKey[] = [];
+      const generator: BriefSectionGenerator = async ({ key }) => {
+        generatedKeys.push(key);
+        vi.setSystemTime(new Date(start.getTime() + 2_000));
+        return generated(key);
+      };
+
+      const brief = await generateFullMorningBrief({
+        date: DATE,
+        model: "qwen-plus",
+        sectionKeys: ["risk", "mapping", "global-industry"],
+        generator,
+        db,
+        concurrency: 1,
+        retries: 0,
+        globalSnapshot: [],
+        deadlineAt: start.getTime() + 1_500,
+      });
+
+      expect(generatedKeys).toEqual(["risk"]);
+      expect(sections.get(`${DATE}:risk`)).toMatchObject({ status: "complete" });
+      expect(sections.get(`${DATE}:mapping`)).toMatchObject({ status: "failed", attempts: 0, error: expect.stringMatching(/deadline/i) });
+      expect(sections.get(`${DATE}:global-industry`)).toMatchObject({ status: "failed", attempts: 0, error: expect.stringMatching(/deadline/i) });
+      expect(brief.sections.filter((section) => section.status === "failed").map((section) => section.key)).toEqual(["global-markets", "global-industry", "domestic", "mapping"]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps the production batch deadline below the lease stale window", () => {
+    expect(MORNING_BRIEF_BATCH_DEADLINE_MS).toBe(110_000);
+    expect(MORNING_BRIEF_BATCH_DEADLINE_MS).toBeLessThan(MORNING_BRIEF_LEASE_MS);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import { generateOpenAIBriefSection, generateQwenBriefSection } from "../lib/ai/morning-brief-providers";
 import { LEADER_RANKING_BASIS } from "../lib/domain/metrics";
@@ -677,6 +677,63 @@ describe("independent morning-brief section providers", () => {
       expect(JSON.stringify(result.section)).not.toContain("建议买入");
       expect(result.section.status).toBe("complete");
     }
+  });
+
+  it("aborts a hung Qwen request after the per-request budget", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetcher: typeof fetch = async (_input, init) => new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("aborted", "AbortError"));
+        }, { once: true });
+      });
+      const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+      const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
+
+      await vi.advanceTimersByTimeAsync(18_000);
+
+      await rejected;
+      expect(aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not start Qwen supplementation when the batch deadline has no request budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-07-23T00:00:00Z");
+      vi.setSystemTime(now);
+      let requests = 0;
+      const short = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: "情绪、观察、持续性、风险、关键。", sourceIds: ["ref_1"] }] };
+      const fetcher: typeof fetch = async () => {
+        requests += 1;
+        vi.setSystemTime(new Date(now.getTime() + 1_500));
+        return new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify(short) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/deadline" }] } } }));
+      };
+
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], deadlineAt: now.getTime() + 2_000 })).rejects.toThrow(/deadline budget/);
+      expect(requests).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds a hung OpenAI fallback request with the same per-request budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher: typeof fetch = async (_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+      const pending = generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+      const rejected = expect(pending).rejects.toThrow(/OpenAI request timed out/);
+
+      await vi.advanceTimersByTimeAsync(18_000);
+
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
