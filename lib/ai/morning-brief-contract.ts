@@ -71,6 +71,8 @@ const RECOMMENDATION_LANGUAGE = /(?:建议|可|宜|应|值得|推荐)(?:买入|�
 const DIRECT_STOCK_ATTENTION_LANGUAGE = /(?:重点关注|(?:推荐|建议)关注|推荐)(?!评级)[\s：:，、]*(?:[A-Za-z0-9\u4E00-\u9FFF]{2,})/;
 const READER_DIRECTIVE_LANGUAGE = /建议|可以|可|宜|应当|不妨|值得|投资者|读者/;
 const INVESTMENT_ACTION_LANGUAGE = /买入|卖出|加仓|减仓|布局|配置|建仓|清仓|止损|止盈|吸纳|持有|持仓|空仓|仓位|轻仓|重仓|满仓|半仓|观望|降低持仓|提高持仓|抄底|追高/;
+const RETURN_GUARANTEE_LANGUAGE = /保证|承诺|确保|保本|稳赚|必赚|无风险|确定性/;
+const RETURN_LANGUAGE = /收益|回报|盈利|获利|年化|翻倍/;
 const BRIEF_STATUSES = new Set<BriefStatus>(["complete", "partial", "failed"]);
 const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS.map((item) => item.key));
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -210,7 +212,8 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     const text = blockText(block).join("");
     if (RECOMMENDATION_LANGUAGE.test(text)
       || DIRECT_STOCK_ATTENTION_LANGUAGE.test(text)
-      || (READER_DIRECTIVE_LANGUAGE.test(text) && INVESTMENT_ACTION_LANGUAGE.test(text))) {
+      || (READER_DIRECTIVE_LANGUAGE.test(text) && INVESTMENT_ACTION_LANGUAGE.test(text))
+      || (RETURN_GUARANTEE_LANGUAGE.test(text) && RETURN_LANGUAGE.test(text))) {
       errors.push(`${section.title}包含投资建议语言`);
     }
   });

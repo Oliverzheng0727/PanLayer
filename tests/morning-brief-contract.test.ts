@@ -178,6 +178,21 @@ describe("V2 morning brief contract", () => {
       .not.toContain("投资建议");
   });
 
+  it("rejects no-gap return promises while permitting neutral return facts", () => {
+    ["本策略保证收益", "保本并实现年化回报"].forEach((text) => {
+      const invalid = structuredClone(brief);
+      invalid.sections[0].blocks = [{ type: "paragraph", text, sourceIds: ["s0"] }];
+      expect(validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id))).errors.join(" "))
+        .toContain("投资建议");
+    });
+
+    const factual = structuredClone(brief);
+    const firstBlock = factual.sections[0].blocks[0];
+    if (firstBlock.type === "paragraph") firstBlock.text += "该公司年化盈利增速回落。";
+    expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
+      .not.toContain("投资建议");
+  });
+
   it("rejects calendar-impossible ISO timestamps for runs, sources, and snapshots", () => {
     const invalid = structuredClone(brief);
     invalid.sections[0].generatedAt = "2026-02-30T07:15:00+08:00";
