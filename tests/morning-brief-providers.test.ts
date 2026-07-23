@@ -241,6 +241,33 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedIntradayFallText).toContain("以服务端快照表为准");
   });
 
+  it("neutralizes shared multi-label quote directions only on Qwen's final attempt", async () => {
+    const provider = (text: string): typeof fetch => async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text} ${text}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/multi-direction-conflict" }] } },
+    }));
+    const negativeSnapshot = [
+      { key: "sp500", label: "标普500", value: 630.2, previousClose: 640.2, pctChange: -1.562, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
+      { key: "nasdaq", label: "纳斯达克", value: 20_000, previousClose: 20_300, pctChange: -1.4778, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
+    ];
+    const positiveSnapshot = negativeSnapshot.map((point) => ({ ...point, previousClose: point.value - 100, pctChange: 1 }));
+
+    const sharedRise = "标普500和纳斯达克分别上涨3%和4%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    const normalizedRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedRiseText = JSON.stringify(normalizedRise.section.blocks[0]);
+    expect(normalizedRiseText).toContain("标普500和纳斯达克表现，以服务端快照表为准");
+    expect(normalizedRiseText).not.toMatch(/分别|上涨|3%|4%/);
+
+    const sharedFall = "标普500及纳斯达克分别下跌3%和4%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    const normalizedFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 3 });
+    const normalizedFallText = JSON.stringify(normalizedFall.section.blocks[0]);
+    expect(normalizedFallText).toContain("标普500及纳斯达克表现，以服务端快照表为准");
+    expect(normalizedFallText).not.toMatch(/分别|下跌|3%|4%/);
+  });
+
   it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {
     const snapshot = [
       { key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },

@@ -567,6 +567,10 @@ function quoteDirectionPhraseStart(sentence: string, directionStart: number, lab
 
 function snapshotFallbackReplacement(sentence: string, range: { start: number; end: number }, labelRanges: Array<{ start: number; end: number }>): string {
   const segment = sentence.slice(range.start, range.end);
+  const labelsBeforeRange = new Set(labelRanges
+    .filter((label) => label.end <= range.start)
+    .map((label) => sentence.slice(label.start, label.end)));
+  if (labelsBeforeRange.size >= 2 && /^(?:分别)?(?:上涨|下跌|涨幅|跌幅|涨|跌)/.test(segment)) return "表现";
   const subject = /股价|该股|标的/.exec(segment)?.[0];
   if (subject) {
     const priorCharacter = sentence[range.start - 1] ?? "";
@@ -578,6 +582,23 @@ function snapshotFallbackReplacement(sentence: string, range: { start: number; e
   return label ? `${sentence.slice(label.start, label.end)}表现` : "";
 }
 
+function sharedMultiLabelDirectionRange(sentence: string, labelRanges: Array<{ start: number; end: number }>): { start: number; end: number } | null {
+  for (const match of sentence.matchAll(/(?:分别)?(?:上涨|下跌|涨幅|跌幅|涨|跌)/g)) {
+    const start = match.index ?? 0;
+    const labels = new Set(labelRanges
+      .filter((label) => label.end <= start)
+      .map((label) => sentence.slice(label.start, label.end)));
+    const followingNumbers = [...sentence.matchAll(/[+-]?\d[\d,.，]*(?:[%％]|点|美元|元)?/g)]
+      .flatMap((number) => {
+        const numberStart = number.index ?? 0;
+        return numberStart >= start + match[0].length ? [{ start: numberStart, end: numberStart + number[0].length }] : [];
+      });
+    if (labels.size < 2 || followingNumbers.length < 2) continue;
+    return { start, end: followingNumbers.at(-1)!.end };
+  }
+  return null;
+}
+
 function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
   const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
   const labelRanges = labelCharacterRanges(sentence, labels);
@@ -586,7 +607,8 @@ function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
     const phraseStart = quoteDirectionPhraseStart(sentence, direction.start, labels);
     return phraseStart === null ? [] : [{ ...direction, phraseStart }];
   });
-  const replacementRanges = tokens.map((token) => {
+  const sharedDirection = sharedMultiLabelDirectionRange(sentence, labelRanges);
+  const replacementRanges = sharedDirection ? [sharedDirection] : tokens.map((token) => {
     const direction = quoteDirections.find((candidate) => {
       const gap = candidate.end <= token.start
         ? sentence.slice(candidate.end, token.start)
@@ -600,7 +622,8 @@ function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
       start: Math.min(direction.phraseStart, token.start),
       end: Math.max(direction.end, token.end),
     };
-  }).sort((left, right) => right.start - left.start);
+  });
+  replacementRanges.sort((left, right) => right.start - left.start);
   const withoutQuoteValues = replacementRanges.reduce((result, range) => `${result.slice(0, range.start)}${snapshotFallbackReplacement(sentence, range, labelRanges)}${result.slice(range.end)}`, sentence)
     .replace(/\s{2,}/g, " ")
     .replace(/，\s*，/g, "，")
