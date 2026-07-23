@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { fetchTencentQuotes, mapTencentLine, toTencentCode } from "../lib/data/tencent";
+import type { EtfSnapshot } from "../lib/data/provider";
+import {
+  fetchTencentQuotes,
+  mapTencentLine,
+  refreshEtfCatalogFromTencent,
+  toTencentCode,
+} from "../lib/data/tencent";
 
 function tencentLine(prefix: string, code: string, price = 10.1, previousClose = 10): string {
   const fields = Array.from({ length: 39 }, () => "0");
@@ -14,6 +20,24 @@ function tencentLine(prefix: string, code: string, price = 10.1, previousClose =
   fields[34] = "9.90";
   fields[37] = "10000";
   return `v_${prefix}${code}="${fields.join("~")}";`;
+}
+
+function etf(symbol: string, exchange: "SH" | "SZ"): EtfSnapshot {
+  return {
+    symbol,
+    name: `${symbol} ETF`,
+    category: "科技AI",
+    tags: ["AI"],
+    exchange,
+    price: 1,
+    pctChange: 0,
+    amount: 1,
+    averageAmount20: null,
+    scale: 10,
+    turnoverRate: 1,
+    status: "active",
+    updatedAt: "2026-07-22T07:00:00.000Z",
+  };
 }
 
 describe("Tencent quote adapter", () => {
@@ -59,5 +83,36 @@ describe("Tencent quote adapter", () => {
     expect(batchSizes).toEqual([60, 60, 1]);
     expect(maximumActive).toBeLessThanOrEqual(4);
     expect(result).toHaveLength(121);
+  });
+
+  it("refreshes a persisted ETF universe while preserving its classification", async () => {
+    const catalog = [etf("510300", "SH"), etf("588000", "SH"), etf("159995", "SZ")];
+    const fetcher = (async (input: string | URL | Request) => {
+      const codes = (String(input).split("q=")[1] ?? "").split(",").filter(Boolean);
+      return new Response(codes.map((value, index) => tencentLine(value.slice(0, 2), value.slice(2), 1.2 + index / 10, 1)).join("\n"));
+    }) as typeof fetch;
+
+    const refreshed = await refreshEtfCatalogFromTencent(catalog, fetcher, {
+      now: new Date("2026-07-23T07:00:00.000Z"),
+    });
+
+    expect(refreshed).toHaveLength(3);
+    expect(refreshed[0]).toMatchObject({
+      symbol: "510300",
+      category: "科技AI",
+      tags: ["AI"],
+      price: 1.2,
+      pctChange: 20,
+      updatedAt: "2026-07-23T07:00:00.000Z",
+    });
+  });
+
+  it("rejects a Tencent refresh with insufficient universe coverage", async () => {
+    const catalog = [etf("510300", "SH"), etf("588000", "SH"), etf("159995", "SZ")];
+    const fetcher = (async () => new Response(tencentLine("sh", "510300", 1.2, 1))) as typeof fetch;
+
+    await expect(refreshEtfCatalogFromTencent(catalog, fetcher, {
+      minimumCoverage: 0.7,
+    })).rejects.toThrow("Tencent ETF coverage");
   });
 });

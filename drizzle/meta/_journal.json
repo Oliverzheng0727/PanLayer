@@ -43,6 +43,13 @@
       "when": 1784795474950,
       "tag": "0005_shiny_archangel",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1784816964072,
+      "tag": "0006_fearless_beyonder",
+      "breakpoints": true
     }
   ]
 }

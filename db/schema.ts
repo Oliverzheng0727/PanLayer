@@ -68,6 +68,15 @@ export const etfSnapshots = sqliteTable("etf_snapshots", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol] }), index("etf_trade_date_idx").on(table.tradeDate)]);
 
+export const etfCatalogCache = sqliteTable("etf_catalog_cache", {
+  tradeDate: text("trade_date").primaryKey(),
+  payload: text("payload").notNull(),
+  source: text("source").notNull(),
+  status: text("status").notNull(),
+  receivedAt: text("received_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const userEtfWatchlist = sqliteTable("user_etf_watchlist", {
   userEmail: text("user_email").notNull(),
   symbol: text("symbol").notNull(),
