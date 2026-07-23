@@ -260,6 +260,23 @@ describe("V2 morning brief contract", () => {
       .not.toContain("投资建议");
   });
 
+  it("checks investment advice within each bullet item instead of joining separate facts", () => {
+    const factual = structuredClone(brief);
+    factual.sections[0].blocks = [{
+      type: "bullets",
+      items: [
+        { text: "建议评估政策变化及其传导路径。", sourceIds: ["s0"] },
+        { text: "北向资金买入额上升属于客观资金流向记录。", sourceIds: ["s0"] },
+      ],
+    }];
+    expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
+      .not.toContain("投资建议");
+
+    factual.sections[0].blocks = [{ type: "bullets", items: [{ text: "建议买入相关标的。", sourceIds: ["s0"] }] }];
+    expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
+      .toContain("投资建议");
+  });
+
   it("rejects no-gap return promises while permitting neutral return facts", () => {
     ["本策略保证收益", "保本并实现年化回报"].forEach((text) => {
       const invalid = structuredClone(brief);

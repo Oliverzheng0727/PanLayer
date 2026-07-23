@@ -282,16 +282,16 @@ function parseSection(text: string, key: BriefSectionKey, citationField: "source
   return { key, title: value.title, summary: value.summary, tags: stringArray(value.tags, "tags"), blocks: parseBlocks(value.blocks, citationField) };
 }
 
-function namespaceSourceId(key: BriefSectionKey, sourceId: string): string {
+function namespaceSourceId(sourceNamespace: string, sourceId: string): string {
   const match = /^ref_(\d+)$/.exec(sourceId);
-  return match ? `${key}_ref_${match[1]}` : sourceId;
+  return match ? `${sourceNamespace}_ref_${match[1]}` : sourceId;
 }
 
-function namespaceBlocks(key: BriefSectionKey, blocks: BriefBlock[]): BriefBlock[] {
+function namespaceBlocks(sourceNamespace: string, blocks: BriefBlock[]): BriefBlock[] {
   return blocks.map((block) => {
-    if (block.type === "paragraph" || block.type === "callout") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(key, id)) };
-    if (block.type === "bullets") return { ...block, items: block.items.map((item) => ({ ...item, sourceIds: item.sourceIds.map((id) => namespaceSourceId(key, id)) })) };
-    if (block.type === "table") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(key, id)) };
+    if (block.type === "paragraph" || block.type === "callout") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(sourceNamespace, id)) };
+    if (block.type === "bullets") return { ...block, items: block.items.map((item) => ({ ...item, sourceIds: item.sourceIds.map((id) => namespaceSourceId(sourceNamespace, id)) })) };
+    if (block.type === "table") return { ...block, sourceIds: block.sourceIds.map((id) => namespaceSourceId(sourceNamespace, id)) };
     return block;
   });
 }
@@ -311,13 +311,13 @@ function providerPublishedAt(source: ProviderSearchResult): string | null {
   return typeof publishedAt === "string" && validIsoTimestamp(publishedAt) ? publishedAt : null;
 }
 
-function sourcesFromMetadata(key: BriefSectionKey, searchResults: ProviderSearchResult[]): ProviderSource[] {
+function sourcesFromMetadata(sourceNamespace: string, searchResults: ProviderSearchResult[]): ProviderSource[] {
   const seen = new Set<number>();
   return searchResults.flatMap((source, fallbackIndex) => {
     const index = Number.isFinite(source.index) && Number(source.index) > 0 ? Number(source.index) : fallbackIndex + 1;
     if (seen.has(index) || typeof source.title !== "string" || typeof source.url !== "string") return [];
     seen.add(index);
-    return [{ id: `${key}_ref_${index}`, title: source.title, url: source.url, publishedAt: providerPublishedAt(source) }];
+    return [{ id: `${sourceNamespace}_ref_${index}`, title: source.title, url: source.url, publishedAt: providerPublishedAt(source) }];
   });
 }
 
@@ -823,6 +823,76 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   return { section, sources };
 }
 
+function modelContentText(blocks: BriefBlock[]): string[] {
+  return blocks.flatMap((block) => {
+    if (block.type === "paragraph" || block.type === "callout") return [block.text];
+    if (block.type === "bullets") return block.items.map((item) => item.text);
+    return [];
+  });
+}
+
+function qwenSupplementPrompt(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], initial: ParsedSection): string {
+  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
+  if (!definition) throw new Error(`Unknown brief section key: ${key}`);
+  const content = modelContentText(initial.blocks);
+  const currentLength = content.join("").length;
+  const coveredTerms = definition.requiredTerms.filter((term) => content.join("").includes(term));
+  const missingTerms = definition.requiredTerms.filter((term) => !coveredTerms.includes(term));
+  const originalSummary = initial.summary.slice(0, 400);
+  return `为 ${date} 北京时间 07:15 的A股隔夜早参模块做一次短文补写。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。这是补写，不是重写：只补充新的事实、影响解读或不确定性块，不得重复原文结论、措辞或事实。
+
+原文摘要：${originalSummary}
+已覆盖词：${coveredTerms.join("、") || "暂无"}
+仍需覆盖词：${missingTerms.join("、") || "无"}
+当前内容块 ${currentLength} 字符；缺口字符数 ${Math.max(1_200 - currentLength, 0)}。请使合并后的模型内容块达到 1200 至 1400 字符；本次只输出新增的 2 至 4 个 paragraph 或 bullet item，每项都有真实、可验证的新来源引用。
+
+主动联网检索可靠更新。每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组，并只引用这一次联网搜索返回的本地编号 ref_1、ref_2 等；不可复用或猜测初稿来源，不可虚构 URL。不要输出 sources、table 或任何服务端快照数字。${key === "mapping" || key === "risk" ? "不得输出“主线”“热点”“龙头”或“ETF”这些排名保留词。" : ""}只做客观梳理；禁止推荐个股、买卖、仓位、收益或保证性语言，禁止向读者下达投资行动指令。
+
+服务端已校验的全球数值快照：${JSON.stringify(globalSnapshot)}。指数、股票、汇率、利率和商品数值只能使用这些快照，且本次补写不要重复它们。
+
+仅返回合法 JSON 对象，不要 Markdown 代码块。JSON 必须含 key、title、summary、tags、blocks；blocks 仅包含新增内容。`;
+}
+
+async function qwenGenerationPayload(fetcher: typeof fetch, endpoint: string, apiKey: string, prompt: string): Promise<unknown> {
+  const response = await fetcher(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: QWEN_BRIEF_SECTION_MODEL,
+      input: {
+        messages: [
+          { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
+          { role: "user", content: prompt },
+        ],
+      },
+      parameters: {
+        result_format: "message",
+        response_format: { type: "json_object" },
+        max_tokens: 4096,
+        temperature: 0.2,
+        enable_thinking: false,
+        enable_search: true,
+        search_options: {
+          search_strategy: "turbo",
+          forced_search: true,
+          enable_source: true,
+          enable_citation: true,
+          citation_format: "[ref_<number>]",
+          freshness: 7,
+        },
+      },
+    }),
+  });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    const detail = isRecord(payload) && (typeof payload.message === "string" || typeof payload.code === "string")
+      ? (payload.message ?? payload.code)
+      : `HTTP ${response.status}`;
+    throw new Error(`DashScope Generation API ${detail}`);
+  }
+  return payload;
+}
+
 function qwenText(payload: unknown): string {
   const value = payload as { output?: { choices?: Array<{ message?: { content?: unknown } }> } };
   const text = value.output?.choices?.[0]?.message?.content;
@@ -924,43 +994,33 @@ export async function generateQwenBriefSection({
   endpoint = DASHSCOPE_SECTION_GENERATION_URL,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
-  const response = await fetcher(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: QWEN_BRIEF_SECTION_MODEL,
-      input: {
-        messages: [
-          { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
-          { role: "user", content: promptForSection(date, key, globalSnapshot, "sourceIds", attempt, previousError) },
-        ],
-      },
-      parameters: {
-        result_format: "message",
-        response_format: { type: "json_object" },
-        max_tokens: 4096,
-        temperature: 0.2,
-        enable_thinking: false,
-        enable_search: true,
-        search_options: {
-          search_strategy: "turbo",
-          forced_search: true,
-          enable_source: true,
-          enable_citation: true,
-          citation_format: "[ref_<number>]",
-          freshness: 7,
-        },
-      },
-    }),
-  });
-  const payload: unknown = await response.json();
-  if (!response.ok) {
-    const detail = isRecord(payload) && (typeof payload.message === "string" || typeof payload.code === "string")
-      ? (payload.message ?? payload.code)
-      : `HTTP ${response.status}`;
-    throw new Error(`DashScope Generation API ${detail}`);
+  const initialPayload = await qwenGenerationPayload(
+    fetcher,
+    endpoint,
+    apiKey,
+    promptForSection(date, key, globalSnapshot, "sourceIds", attempt, previousError),
+  );
+  const initial = parseSection(qwenText(initialPayload), key);
+  const initialSources = sourcesFromMetadata(key, qwenSearchResults(initialPayload));
+  if (modelContentText(initial.blocks).join("").length >= 1_000) {
+    return finishSection(key, globalSnapshot, marketContext, initial, initialSources, true, attempt === 3);
   }
-  return finishSection(key, globalSnapshot, marketContext, parseSection(qwenText(payload), key), sourcesFromMetadata(key, qwenSearchResults(payload)), true, attempt === 3);
+
+  const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, qwenSupplementPrompt(date, key, globalSnapshot, initial));
+  const supplement = parseSection(qwenText(supplementPayload), key);
+  const supplementNamespace = `${key}_supp`;
+  const merged: ParsedSection = {
+    ...initial,
+    summary: [initial.summary, supplement.summary].filter(Boolean).join("\n"),
+    tags: [...new Set([...initial.tags, ...supplement.tags])],
+    blocks: [...initial.blocks, ...namespaceBlocks(supplementNamespace, supplement.blocks)],
+  };
+  const sources = [...initialSources, ...sourcesFromMetadata(supplementNamespace, qwenSearchResults(supplementPayload))];
+  const mergedContentLength = modelContentText(merged.blocks).join("").length;
+  if (mergedContentLength < 1_000 || mergedContentLength > 1_600) {
+    throw new Error(`Brief section validation failed: ${merged.title}补写合并后的内容块字数应为1000至1600字符（实际 ${mergedContentLength} 字符）`);
+  }
+  return finishSection(key, globalSnapshot, marketContext, merged, sources, true, attempt === 3);
 }
 
 export async function generateOpenAIBriefSection({

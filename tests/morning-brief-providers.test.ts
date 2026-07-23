@@ -566,6 +566,54 @@ describe("independent morning-brief section providers", () => {
     expect(text).not.toContain("建议买入");
   });
 
+  it("supplements only short Qwen drafts with independently namespaced sources", async () => {
+    const short = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: "情绪、观察、持续性、风险、关键。", sourceIds: ["ref_1"] }] };
+    const supplement = modelSection("risk");
+    const requests: Array<{ input?: { messages?: Array<{ content?: string }> } }> = [];
+    const fetcher: typeof fetch = async (_input, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      const section = requests.length === 1 ? short : supplement;
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: `来源${requests.length}`, url: `https://example.com/supp-${requests.length}` }] } },
+      }));
+    };
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
+    expect(requests).toHaveLength(2);
+    expect(requests[1].input?.messages?.[1]?.content).toContain("只补充新的事实");
+    expect(requests[1].input?.messages?.[1]?.content).toContain("缺口字符数");
+    expect(result.sources.map((source) => source.id)).toEqual(["risk_ref_1", "risk_supp_ref_1"]);
+    expect(JSON.stringify(result.section.blocks)).toContain("risk_supp_ref_1");
+    const mergedContentLength = result.section.blocks.flatMap((block) => {
+      if (block.type === "paragraph" || block.type === "callout") return [block.text];
+      return block.type === "bullets" ? block.items.map((item) => item.text) : [];
+    }).join("").length;
+    expect(mergedContentLength).toBeGreaterThanOrEqual(1_000);
+    expect(mergedContentLength).toBeLessThanOrEqual(1_600);
+
+    let fullCalls = 0;
+    const fullFetcher: typeof fetch = async () => {
+      fullCalls += 1;
+      return new Response(JSON.stringify({
+        output: {
+          choices: [{ message: { content: JSON.stringify(modelSection("risk")) } }],
+          search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/full" }] },
+        },
+      }));
+    };
+    await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fullFetcher, globalSnapshot: [] });
+    expect(fullCalls).toBe(1);
+
+    let unknownCalls = 0;
+    const unknownSupplement = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text}[ref_9]`, sourceIds: undefined }] };
+    const unknownFetcher: typeof fetch = async () => {
+      unknownCalls += 1;
+      return new Response(JSON.stringify({
+        output: { choices: [{ message: { content: JSON.stringify(unknownCalls === 1 ? short : unknownSupplement) } }], search_info: { search_results: [{ index: 1, title: "来源", url: `https://example.com/unknown-${unknownCalls}` }] } },
+      }));
+    };
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: unknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+  });
+
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
     let request: { model?: string; reasoning?: unknown; tools?: unknown[]; tool_choice?: unknown; text?: { verbosity?: string; format?: Record<string, unknown> }; input?: string } = {};
     const calls: string[] = [];

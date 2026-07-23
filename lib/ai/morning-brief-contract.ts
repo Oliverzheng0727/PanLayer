@@ -253,8 +253,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     if (requiresSources(block, section.status)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
-    const text = blockText(block).join("");
-    if (hasInvestmentAdviceLanguage(text)) {
+    if (blockText(block).some(hasInvestmentAdviceLanguage)) {
       errors.push(`${section.title}包含投资建议语言`);
     }
   });
