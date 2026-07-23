@@ -15,6 +15,7 @@ import { HistoryWorkspace } from "./history/HistoryWorkspace";
 import type { HighDetail } from "../../lib/history/high-details";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
+import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 
 const nav = [
@@ -140,6 +141,13 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
             <button onClick={refresh} disabled={refreshing} title={refreshError || undefined} className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/65 transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />{refreshing ? "刷新中" : "刷新数据"}</button>
           </div>
         </header>
+        <GlobalMarketClock
+          source={liveMarket?.source ?? review.source}
+          status={refreshError ? "failed" : liveMarket?.status ?? review.status}
+          marketTime={liveMarket?.marketTime ?? `${review.date}T15:00:00+08:00`}
+          receivedAt={liveMarket?.receivedAt ?? (review.updatedAt.includes("T") ? review.updatedAt : `${review.updatedAt.replace(" ", "T")}:00+08:00`)}
+          error={refreshError}
+        />
 
         <div className="dashboard-content">
           <section id="overview" className="scroll-mt-24">
