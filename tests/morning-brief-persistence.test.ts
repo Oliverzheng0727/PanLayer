@@ -45,4 +45,48 @@ describe("morning brief section persistence", () => {
     expect(calls[0].values).toEqual(expect.arrayContaining([date, "risk", "qwen-plus", 1, "first failure"]));
     await expect(readPersistedBriefSections(db, date)).resolves.toEqual([second]);
   });
+
+  it("ignores malformed JSON payloads", async () => {
+    const { db, rows } = memoryD1();
+    rows.set("2026-07-23:risk", {
+      trade_date: "2026-07-23",
+      section_key: "risk",
+      status: "failed",
+      payload: "{not valid JSON",
+    });
+
+    await expect(readPersistedBriefSections(db, "2026-07-23")).resolves.toEqual([]);
+  });
+
+  it("ignores persisted sections with malformed tags", async () => {
+    const { db, rows } = memoryD1();
+    const section = failedBriefSection("risk", "provider timeout", "2026-07-23T07:15:00+08:00");
+    rows.set("2026-07-23:risk", {
+      trade_date: "2026-07-23",
+      section_key: "risk",
+      status: "failed",
+      payload: JSON.stringify({ ...section, tags: [42] }),
+    });
+
+    await expect(readPersistedBriefSections(db, "2026-07-23")).resolves.toEqual([]);
+  });
+
+  it("ignores rows whose key or status disagrees with the payload", async () => {
+    const { db, rows } = memoryD1();
+    const section = failedBriefSection("risk", "provider timeout", "2026-07-23T07:15:00+08:00");
+    rows.set("2026-07-23:domestic", {
+      trade_date: "2026-07-23",
+      section_key: "domestic",
+      status: "failed",
+      payload: JSON.stringify(section),
+    });
+    rows.set("2026-07-23:risk", {
+      trade_date: "2026-07-23",
+      section_key: "risk",
+      status: "partial",
+      payload: JSON.stringify(section),
+    });
+
+    await expect(readPersistedBriefSections(db, "2026-07-23")).resolves.toEqual([]);
+  });
 });

@@ -155,8 +155,15 @@ function isBriefSection(value: unknown): value is BriefSection {
   if (!value || typeof value !== "object") return false;
   const section = value as Partial<BriefSection>;
   if (!Array.isArray(section.sourceIds) || !Array.isArray(section.blocks)) return false;
-  if (typeof section.key !== "string" || typeof section.title !== "string" || typeof section.summary !== "string" || !Array.isArray(section.tags) || typeof section.status !== "string" || typeof section.generatedAt !== "string") return false;
+  if (typeof section.key !== "string" || typeof section.title !== "string" || typeof section.summary !== "string" || !Array.isArray(section.tags) || section.tags.some((tag) => typeof tag !== "string") || typeof section.status !== "string" || typeof section.generatedAt !== "string") return false;
   return validateBriefSection(section as BriefSection, new Set(section.sourceIds)).ok;
+}
+
+export function isValidPersistedMorningBrief(value: unknown): value is MorningBrief {
+  if (!value || typeof value !== "object") return false;
+  const brief = value as Partial<MorningBrief>;
+  if (brief.schemaVersion !== 2 || !Array.isArray(brief.sections) || brief.sections.some((section) => !isBriefSection(section))) return false;
+  return validateMorningBrief(brief as MorningBrief).ok;
 }
 
 export async function readPersistedBriefSections(db: D1Database, date: string): Promise<BriefSection[]> {
