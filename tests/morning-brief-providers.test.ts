@@ -367,9 +367,9 @@ describe("independent morning-brief section providers", () => {
     }
 
     const factual = modelSection("risk");
-    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排、末位淘汰制度，以及最差情况假设仍需结合事实核验。";
+    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排、末位淘汰制度，以及最差情况假设仍需结合事实核验。公司指出最弱环节是供应链，行业最弱环节仍需补强。";
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(factual), globalSnapshot: [], attempt: 3 });
-    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排、末位淘汰制度，以及最差情况假设");
+    expect(JSON.stringify(result.section.blocks)).toContain("公司指出最弱环节是供应链，行业最弱环节仍需补强");
   });
 
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
