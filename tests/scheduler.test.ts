@@ -5,6 +5,11 @@ describe("Beijing market schedule", () => {
   it("maps the planned market times to the correct job", () => {
     expect(jobForBeijingTime("07:15")).toEqual({ type: "morning-brief" });
     expect(jobForBeijingTime("08:30")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("02:00")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("04:35")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("06:55")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("04:36")).toBeNull();
+    expect(jobForBeijingTime("07:00")).toBeNull();
     expect(jobForBeijingTime("09:25")).toEqual({ type: "breadth", time: "09:25" });
     expect(jobForBeijingTime("15:00")).toEqual({ type: "breadth", time: "15:00" });
     expect(jobForBeijingTime("16:10")).toEqual({ type: "close-review" });

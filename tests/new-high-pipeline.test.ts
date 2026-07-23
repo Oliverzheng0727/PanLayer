@@ -6,6 +6,7 @@ import type {
   NewHighState,
 } from "../lib/history/new-high-engine";
 import {
+  newHighBootstrapRunStatus,
   runNewHighBootstrapBatch,
   updateDailyNewHighSnapshot,
   type NewHighStateStore,
@@ -86,6 +87,12 @@ const provider = {
 } as unknown as MarketDataProvider;
 
 describe("new-high bootstrap and daily pipeline", () => {
+  it("keeps an incomplete bootstrap partial even when the current batch had no failures", () => {
+    expect(newHighBootstrapRunStatus({ remaining: 3_464, failed: 0 })).toBe("partial");
+    expect(newHighBootstrapRunStatus({ remaining: 0, failed: 0 })).toBe("complete");
+    expect(newHighBootstrapRunStatus({ remaining: 0, failed: 2 })).toBe("partial");
+  });
+
   it("initializes a bounded batch and reports resumable progress", async () => {
     const store = new MemoryNewHighStore();
     const result = await runNewHighBootstrapBatch({
@@ -96,9 +103,39 @@ describe("new-high bootstrap and daily pipeline", () => {
       concurrency: 1,
     });
 
-    expect(result).toEqual({ completed: 1, target: 2, remaining: 1, failed: 0 });
+    expect(result).toEqual({
+      completed: 1,
+      target: 2,
+      remaining: 1,
+      failed: 0,
+      coveragePct: 50,
+    });
     expect(store.states.get("600001.SH")?.closes).toHaveLength(119);
     expect([...store.details.values()].map((item) => item.type)).toEqual(["20d", "120d", "all-time"]);
+  });
+
+  it("retries an adjusted-history request twice before recording a failure", async () => {
+    const store = new MemoryNewHighStore();
+    let attempts = 0;
+    const retryingProvider = {
+      getAdjustedBars: async () => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("temporary provider failure");
+        return bars;
+      },
+    } as unknown as MarketDataProvider;
+
+    const result = await runNewHighBootstrapBatch({
+      store,
+      provider: retryingProvider,
+      targetDate: bars.at(-1)!.date,
+      batchSize: 1,
+      concurrency: 1,
+      retryDelayMs: 0,
+    });
+
+    expect(attempts).toBe(3);
+    expect(result).toMatchObject({ completed: 1, failed: 0, coveragePct: 50 });
   });
 
   it("returns unavailable counts when initialized coverage is below 95 percent", async () => {

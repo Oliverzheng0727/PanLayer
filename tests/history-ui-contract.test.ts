@@ -68,9 +68,19 @@ describe("PanLayer history comparison workspace UI contract", () => {
   });
 
   it("provides an administrator control for resumable new-high initialization", async () => {
-    const workspace = await readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8");
+    const [workspace, progress] = await Promise.all([
+      readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../lib/history/new-high-progress.ts", import.meta.url), "utf8"),
+    ]);
     expect(workspace).toContain("/api/v1/admin/jobs/new-high-bootstrap/run");
+    expect(workspace).toContain("/api/v1/new-high/progress");
+    expect(progress).toContain("历史行情初始化");
     expect(workspace).toContain("初始化新高");
+  });
+
+  it("schedules resumable initialization every five minutes during the overnight window", async () => {
+    const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+    expect(config).toContain('"*/5 18-22 * * 0-4"');
   });
 
   it("keeps the header and date column frozen inside a two-axis scroll area", async () => {

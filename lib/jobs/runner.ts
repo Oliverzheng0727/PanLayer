@@ -27,7 +27,7 @@ import {
   newHighBootstrapTargetDate,
   patchBackfilledReviewHighCounts,
 } from "../history/new-high-d1-store";
-import { runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
+import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
@@ -477,9 +477,20 @@ export async function runPanLayerJob(
   const db = env.DB;
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
-  const leaseToken = job.type === "morning-brief" ? await acquireJobLease(db, "morning-brief", date) : null;
-  if (job.type === "morning-brief" && !leaseToken) return { ok: false, message: "morning-brief already running" };
-  const morningBriefLease: MorningBriefLease | undefined = leaseToken ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) } : undefined;
+  const leaseJob = job.type === "morning-brief"
+    ? "morning-brief"
+    : job.type === "new-high-bootstrap"
+      ? "new-high-bootstrap"
+      : null;
+  const leaseToken = job.type === "morning-brief"
+    ? await acquireJobLease(db, "morning-brief", date)
+    : job.type === "new-high-bootstrap"
+      ? await acquireJobLease(db, "new-high-bootstrap", date)
+      : null;
+  if (leaseJob && !leaseToken) return { ok: false, message: `${leaseJob} already running` };
+  const morningBriefLease: MorningBriefLease | undefined = leaseJob === "morning-brief" && leaseToken
+    ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) }
+    : undefined;
   let run: { id: number } | null = null;
   try {
     const startedAt = new Date().toISOString();
@@ -502,20 +513,33 @@ export async function runPanLayerJob(
       return { ok: true, message };
     } else if (job.type === "new-high-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
+      const store = createD1NewHighStateStore(db);
+      const before = await store.progress(targetDate);
+      if (before.target < MINIMUM_ALL_A_UNIVERSE) {
+        const universe = await withRetry(
+          () => provider.getUniverse(),
+          { retries: 2, delayMs: 500 },
+        );
+        if (universe.length < MINIMUM_ALL_A_UNIVERSE) {
+          throw new Error(`股票主数据覆盖不足 ${universe.length}/${MINIMUM_ALL_A_UNIVERSE}`);
+        }
+        await persistStockUniverse(db, universe, new Date().toISOString());
+      }
       const progress = await runNewHighBootstrapBatch({
-        store: createD1NewHighStateStore(db),
+        store,
         provider,
         targetDate,
-        batchSize: 100,
-        concurrency: 5,
+        batchSize: 150,
+        concurrency: 6,
       });
       if (progress.remaining === 0 && progress.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
       const message =
         `new-high-bootstrap ${progress.completed}/${progress.target}; ` +
-        `remaining ${progress.remaining}; failed ${progress.failed}`;
-      const status = progress.failed > 0 ? "partial" : "complete";
+        `remaining ${progress.remaining}; failed ${progress.failed}; ` +
+        `coverage ${progress.coveragePct}%`;
+      const status = newHighBootstrapRunStatus(progress);
       if (run?.id) {
         await db.prepare(
           "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
@@ -637,7 +661,7 @@ export async function runPanLayerJob(
     if (run?.id) await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
     throw error;
   } finally {
-    if (leaseToken) await releaseJobLease(db, "morning-brief", date, leaseToken);
+    if (leaseToken && leaseJob) await releaseJobLease(db, leaseJob, date, leaseToken);
   }
 }
 

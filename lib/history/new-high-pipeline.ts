@@ -1,5 +1,6 @@
 import type { MarketDataProvider } from "../data/provider";
 import type { Quote } from "../domain/types";
+import { withRetry } from "../data/resilience";
 import type { HighDetail } from "./high-details";
 import {
   applyDailyQuoteToNewHighState,
@@ -25,13 +26,27 @@ export interface NewHighStateStore {
   }>;
 }
 
+export function newHighBootstrapRunStatus(input: {
+  remaining: number;
+  failed: number;
+}): "complete" | "partial" {
+  return input.remaining === 0 && input.failed === 0 ? "complete" : "partial";
+}
+
 export async function runNewHighBootstrapBatch(input: {
   store: NewHighStateStore;
   provider: Pick<MarketDataProvider, "getAdjustedBars">;
   targetDate: string;
   batchSize?: number;
   concurrency?: number;
-}): Promise<{ completed: number; target: number; remaining: number; failed: number }> {
+  retryDelayMs?: number;
+}): Promise<{
+  completed: number;
+  target: number;
+  remaining: number;
+  failed: number;
+  coveragePct: number;
+}> {
   const batchSize = Math.min(250, Math.max(1, input.batchSize ?? 100));
   const concurrency = Math.min(8, Math.max(1, input.concurrency ?? 5));
   const candidates = await input.store.listBootstrapCandidates(input.targetDate, batchSize);
@@ -43,7 +58,10 @@ export async function runNewHighBootstrapBatch(input: {
     while (cursor < candidates.length) {
       const candidate = candidates[cursor++];
       try {
-        const bars = await input.provider.getAdjustedBars(candidate.symbol);
+        const bars = await withRetry(
+          () => input.provider.getAdjustedBars(candidate.symbol),
+          { retries: 2, delayMs: input.retryDelayMs ?? 250 },
+        );
         const initialized = createNewHighInitialization({
           ...candidate,
           bars,
@@ -64,6 +82,9 @@ export async function runNewHighBootstrapBatch(input: {
     ...progress,
     remaining: Math.max(0, progress.target - progress.completed),
     failed,
+    coveragePct: progress.target > 0
+      ? Number((progress.completed / progress.target * 100).toFixed(2))
+      : 0,
   };
 }
 

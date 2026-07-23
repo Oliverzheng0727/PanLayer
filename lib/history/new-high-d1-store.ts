@@ -130,7 +130,8 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
       const result = await db.prepare(
         "SELECT s.symbol, s.name, s.sector FROM stocks s " +
         "LEFT JOIN new_high_states h ON h.symbol = s.symbol " +
-        "WHERE h.symbol IS NULL OR h.status = 'rebuild' OR h.initialized_through < ? " +
+        "WHERE UPPER(s.name) NOT LIKE '%ST%' AND " +
+        "(h.symbol IS NULL OR h.status = 'rebuild' OR h.initialized_through < ?) " +
         "ORDER BY CASE WHEN h.status = 'rebuild' THEN 0 ELSE 1 END, s.symbol LIMIT ?",
       ).bind(targetDate, limit).all<{ symbol: string; name: string; sector: string }>();
       return (result.results ?? []).map((row) => ({
@@ -161,7 +162,7 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
 
     async progress(targetDate) {
       const [target, completed] = await Promise.all([
-        db.prepare("SELECT COUNT(*) AS count FROM stocks").first<{ count: number }>(),
+        db.prepare("SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'").first<{ count: number }>(),
         db.prepare(
           "SELECT COUNT(*) AS count FROM new_high_states WHERE status = 'active' AND initialized_through >= ?",
         ).bind(targetDate).first<{ count: number }>(),

@@ -10,6 +10,16 @@ const BREADTH_TIMES = new Set(["09:25", "10:00", "11:00", "13:00", "14:00", "15:
 export function jobForBeijingTime(time: string): ScheduledJob | null {
   if (time === "07:15") return { type: "morning-brief" };
   if (time === "08:30") return { type: "new-high-bootstrap" };
+  const [hour, minute] = time.split(":").map(Number);
+  if (
+    Number.isInteger(hour)
+    && Number.isInteger(minute)
+    && hour >= 2
+    && hour < 7
+    && minute % 5 === 0
+  ) {
+    return { type: "new-high-bootstrap" };
+  }
   if (BREADTH_TIMES.has(time)) return { type: "breadth", time };
   if (time === "16:10") return { type: "close-review" };
   return null;

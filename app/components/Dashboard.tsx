@@ -11,6 +11,7 @@ import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import { historyRowToOverview } from "../../lib/history/overview";
 import type { HighDetail, HighDetailType } from "../../lib/history/high-details";
+import { formatNewHighProgress, type NewHighProgress } from "../../lib/history/new-high-progress";
 import type { HistoryRow } from "../../lib/history/query";
 import { shouldPoll } from "../../lib/live/polling";
 import { formatBeijingDateTime } from "../../lib/live/market-clock";
@@ -65,7 +66,7 @@ function briefSourceCount(section: BriefSection) {
   return new Set([...section.sourceIds, ...blockSourceIds]).size;
 }
 
-export function Dashboard({ review, brief, etfs, history, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; userName: string; canManageBrief: boolean }) {
+export function Dashboard({ review, brief, etfs, history, newHighProgress, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -134,6 +135,12 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
   const overviewMarginBalanceValue = overviewMarginBalance === null
     ? "暂缺"
     : `${overviewMarginBalance.toLocaleString("zh-CN")}亿`;
+  const overviewNewHighNote = isViewingCurrentReview
+    && overviewHigh20 === null
+    && overviewHigh120 === null
+    && overviewAllTimeHigh === null
+    ? `20日新高 / 120日新高 / 历史新高暂缺 · ${formatNewHighProgress(newHighProgress)}`
+    : `20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`;
   const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
 
   const openHighDrawer = useCallback(async (type: HighDetailType) => {
@@ -250,7 +257,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
               <Metric
                 label="历史新高"
                 value={overviewAllTimeHigh === null ? "暂缺" : String(overviewAllTimeHigh)}
-                note={`20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`}
+                note={overviewNewHighNote}
                 onClick={() => void openHighDrawer("all-time")}
               />
               <Metric label="连板收盘溢价" value={pct(overviewClosePremium)} note={`开盘 ${pct(overviewOpenPremium)}`} accent />
@@ -259,7 +266,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
 
             <div id="history" className="integrated-history scroll-mt-24">
               <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="选择任一交易日，上方概览同步切换；表格可上下与横向滚动比较。" />
-              <HistoryWorkspace initialRows={history} canManageHistory={canManageBrief} onSelectedRowChange={selectHistoryRow} />
+              <HistoryWorkspace initialRows={history} initialNewHighProgress={newHighProgress} canManageHistory={canManageBrief} onSelectedRowChange={selectHistoryRow} />
             </div>
           </section>
 

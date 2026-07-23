@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHistory, demoReview } from "../../lib/data/demo";
-import { readBrief, readHistory, readLatestReview } from "../../lib/data/repository";
+import { readBrief, readHistory, readLatestReview, readNewHighProgress } from "../../lib/data/repository";
 import { createUnavailableReview } from "../../lib/data/unavailable";
 import { queryEtfs } from "../../lib/etf/catalog";
 import { loadLiveEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
@@ -19,11 +19,12 @@ export default async function DashboardPage() {
   const start = new Date(`${completedReviewDate}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - 550);
   const from = start.toISOString().slice(0, 10);
-  const [storedReview, storedBrief, storedHistory, liveEtfCatalog] = await Promise.all([
+  const [storedReview, storedBrief, storedHistory, liveEtfCatalog, newHighProgress] = await Promise.all([
     readLatestReview(completedReviewDate),
     readBrief(date),
     readHistory(from, completedReviewDate),
     loadLiveEtfCatalogEnvelope(date).catch(() => ({ items: process.env.NODE_ENV === "development" ? demoEtfs : [] })),
+    readNewHighProgress(completedReviewDate),
   ]);
   const isDevelopment = process.env.NODE_ENV === "development";
   const review = storedReview ?? (isDevelopment
@@ -39,5 +40,5 @@ export default async function DashboardPage() {
     cursor: 0,
     limit: 100,
   }).items;
-  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
+  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} newHighProgress={newHighProgress} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
 }

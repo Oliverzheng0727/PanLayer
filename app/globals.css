@@ -211,6 +211,8 @@ button, input { font: inherit; }
 .history-backfill:disabled { cursor:wait; opacity:.66; }
 .history-backfill.complete { border-color:rgba(59,201,135,.2); background:rgba(59,201,135,.07); color:#70d9a8; }
 .history-backfill.failed { max-width:190px; overflow:hidden; border-color:rgba(239,91,88,.2); background:rgba(239,91,88,.07); color:#ef7774; text-overflow:ellipsis; }
+.new-high-progress { color:rgba(255,255,255,.42); font-size:9px; white-space:nowrap; }
+.new-high-progress.ready { color:#70d9a8; }
 .history-count { white-space:nowrap; font-size:9px; color:rgba(255,255,255,.25); }
 .history-layout { display:grid; grid-template-columns:260px minmax(0,1fr); min-width:0; }
 .history-calendar { border-right:1px solid rgba(255,255,255,.06); background:rgba(0,0,0,.12); padding:18px; }

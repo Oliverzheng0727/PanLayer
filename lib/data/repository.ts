@@ -3,6 +3,12 @@ import type { MorningBrief } from "../ai/morning-brief-contract";
 import type { DailyReview } from "../domain/types";
 import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
+import {
+  buildNewHighProgress,
+  parseNewHighBootstrapFailureCount,
+  resolveNewHighProgressTargetDate,
+  type NewHighProgress,
+} from "../history/new-high-progress";
 import { reconcileGlobalPoints } from "./global/reconcile";
 import type { GlobalPoint } from "./global/types";
 
@@ -112,6 +118,54 @@ export async function readHighDetails(date: string): Promise<HighDetail[]> {
       isAllTime: Boolean(row.is_all_time),
     }] : []);
   } catch { return []; }
+}
+
+export async function readNewHighProgress(targetDate: string): Promise<NewHighProgress> {
+  const db = await getD1();
+  if (!db) {
+    return buildNewHighProgress({
+      targetDate,
+      completed: 0,
+      target: 0,
+      failed: 0,
+      updatedAt: null,
+    });
+  }
+  try {
+    const latestReview = await db.prepare(
+      "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date <= ?",
+    ).bind(targetDate).first<{ trade_date: string | null }>();
+    const resolvedTargetDate = resolveNewHighProgressTargetDate(
+      targetDate,
+      latestReview?.trade_date,
+    );
+    const [targetRow, completedRow, jobRow] = await Promise.all([
+      db.prepare("SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'").first<{ count: number }>(),
+      db.prepare(
+        "SELECT COUNT(*) AS count FROM new_high_states WHERE status = 'active' AND initialized_through >= ?",
+      ).bind(resolvedTargetDate).first<{ count: number }>(),
+      db.prepare(
+        "SELECT message, finished_at, started_at FROM job_runs WHERE job = 'new-high-bootstrap' ORDER BY id DESC LIMIT 1",
+      ).first<{ message: string; finished_at: string | null; started_at: string }>(),
+    ]);
+    return buildNewHighProgress({
+      targetDate: resolvedTargetDate,
+      completed: Number(completedRow?.count ?? 0),
+      target: Number(targetRow?.count ?? 0),
+      failed: parseNewHighBootstrapFailureCount(jobRow?.message),
+      updatedAt: jobRow?.finished_at ?? jobRow?.started_at ?? null,
+      minimumTarget: 5_000,
+    });
+  } catch {
+    return buildNewHighProgress({
+      targetDate,
+      completed: 0,
+      target: 0,
+      failed: 0,
+      updatedAt: null,
+      minimumTarget: 5_000,
+    });
+  }
 }
 
 export async function readGlobalSnapshot(date: string) {

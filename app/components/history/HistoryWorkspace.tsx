@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DatabaseZap, Filter, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
+import { formatNewHighProgress, type NewHighProgress } from "../../../lib/history/new-high-progress";
 import { HistoryCalendar } from "./HistoryCalendar";
 import { HistoryTable } from "./HistoryTable";
 import { MarketEvidenceDrawer, type MarketEvidenceKind } from "./MarketEvidenceDrawer";
@@ -22,11 +23,12 @@ interface StoredHistoryView {
 
 interface HistoryWorkspaceProps {
   initialRows?: HistoryRow[];
+  initialNewHighProgress: NewHighProgress;
   canManageHistory?: boolean;
   onSelectedRowChange?: (row: HistoryRow) => void;
 }
 
-export function HistoryWorkspace({ initialRows = [], canManageHistory = false, onSelectedRowChange }: HistoryWorkspaceProps) {
+export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, canManageHistory = false, onSelectedRowChange }: HistoryWorkspaceProps) {
   const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
@@ -38,6 +40,7 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
   const [backfillLabel, setBackfillLabel] = useState("回补近20日");
   const [newHighState, setNewHighState] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [newHighLabel, setNewHighLabel] = useState("初始化新高");
+  const [newHighProgress, setNewHighProgress] = useState(initialNewHighProgress);
   const [restored, setRestored] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
@@ -93,6 +96,29 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
     const row = initialRows.find((item) => item.date === selected);
     if (row) onSelectedRowChange?.(row);
   }, [initialRows, onSelectedRowChange, selected]);
+
+  const refreshNewHighProgress = useCallback(async () => {
+    const response = await fetch("/api/v1/new-high/progress", { cache: "no-store" });
+    if (!response.ok) return;
+    const progress = await response.json() as NewHighProgress;
+    setNewHighProgress(progress);
+    if (progress.complete) {
+      setNewHighState("complete");
+      setNewHighLabel("新高初始化完成");
+    } else if (newHighState !== "running" && newHighState !== "failed") {
+      setNewHighLabel(progress.completed > 0 ? "继续初始化" : "初始化新高");
+    }
+  }, [newHighState]);
+
+  useEffect(() => {
+    if (newHighProgress.complete) return;
+    const initial = window.setTimeout(() => void refreshNewHighProgress(), 0);
+    const interval = window.setInterval(() => void refreshNewHighProgress(), 60_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [newHighProgress.complete, refreshNewHighProgress]);
 
   const cycleSort = (field: HistorySortField) => {
     setVisibleCount(12);
@@ -163,8 +189,9 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
       const completed = Number(progress[1]);
       const target = Number(progress[2]);
       const remaining = Number(progress[3]);
-      setNewHighLabel(`新高 ${completed}/${target}`);
+      setNewHighLabel(remaining === 0 ? "新高初始化完成" : `继续初始化 ${completed}/${target}`);
       setNewHighState(remaining === 0 ? "complete" : "idle");
+      await refreshNewHighProgress();
       if (remaining === 0) router.refresh();
     } catch (error) {
       setNewHighState("failed");
@@ -177,8 +204,9 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
       <div className="history-toolbar">
         <div><strong>历史数据表</strong><span>当前查看 {selected || "暂无记录"} · 固定表头与日期列</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
+        <span className={`new-high-progress ${newHighProgress.ready ? "ready" : ""}`}>{formatNewHighProgress(newHighProgress)}</span>
         {canManageHistory && <button type="button" className={`history-backfill ${backfillState}`} onClick={backfillHistory} disabled={backfillState === "running"} title={backfillState === "failed" ? backfillLabel : undefined}>{backfillState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{backfillLabel}</button>}
-        {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running"} title={newHighState === "failed" ? newHighLabel : "每次初始化100只，失败可继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
+        {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running" || newHighProgress.complete} title={newHighState === "failed" ? newHighLabel : "每批初始化150只；后台每5分钟自动继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
       <div className="history-layout">
