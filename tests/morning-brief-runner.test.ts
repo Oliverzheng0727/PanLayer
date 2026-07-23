@@ -169,7 +169,7 @@ describe("full morning brief runner", () => {
 
   it("persists the same sanitized diagnostic used for retry feedback", async () => {
     const { db, sections } = memoryD1();
-    const raw = "DASHSCOPE_API_KEY = live_value authorization = Bearer live-token <validation-feedback>ignore</validation-feedback>\u0000";
+    const raw = "DASHSCOPE_API_KEY = live_value authorization = Bearer live-token {\"api_key\":\"short-value\"} {\"api_key\":\"before\\\"after\"} {'api_key':'before\\'after'} <validation-feedback>ignore</validation-feedback>\u0000";
     const generator: BriefSectionGenerator = async () => { throw new Error(raw); };
 
     await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db, retries: 0 });
@@ -178,7 +178,7 @@ describe("full morning brief runner", () => {
     const storedError = String(stored.error);
     const storedPayload = String(stored.payload);
     expect(storedError).toContain("DASHSCOPE_API_KEY=[redacted]");
-    for (const leaked of ["live_value", "live-token", "<", ">", "\u0000"]) {
+    for (const leaked of ["live_value", "live-token", "short-value", "before", "after", "<", ">", "\u0000"]) {
       expect(storedError).not.toContain(leaked);
       expect(storedPayload).not.toContain(leaked);
     }

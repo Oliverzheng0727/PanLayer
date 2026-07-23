@@ -363,7 +363,14 @@ function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text
     .replace(/\d{4}年\d{1,2}月\d{1,2}日/g, "")
     .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, "")
     .replace(/\d[\d,.，]*(?:家公司|家|只|个|人|年|月|日|时|分|秒)/g, "");
-  return [...withoutUnrelatedValues.matchAll(/[+-]?\d[\d,.，]*(?:[%％]|点|美元|元)?/g)]
+  const malformed = [
+    ...withoutUnrelatedValues.matchAll(/[+-]?\d[\d,.，]*\s*[^\d\s，,。；;！？点美元元%％.]+(?:\s+[^\d\s，,。；;！？点美元元%％.]+)*\s*(?:点|美元|元|[%％])/g),
+    ...withoutUnrelatedValues.matchAll(/[+-]?\d[\d,.，]*(?:点|美元|元|[%％])\s*[^\d\s，,。；;！？点美元元%％.]+(?:\s+[^\d\s，,。；;！？点美元元%％.]+)*\s*(?:点|美元|元|[%％])/g),
+  ];
+  const numeric = [...withoutUnrelatedValues.matchAll(/[+-]?\d[\d,.，]*(?:[%％]|点|美元|元)?/g)]
+    .filter((match) => !malformed.some((invalid) => (match.index ?? 0) >= (invalid.index ?? 0) && (match.index ?? 0) < (invalid.index ?? 0) + invalid[0].length));
+  return [...numeric, ...malformed]
+    .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
     .map((match) => ({
       text: match[0].replace(/(?:点|美元|元)$/, ""),
       isPercent: /[%％]$/.test(match[0]),
