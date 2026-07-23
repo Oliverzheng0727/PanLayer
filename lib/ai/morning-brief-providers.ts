@@ -258,9 +258,15 @@ function safeStructureKeys(value: unknown): string {
     .join(",") || "none";
 }
 
+function safeStructureValueMetadata(value: unknown): string {
+  if (typeof value === "string") return `valueKind=string; stringLength=${value.length}; hasInlineRef=${/\[ref_\d+\]/.test(value)}`;
+  if (Array.isArray(value)) return `valueKind=array; stringLength=0; hasInlineRef=false`;
+  return `valueKind=${value === null ? "null" : typeof value}; stringLength=0; hasInlineRef=false`;
+}
+
 function invalidStructure(kind: "block" | "bullet", index: string, value: unknown): Error {
   const type = isRecord(value) ? safeStructureName(value.type) : "non-record";
-  return new Error(`Provider section JSON has invalid ${kind} ${index} (type=${type}; keys=${safeStructureKeys(value)})`);
+  return new Error(`Provider section JSON has invalid ${kind} ${index} (type=${type}; keys=${safeStructureKeys(value)}; ${safeStructureValueMetadata(value)})`);
 }
 
 function blockText(block: Record<string, unknown>, fields: string[]): string | null {
@@ -270,11 +276,21 @@ function blockText(block: Record<string, unknown>, fields: string[]): string | n
   return null;
 }
 
+function qwenBareStringHeading(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (text.length < 1 || text.length > 40 || /[。！？；\n\r]/.test(text) || /\[ref_\d+\]/.test(text) || /\d/.test(text)) return null;
+  if (/^(?:[-*•]|[一二三四五六七八九十]+[、.．)）]|\d+[、.．)）])/.test(text)) return null;
+  return text;
+}
+
 function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"): BriefBlock[] {
   if (!Array.isArray(value)) throw new Error("Provider section JSON has invalid blocks");
   return value.map((block, index) => {
-    if (!isRecord(block) || typeof block.type !== "string") throw invalidStructure("block", String(index + 1), block);
     const qwenCompatible = citationField === "sourceIds";
+    const bareHeading = qwenCompatible ? qwenBareStringHeading(block) : null;
+    if (bareHeading !== null) return { type: "heading", text: bareHeading };
+    if (!isRecord(block) || typeof block.type !== "string") throw invalidStructure("block", String(index + 1), block);
     const headingText = blockText(block, ["text", "title"]);
     if ((block.type === "heading" || (qwenCompatible && block.type === "subheading")) && headingText !== null) return { type: "heading", text: headingText };
     const paragraphText = blockText(block, qwenCompatible ? ["text", "content"] : ["text"]);

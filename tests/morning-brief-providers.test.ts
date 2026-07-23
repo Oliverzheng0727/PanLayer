@@ -96,6 +96,21 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider({ ...compatible, blocks: [{ type: "paragraph", content: section.blocks[1].text, sourceIds: ["ref_99"] }] }), globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
   });
 
+  it("accepts only short Qwen bare-string headings and keeps uncited prose invalid", async () => {
+    const section = modelSection("global-markets");
+    const provider = (blocks: unknown[]): typeof fetch => async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify({ ...section, blocks }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/bare-heading" }] } },
+    }));
+    const validBlocks = ["隔夜市场概览", { type: "paragraph", text: section.blocks[1].text, sourceIds: ["ref_1"] }];
+
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(validBlocks), globalSnapshot: [] });
+    expect(result.section.blocks[0]).toEqual({ type: "heading", text: "隔夜市场概览" });
+
+    for (const invalid of ["这是一句无引用事实。", "包含来源[ref_1]", "标题\n换行", "2026年市场概览", " "]) {
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider([invalid, validBlocks[1]]), globalSnapshot: [] })).rejects.toThrow(/invalid block 1/);
+    }
+  });
+
   it("appends server-authored ranked context tables and normalizes Qwen ranking-token bypasses", async () => {
     const marketContext = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },
