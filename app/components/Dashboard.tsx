@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { LegacyMorningBrief } from "../../lib/ai/morning-brief";
+import type { BriefBlock, LegacyMorningBrief, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
@@ -51,7 +51,35 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
   demo: { label: "演示", detail: "演示模式，定时任务采集后自动替换", dot: "bg-orange-400 shadow-[0_0_10px_#fb923c]", pill: "border-orange-400/15 bg-orange-400/[0.07] text-orange-300" },
 };
 
-export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: LegacyMorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
+function isLegacyMorningBrief(brief: LegacyMorningBrief | MorningBrief): brief is LegacyMorningBrief {
+  return !("schemaVersion" in brief);
+}
+
+function legacyItemsFromBlocks(blocks: BriefBlock[], fallbackText: string, fallbackSourceIds: string[]) {
+  const items = blocks.flatMap((block) => {
+    if (block.type === "heading") return [];
+    if (block.type === "bullets") return block.items;
+    if (block.type === "table") return [{ text: [block.columns.join(" · "), ...block.rows.map((row) => row.join(" · "))].join("\n"), sourceIds: block.sourceIds }];
+    return [{ text: block.text, sourceIds: block.sourceIds }];
+  });
+  return items.length > 0 ? items : [{ text: fallbackText, sourceIds: fallbackSourceIds }];
+}
+
+function displayBrief(brief: LegacyMorningBrief | MorningBrief | null): LegacyMorningBrief | null {
+  if (!brief) return null;
+  if (isLegacyMorningBrief(brief)) return brief;
+  return {
+    date: brief.date,
+    sources: brief.sources,
+    disclaimer: brief.disclaimer,
+    sections: brief.sections.map((section) => ({
+      title: section.title,
+      items: legacyItemsFromBlocks(section.blocks, section.summary, section.sourceIds),
+    })),
+  };
+}
+
+export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName, canManageBrief }: { review: DailyReview; brief: LegacyMorningBrief | MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -84,6 +112,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const marginBalanceValue = review.metrics.marginBalance === null ? "暂缺" : `${review.metrics.marginBalance.toLocaleString("zh-CN")}亿`;
+  const renderedBrief = displayBrief(brief);
 
   const refreshLiveBreadth = useCallback(async () => {
     if (liveRequestInFlight.current) return;
@@ -200,10 +229,11 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
             </Panel>
           </section>
 
-          <section id="brief" className="dashboard-section scroll-mt-24">
+          <section id="brief" className="dashboard-section scroll-mt-24" data-can-manage-brief={canManageBrief ? "true" : "false"}>
             <SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定五模块，事实带来源，不荐股。" />
-            <div className="brief-grid">{brief.sections.map((section, index) => <button type="button" key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.slice(0, 2).map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<span className="brief-card-action">打开详情 · {new Set(section.items.flatMap((item) => item.sourceIds)).size} 个来源 <ArrowUpRight size={11}/></span></button>)}</div>
-            <BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} />
+            {renderedBrief
+              ? <><div className="brief-grid">{renderedBrief.sections.map((section, index) => <button type="button" key={section.title} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`} onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="mb-5 flex items-center justify-between"><span className="text-[10px] font-semibold tracking-[0.2em] text-[#e8702a]">0{index + 1}</span><Sparkles size={15} className="text-white/20"/></div><h3 className="text-lg font-medium">{section.title}</h3>{section.items.slice(0, 2).map((item) => <p key={item.text} className="mt-4 text-sm leading-7 text-white/50">{item.text}</p>)}<span className="brief-card-action">打开详情 · {new Set(section.items.flatMap((item) => item.sourceIds)).size} 个来源 <ArrowUpRight size={11}/></span></button>)}</div><BriefDetailDrawer brief={renderedBrief} section={briefSectionIndex === null ? null : renderedBrief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={() => setBriefSectionIndex(null)} /></>
+              : <div className="panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">数据状态：暂不可用。生成完成后将显示五个固定模块。</p></div></div>}
           </section>
 
           <section id="ladder" className="dashboard-section scroll-mt-24">

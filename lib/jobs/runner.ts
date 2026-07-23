@@ -247,7 +247,7 @@ export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
   env: PanLayerEnv,
-  options: { force?: boolean; fetcher?: typeof fetch } = {},
+  options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[] } = {},
 ): Promise<{ ok: boolean; message: string }> {
   if (!env.DB) throw new Error("DB binding is unavailable");
   const db = env.DB;
@@ -310,7 +310,7 @@ export async function runPanLayerJob(
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,
-        sectionKeys: ["global-markets", "global-industry", "domestic", "mapping", "risk"],
+        sectionKeys: options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key),
         generator,
         db,
         globalSnapshot: global.reconciled,

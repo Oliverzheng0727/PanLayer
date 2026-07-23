@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { requireAllowedUser } from "../auth-guard";
+import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHighDetailsByDate, demoHistory, demoReview } from "../../lib/data/demo";
 import { readBrief, readHighDetails, readHistory, readLatestReview } from "../../lib/data/repository";
@@ -23,7 +23,7 @@ export default async function DashboardPage() {
     loadLiveEtfCatalogEnvelope(date).catch(() => ({ items: process.env.NODE_ENV === "development" ? demoEtfs : [] })),
   ]);
   const review = storedReview ?? { ...demoReview, date };
-  const brief = storedBrief ?? { ...demoBrief, date };
+  const brief = storedBrief ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
   const history = storedHistory.length > 0 ? storedHistory : demoHistory;
   const highDetailsByDate = storedHistory.length > 0
     ? Object.fromEntries(await Promise.all(history.slice(0, 60).map(async (row) => [row.date, await readHighDetails(row.date)] as const)))
@@ -36,5 +36,5 @@ export default async function DashboardPage() {
     cursor: 0,
     limit: 100,
   }).items;
-  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} highDetailsByDate={highDetailsByDate} userName={user.displayName} />;
+  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} highDetailsByDate={highDetailsByDate} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
 }

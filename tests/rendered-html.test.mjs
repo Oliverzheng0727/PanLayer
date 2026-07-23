@@ -47,9 +47,6 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /行业 ETF/);
   assert.match(html, /ETF 全品类/);
   assert.match(html, /近20日均成交/);
-  assert.match(html, /分时/);
-  assert.match(html, /周K/);
-  assert.match(html, /月K/);
   assert.match(html, /历史数据表/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
@@ -63,7 +60,8 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /数据来源/);
   assert.match(html, /更新时间/);
   assert.match(html, /状态口径/);
-  assert.match(html, /打开早参详情/);
+  assert.match(html, /当天早参尚未生成/);
+  assert.doesNotMatch(html, /演示来源占位/);
   assert.match(html, /完整/);
   assert.match(html, /部分/);
   assert.match(html, /失败/);

@@ -1,4 +1,5 @@
 import { authorizeAdminApi } from "../../../../../../auth-guard";
+import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../../../../../../../lib/ai/morning-brief-contract";
 import { runPanLayerJob } from "../../../../../../../lib/jobs/runner";
 import type { ScheduledJob } from "../../../../../../../lib/jobs/schedule";
 
@@ -8,10 +9,21 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   const { job } = await context.params;
   const mapped: ScheduledJob | null = job === "morning-brief" ? { type: "morning-brief" } : job === "close-review" ? { type: "close-review" } : job.startsWith("breadth-") ? { type: "breadth", time: job.slice(8) } : null;
   if (!mapped) return Response.json({ error: "unknown job" }, { status: 400 });
+  const searchParams = new URL(request.url).searchParams;
+  const section = searchParams.get("section");
+  let sectionKeys: BriefSectionKey[] | undefined;
+  if (section) {
+    if (mapped.type !== "morning-brief") {
+      return Response.json({ error: "section is only supported for morning-brief" }, { status: 400 });
+    }
+    const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section);
+    if (!definition) return Response.json({ error: "unknown brief section" }, { status: 400 });
+    sectionKeys = [definition.key];
+  }
   const { env } = await import("cloudflare:workers");
   try {
-    const force = new URL(request.url).searchParams.get("force") === "true";
-    return Response.json(await runPanLayerJob(mapped, new Date(), env, { force }));
+    const force = searchParams.get("force") === "true";
+    return Response.json(await runPanLayerJob(mapped, new Date(), env, { force, sectionKeys }));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 });
   }

@@ -1,5 +1,5 @@
 import type { DailyReview, Quote } from "../domain/types";
-import type { LegacyMorningBrief } from "../ai/morning-brief";
+import { BRIEF_SECTION_DEFINITIONS, type MorningBrief } from "../ai/morning-brief";
 import type { EtfSnapshot } from "./provider";
 import type { HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
@@ -139,15 +139,22 @@ export const demoHighDetailsByDate: Record<string, HighDetail[]> = Object.fromEn
   return [row.date, [...base, ...allTime]];
 }));
 
-export const demoBrief: LegacyMorningBrief = {
+/** Local-only fixture. Production callers must render an unavailable brief instead. */
+export const demoBrief: MorningBrief = {
+  schemaVersion: 2,
   date: "2026-07-22",
-  sections: [
-    { title: "全球外围市场全景", items: [{ text: "美股科技板块震荡，费城半导体指数相对强势；美元与美债收益率变化仍是早盘风险偏好的主要外部变量。", sourceIds: ["s1"] }] },
-    { title: "全球产业重大催化", items: [{ text: "AI算力、存储价格与人形机器人产业链仍处于高频催化窗口；重点核对海外龙头公告与供应链涨价信息。", sourceIds: ["s2"] }] },
-    { title: "国内隔夜重磅信息", items: [{ text: "政策与公司公告应按半导体、电力、消费、医药和AI分类核验；演示模式不生成未经检索确认的具体新闻。", sourceIds: ["s3"] }] },
-    { title: "板块利好、利空与内需映射", items: [{ text: "机器人、算力/光模块和存储芯片处于高热度区；若高开后成交额未同步放大，应降低对持续性的判断。", sourceIds: ["s4"] }] },
-    { title: "盘前情绪、观察方向与风险", items: [{ text: "早盘先观察连板梯队晋级率、上涨家数扩散和主流ETF成交变化；避免把单一消息直接等同于确定性行情。", sourceIds: ["s5"] }] },
-  ],
-  sources: [1, 2, 3, 4, 5].map((index) => ({ id: `s${index}`, title: "演示来源占位", url: "https://example.com", publishedAt: "2026-07-22T07:00:00+08:00", retrievedAt: "2026-07-22T07:15:00+08:00" })),
+  status: "partial",
+  generatedAt: "2026-07-22T07:15:00+08:00",
+  sections: BRIEF_SECTION_DEFINITIONS.map((definition) => ({
+    key: definition.key,
+    title: definition.title,
+    summary: "本地开发预览；生产环境仅显示已持久化的联网早参。",
+    tags: ["本地预览"],
+    status: "partial" as const,
+    generatedAt: "2026-07-22T07:15:00+08:00",
+    blocks: [{ type: "callout" as const, tone: "missing" as const, text: "本地开发演示内容；生产环境不提供演示早参。", sourceIds: [] }],
+    sourceIds: [],
+  })),
+  sources: [],
   disclaimer: "只做客观市场复盘，不构成投资建议。",
 };
