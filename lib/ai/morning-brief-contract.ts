@@ -23,7 +23,9 @@ export type BriefBlock =
     columns: string[];
     rows: string[][];
     sourceIds: string[];
-    dataSource?: { label: string; marketTime: string | null };
+    provenance:
+      | { kind: "search" }
+      | { kind: "snapshot"; label: string; marketTime: string };
   }
   | { type: "callout"; tone: "insight" | "risk" | "missing"; text: string; sourceIds: string[] };
 
@@ -65,7 +67,12 @@ export interface BriefValidationResult {
   errors: string[];
 }
 
-const RECOMMENDATION_LANGUAGE = /建议(?:买入|卖出|加仓|减仓)|买点|卖点|仓位建议|收益承诺/;
+const RECOMMENDATION_LANGUAGE = /(?:建议|可|宜|应|值得|推荐)(?:买入|卖出|加仓|减仓|关注|持有)|(?:逢低|逢高)(?:吸纳|买入|卖出|减仓)|(?:买点|卖点|仓位(?:建议|配置|管理)?|收益承诺|目标价|止损|止盈|重仓|满仓|清仓|建仓|抄底|追高)/;
+const BRIEF_STATUSES = new Set<BriefStatus>(["complete", "partial", "failed"]);
+const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS.map((item) => item.key));
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const BEIJING_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\+08:00$/;
 
 function blockText(block: BriefBlock): string[] {
   switch (block.type) {
@@ -85,16 +92,19 @@ function blockSourceIds(block: BriefBlock): string[] {
     case "heading":
       return [];
     case "paragraph":
-    case "table":
     case "callout":
       return block.sourceIds;
+    case "table":
+      return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
     case "bullets":
       return block.items.flatMap((item) => item.sourceIds);
   }
 }
 
 function requiresSources(block: BriefBlock): boolean {
-  return block.type !== "heading" && !(block.type === "callout" && block.tone === "missing");
+  return block.type !== "heading"
+    && !(block.type === "callout" && block.tone === "missing")
+    && !(block.type === "table" && block.provenance?.kind === "snapshot");
 }
 
 function isExplicitFailedSectionCallout(block: BriefBlock): boolean {
@@ -108,6 +118,33 @@ function appendSourceErrors(errors: string[], label: string, sourceIds: string[]
   }
   if (sourceIds.some((id) => !knownSourceIds.has(id))) {
     errors.push(`${label}引用了不存在的来源`);
+  }
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return isNonBlankString(value) && ISO_TIMESTAMP_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+function isBeijingTimestamp(value: unknown): value is string {
+  return isIsoTimestamp(value) && BEIJING_TIMESTAMP_PATTERN.test(value);
+}
+
+function validateTableProvenance(errors: string[], sectionTitle: string, index: number, block: Extract<BriefBlock, { type: "table" }>): void {
+  const provenance = block.provenance;
+  if (!provenance || (provenance.kind !== "search" && provenance.kind !== "snapshot")) {
+    errors.push(`${sectionTitle}第${index + 1}个表格缺少合法来源类型`);
+    return;
+  }
+  if (provenance.kind !== "snapshot") return;
+  if (!isNonBlankString(provenance.label)) {
+    errors.push(`${sectionTitle}第${index + 1}个表格缺少快照来源标签`);
+  }
+  if (!isBeijingTimestamp(provenance.marketTime)) {
+    errors.push(`${sectionTitle}第${index + 1}个表格市场时间必须为北京时间`);
   }
 }
 
@@ -131,13 +168,16 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
   const errors: string[] = [];
   const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section.key);
 
-  if (!definition) {
+  if (!SECTION_KEYS.has(section.key)) {
     errors.push(`未知模块：${section.key}`);
-  } else if (section.title !== definition.title) {
+  } else if (definition && section.title !== definition.title) {
     errors.push(`${section.key}模块标题不匹配`);
   }
+  if (!BRIEF_STATUSES.has(section.status)) errors.push(`${section.title}状态不合法`);
+  if (!isBeijingTimestamp(section.generatedAt)) errors.push(`${section.title}生成时间必须为北京时间`);
 
   section.blocks.forEach((block, index) => {
+    if (block.type === "table") validateTableProvenance(errors, section.title, index, block);
     if (requiresSources(block)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
@@ -146,7 +186,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     }
   });
 
-  if (section.sourceIds.some((id) => !knownSourceIds.has(id))) {
+  if (section.sourceIds.some((id) => !isNonBlankString(id) || !knownSourceIds.has(id))) {
     errors.push(`${section.title}引用了不存在的模块来源`);
   }
 
@@ -167,9 +207,49 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
   return { ok: errors.length === 0, errors };
 }
 
+function validateSources(sources: BriefSource[]): { errors: string[]; validIds: Set<string> } {
+  const errors: string[] = [];
+  const counts = new Map<string, number>();
+  sources.forEach((source) => {
+    if (typeof source.id === "string") counts.set(source.id, (counts.get(source.id) ?? 0) + 1);
+  });
+  const validIds = new Set<string>();
+
+  sources.forEach((source, index) => {
+    const label = `来源${index + 1}`;
+    const id = isNonBlankString(source.id) ? source.id.trim() : "";
+    if (!id) errors.push(`${label}缺少ID`);
+    else if ((counts.get(source.id) ?? 0) > 1) errors.push(`${label}的ID重复`);
+    if (!isNonBlankString(source.title)) errors.push(`${label}缺少标题`);
+
+    let validUrl = false;
+    try {
+      const url = new URL(String(source.url));
+      validUrl = url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      validUrl = false;
+    }
+    if (!validUrl) errors.push(`${label}URL必须为http(s)地址`);
+    if (!isIsoTimestamp(source.publishedAt)) errors.push(`${label}发布时间必须为有效ISO时间`);
+
+    if (id && (counts.get(source.id) ?? 0) === 1 && isNonBlankString(source.title) && validUrl && isIsoTimestamp(source.publishedAt)) {
+      validIds.add(source.id);
+    }
+  });
+
+  return { errors, validIds };
+}
+
 export function validateMorningBrief(brief: MorningBrief): BriefValidationResult {
   const errors: string[] = [];
-  const knownSourceIds = new Set(brief.sources.map((source) => source.id));
+  if (brief.schemaVersion !== 2) errors.push("schemaVersion必须为2");
+  if (!BRIEF_STATUSES.has(brief.status)) errors.push("早参状态不合法");
+  if (!DATE_PATTERN.test(brief.date)) errors.push("早参日期必须为YYYY-MM-DD");
+  if (!isBeijingTimestamp(brief.generatedAt)) errors.push("早参生成时间必须为北京时间");
+
+  const sourceValidation = validateSources(brief.sources);
+  errors.push(...sourceValidation.errors);
+  const knownSourceIds = sourceValidation.validIds;
   const sectionKeys = new Set(brief.sections.map((section) => section.key));
 
   BRIEF_SECTION_DEFINITIONS.forEach((definition) => {

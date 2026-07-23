@@ -1,5 +1,5 @@
 import type { DailyReview, Quote } from "../domain/types";
-import type { MorningBrief } from "../ai/morning-brief";
+import type { LegacyMorningBrief } from "../ai/morning-brief";
 import type { EtfSnapshot } from "./provider";
 import type { HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
@@ -139,7 +139,7 @@ export const demoHighDetailsByDate: Record<string, HighDetail[]> = Object.fromEn
   return [row.date, [...base, ...allTime]];
 }));
 
-export const demoBrief: MorningBrief = {
+export const demoBrief: LegacyMorningBrief = {
   date: "2026-07-22",
   sections: [
     { title: "全球外围市场全景", items: [{ text: "美股科技板块震荡，费城半导体指数相对强势；美元与美债收益率变化仍是早盘风险偏好的主要外部变量。", sourceIds: ["s1"] }] },

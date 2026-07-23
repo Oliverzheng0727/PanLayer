@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { MorningBrief } from "../../lib/ai/morning-brief";
+import type { LegacyMorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
@@ -51,7 +51,7 @@ const statusViews: Record<DailyReview["status"], { label: string; detail: string
   demo: { label: "演示", detail: "演示模式，定时任务采集后自动替换", dot: "bg-orange-400 shadow-[0_0_10px_#fb923c]", pill: "border-orange-400/15 bg-orange-400/[0.07] text-orange-300" },
 };
 
-export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: MorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
+export function Dashboard({ review, brief, etfs, history, highDetailsByDate, userName }: { review: DailyReview; brief: LegacyMorningBrief; etfs: EtfSnapshot[]; history: HistoryRow[]; highDetailsByDate: Record<string, HighDetail[]>; userName: string }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);

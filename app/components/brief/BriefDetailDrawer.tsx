@@ -2,9 +2,9 @@
 
 import { ArrowUpRight, Clock3, X } from "lucide-react";
 import { useEffect } from "react";
-import { resolveBriefSources, type MorningBrief } from "../../../lib/ai/morning-brief";
+import { resolveBriefSources, type LegacyMorningBrief } from "../../../lib/ai/morning-brief";
 
-type BriefSection = MorningBrief["sections"][number];
+type BriefSection = LegacyMorningBrief["sections"][number];
 
 export function BriefDetailDrawer({
   brief,
@@ -12,7 +12,7 @@ export function BriefDetailDrawer({
   sectionIndex,
   onClose,
 }: {
-  brief: MorningBrief;
+  brief: LegacyMorningBrief;
   section: BriefSection | null;
   sectionIndex: number;
   onClose: () => void;
