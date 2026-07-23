@@ -1,4 +1,18 @@
-import { generateMorningBrief, generateQwenMorningBrief, QWEN_MORNING_BRIEF_MODEL } from "../ai/morning-brief";
+import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import {
+  assembleMorningBrief,
+  failedBriefSection,
+  isValidPersistedMorningBrief,
+  persistBriefSection,
+  readPersistedBriefSections,
+} from "../ai/morning-brief-assembly";
+import {
+  generateOpenAIBriefSection,
+  generateQwenBriefSection,
+  QWEN_BRIEF_SECTION_MODEL,
+  type BriefSectionGenerator,
+  type GeneratedBriefSection,
+} from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
@@ -27,7 +41,7 @@ export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_AP
   model: string;
 } {
   if (env.DASHSCOPE_API_KEY) {
-    return { provider: "qwen", apiKey: env.DASHSCOPE_API_KEY, model: QWEN_MORNING_BRIEF_MODEL };
+    return { provider: "qwen", apiKey: env.DASHSCOPE_API_KEY, model: QWEN_BRIEF_SECTION_MODEL };
   }
   if (env.OPENAI_API_KEY) {
     return { provider: "openai", apiKey: env.OPENAI_API_KEY, model: "gpt-5.6-terra" };
@@ -37,6 +51,103 @@ export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_AP
 
 export function shouldSkipMorningBrief(existingStatus: string | null | undefined, force: boolean): boolean {
   return existingStatus === "complete" && !force;
+}
+
+type RejectedSection = { key: BriefSectionKey; error: string };
+type SectionRunResult = GeneratedBriefSection | RejectedSection;
+
+function beijingTimestamp(now = new Date()): string {
+  return new Date(now.getTime() + 8 * 60 * 60 * 1_000).toISOString().replace("Z", "+08:00");
+}
+
+function isGeneratedSection(result: SectionRunResult): result is GeneratedBriefSection {
+  return "section" in result;
+}
+
+async function readStoredMorningBrief(db: D1Database, date: string): Promise<MorningBrief | null> {
+  try {
+    const row = await db.prepare("SELECT payload FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ payload: string }>();
+    if (!row) return null;
+    const parsed = JSON.parse(row.payload) as unknown;
+    return isValidPersistedMorningBrief(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedSectionResult(brief: MorningBrief, key: BriefSectionKey): GeneratedBriefSection | RejectedSection | null {
+  const section = brief.sections.find((item) => item.key === key);
+  if (!section) return null;
+  if (section.status !== "complete") {
+    const failure = section.blocks.find((block) => block.type === "callout");
+    return { key, error: failure?.text ?? "模块上次生成失败" };
+  }
+  const sourceIds = new Set(section.sourceIds);
+  const sources = brief.sources.filter((source) => sourceIds.has(source.id));
+  return sources.length > 0 ? { section, sources } : { key, error: "已存模块缺少可用来源" };
+}
+
+export async function generateFullMorningBrief(input: {
+  date: string;
+  model: string;
+  sectionKeys: BriefSectionKey[];
+  generator: BriefSectionGenerator;
+  db: D1Database;
+  concurrency?: number;
+  retries?: number;
+  globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
+}): Promise<MorningBrief> {
+  const requestedKeys = input.sectionKeys;
+  if (new Set(requestedKeys).size !== requestedKeys.length) throw new Error("Duplicate brief section keys are not allowed");
+  const globalSnapshot = input.globalSnapshot ?? (await loadGlobalOvernightSnapshot({}, fetch)).reconciled;
+  const existingBrief = await readStoredMorningBrief(input.db, input.date);
+  const persistedSections = existingBrief ? [] : await readPersistedBriefSections(input.db, input.date);
+  const persistedByKey = new Map(persistedSections.map((section) => [section.key, section]));
+  const results: SectionRunResult[] = Array(requestedKeys.length);
+  const maxAttempts = Math.min(3, Math.max(1, input.retries ?? 3));
+  const workerCount = Math.min(2, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
+  let cursor = 0;
+
+  const runSectionWithRetry = async (key: BriefSectionKey): Promise<SectionRunResult> => {
+    let attempts = 0;
+    let error = "未知错误";
+    while (attempts < maxAttempts) {
+      attempts += 1;
+      try {
+        const result = await input.generator({ date: input.date, key, globalSnapshot });
+        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "");
+        return result;
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+      }
+    }
+    const failed = failedBriefSection(key, error, beijingTimestamp());
+    await persistBriefSection(input.db, input.date, input.model, failed, attempts, error);
+    return { key, error };
+  };
+
+  const worker = async () => {
+    while (cursor < requestedKeys.length) {
+      const index = cursor++;
+      results[index] = await runSectionWithRetry(requestedKeys[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, worker));
+
+  const generatedByKey = new Map(results.map((result) => [isGeneratedSection(result) ? result.section.key : result.key, result]));
+  const assembled = assembleMorningBrief(input.date, BRIEF_SECTION_DEFINITIONS.map(({ key }) => {
+    const generated = generatedByKey.get(key);
+    if (generated) return generated;
+    const stored = existingBrief ? storedSectionResult(existingBrief, key) : null;
+    if (stored) return stored;
+    const persisted = persistedByKey.get(key);
+    if (persisted?.status !== "complete") return { key, error: "模块尚未生成" };
+    return { key, error: "已存模块缺少完整来源目录" };
+  }), beijingTimestamp());
+  await input.db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`)
+    .bind(input.date, input.model, JSON.stringify(assembled), assembled.status, new Date().toISOString())
+    .run();
+  return assembled;
 }
 
 export async function persistSourceAudits(db: D1Database, date: string, snapshotTime: string, audits: SourceAudit[]) {
@@ -147,6 +258,8 @@ export async function runPanLayerJob(
   const run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
   const fetcher = options.fetcher ?? fetch;
   const provider = createEastmoneyProvider(fetcher);
+  let finalStatus: "complete" | "partial" | "failed" = "complete";
+  let finalMessage = "";
   try {
     if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
@@ -191,13 +304,23 @@ export async function runPanLayerJob(
       const global = await loadGlobalOvernightSnapshot(env, fetcher);
       await persistGlobalPoints(db, date, global.raw);
       const ai = resolveMorningBriefProvider(env);
-      const brief = ai.provider === "qwen"
-        ? await generateQwenMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled })
-        : await generateMorningBrief({ date, apiKey: ai.apiKey, fetcher, globalSnapshot: global.reconciled });
-      await db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, 'complete', ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`).bind(date, ai.model, JSON.stringify(brief), new Date().toISOString()).run();
+      const generator: BriefSectionGenerator = ai.provider === "qwen"
+        ? ({ date: sectionDate, key, globalSnapshot }) => generateQwenBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot })
+        : ({ date: sectionDate, key, globalSnapshot }) => generateOpenAIBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot });
+      const brief = await generateFullMorningBrief({
+        date,
+        model: ai.model,
+        sectionKeys: ["global-markets", "global-industry", "domestic", "mapping", "risk"],
+        generator,
+        db,
+        globalSnapshot: global.reconciled,
+      });
+      finalStatus = brief.status;
+      const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);
+      finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }
-    await db.prepare("UPDATE job_runs SET status='complete', finished_at=? WHERE id=?").bind(new Date().toISOString(), run?.id).run();
-    return { ok: true, message: `${label} complete` };
+    await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run?.id).run();
+    return { ok: finalStatus !== "failed", message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run?.id).run();
