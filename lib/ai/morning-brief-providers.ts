@@ -357,6 +357,7 @@ function textSegments(texts: string[]): string[] {
 
 const SNAPSHOT_QUOTE_CONTEXT = /报|收报|收于|收盘|开盘|前收|股价|价格|点位|汇率|收益率|涨幅|跌幅|上涨|下跌|涨|跌/;
 const BUSINESS_BRIDGE_EXPLICIT_QUOTE = /收报|收于|收盘|开盘|前收|点位|汇率|收益率/;
+const BUSINESS_BRIDGE_TERMINAL_STOCK_QUOTE = /(?:股价|该股|标的)报[\s:：]*$/;
 const BUSINESS_BRIDGE_STOCK_SUBJECT_MOVE = /(?:标的|该股|股价)[^，,。；;！？\n]{0,24}(?:上涨|下跌|涨|跌)/;
 const BUSINESS_BRIDGE_CAUSAL_MOVE = /(?:带动|推动|拖累|令|使|引发|支撑|压制|刺激|导致)(?:其|该股|标的)?[^，,。；;！？\n]{0,24}(?:上涨|下跌|涨|跌)/;
 const BUSINESS_METRIC_TERM = "营收|收入|营利|利润|盈利|出货|出货量|出货率|产能|产量|销量|交付|订单|公司数|员工数|装机|资本开支";
@@ -369,7 +370,7 @@ function hasTemporalStockMove(bridge: string): boolean {
 }
 
 function hasStructuredQuoteConcept(bridge: string, labels: string[] = []): boolean {
-  if (BUSINESS_BRIDGE_EXPLICIT_QUOTE.test(bridge) || /报[\s:：]*$/.test(bridge)) return true;
+  if (BUSINESS_BRIDGE_EXPLICIT_QUOTE.test(bridge) || BUSINESS_BRIDGE_TERMINAL_STOCK_QUOTE.test(bridge)) return true;
   const withLabels = labels.reduce((text, label) => text.split(label).join("标的"), bridge);
   return BUSINESS_BRIDGE_STOCK_SUBJECT_MOVE.test(withLabels)
     || BUSINESS_BRIDGE_CAUSAL_MOVE.test(withLabels)
@@ -536,7 +537,14 @@ function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<
 
 function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
   const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
-  const withoutQuoteValues = tokens.reduce((result, token) => `${result.slice(0, token.start)}${result.slice(token.end)}`, sentence)
+  const directions = [...sentence.matchAll(/上涨|下跌|涨幅|跌幅|涨|跌/g)]
+    .flatMap((match) => {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      return tokens.some((token) => end >= token.start - 24 && start <= token.end + 24) ? [{ start, end }] : [];
+    });
+  const replacementRanges = [...tokens, ...directions].sort((left, right) => right.start - left.start);
+  const withoutQuoteValues = replacementRanges.reduce((result, range) => `${result.slice(0, range.start)}${result.slice(range.end)}`, sentence)
     .replace(/\s{2,}/g, " ")
     .replace(/，\s*，/g, "，")
     .trim();
