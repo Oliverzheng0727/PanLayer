@@ -360,16 +360,21 @@ const STRUCTURED_QUOTE_CONCEPT = /报|收报|收于|收盘|开盘|前收|股价|
 const BUSINESS_METRIC_TERM = "营收|收入|营利|利润|盈利|出货|出货量|出货率|产能|产量|销量|交付|订单|公司数|员工数|装机|资本开支";
 const BUSINESS_METRIC_VALUE = new RegExp(`(${BUSINESS_METRIC_TERM})([^，,。；;！？\\n\\d]{0,24})([+-]?\\d[\\d,.，]*(?:[%％]|家|只|个|人|年|月|日|时|分|秒|亿元|亿美元)?)`, "g");
 
+function hasStructuredQuoteConcept(value: string): boolean {
+  return STRUCTURED_QUOTE_CONCEPT.test(value)
+    || [...value].some((character, index) => character === "跌" || (character === "涨" && value[index - 1] !== "增"));
+}
+
 function businessMetricValueRanges(text: string): Array<{ start: number; end: number }> {
   return [...text.matchAll(BUSINESS_METRIC_VALUE)].flatMap((match) => {
     const [whole, , bridge] = match;
     const start = match.index ?? 0;
-    return STRUCTURED_QUOTE_CONCEPT.test(bridge) ? [] : [{ start, end: start + whole.length }];
+    return hasStructuredQuoteConcept(bridge) ? [] : [{ start, end: start + whole.length }];
   });
 }
 
 function stripBusinessMetricValues(text: string): string {
-  return text.replace(BUSINESS_METRIC_VALUE, (whole, term: string, bridge: string) => STRUCTURED_QUOTE_CONCEPT.test(bridge) ? whole : `${term}${bridge}`);
+  return text.replace(BUSINESS_METRIC_VALUE, (whole, term: string, bridge: string) => hasStructuredQuoteConcept(bridge) ? whole : `${term}${bridge}`);
 }
 
 function hasStructuredQuoteContext(clause: string): boolean {
