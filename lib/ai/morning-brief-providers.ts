@@ -676,7 +676,7 @@ function normalizeFinalSnapshotText(text: string, globalSnapshot: ReconciledGlob
     : sentence);
 }
 
-const EXPLICIT_RANKING_CLAIM = /排名|最强|第一|领涨|领先|居首|榜首|冠军|top\s*\d+/i;
+const EXPLICIT_RANKING_CLAIM = /排名|最强|第一|领涨|领先|领跑(?:市场)?|居前|靠前|最佳|涨幅最大|首位|居首|榜首|冠军|top\s*\d+/i;
 
 function normalizeReservedRankingSentences(text: string): string {
   return text
@@ -1033,10 +1033,6 @@ export async function generateQwenBriefSection({
     blocks: [...initial.blocks, ...namespaceBlocks(supplementNamespace, supplement.blocks)],
   };
   const sources = [...initialSources, ...sourcesFromMetadata(supplementNamespace, qwenSearchResults(supplementPayload))];
-  const mergedContentLength = modelContentText(merged.blocks).join("").length;
-  if (mergedContentLength > 1_600) {
-    throw new Error(`Brief section validation failed: ${merged.title}补写合并后的内容块不得超过1600字符（实际 ${mergedContentLength} 字符）`);
-  }
   return finishSection(key, globalSnapshot, marketContext, merged, sources, true, attempt === 3);
 }
 

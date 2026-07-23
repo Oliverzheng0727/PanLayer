@@ -325,6 +325,15 @@ describe("independent morning-brief section providers", () => {
     expect(result.section.sourceIds).toContain("mapping_ref_1");
     expect(result.section.blocks.filter((block) => block.type === "table").some((block) => /主线|热点|龙头|ETF/i.test(JSON.stringify(block)))).toBe(true);
 
+    const leading = modelSection("mapping");
+    leading.blocks[1].text += " 热点板块领跑市场。热点板块居前。热点板块靠前。热点板块最佳。热点板块涨幅最大。热点板块首位。热点板块领先。热点板块领涨。热点板块第一。热点板块最强。热点板块排名第一。";
+    const leadingResult = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(leading), globalSnapshot: [], marketContext: context, attempt: 3 });
+    const leadingText = JSON.stringify(leadingResult.section.blocks.filter((block) => block.type !== "table"));
+    for (const claim of ["领跑市场", "居前", "靠前", "最佳", "涨幅最大", "首位", "领先", "领涨", "第一", "最强", "排名"]) {
+      expect(leadingText).not.toContain(claim);
+    }
+    expect(leadingText).not.toContain("相关板块领跑市场");
+
     const citationOnlyReserved = modelSection("mapping");
     citationOnlyReserved.blocks = [{ type: "paragraph", text: "主线聚焦虚构题材。", sourceIds: ["ref_1"] }];
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(citationOnlyReserved), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/来源|字数|覆盖/);
@@ -632,6 +641,40 @@ describe("independent morning-brief section providers", () => {
       }));
     };
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: unknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
+  });
+
+  it("normalizes an overlong supplemented final attempt before enforcing the final length contract", async () => {
+    const initialText = `情绪、观察、持续性、风险、关键。${"初稿事实与影响。".repeat(60)}`;
+    const retainedText = "补写事实与影响。".repeat(60);
+    const desiredPreNormalizationLength = 1_636;
+    const advicePrefix = "建议买入相关标的";
+    const advice = `${advicePrefix}${"填".repeat(desiredPreNormalizationLength - initialText.length - retainedText.length - advicePrefix.length - 2)}。`;
+    const supplementText = `${retainedText}。${advice}`;
+    expect(`${initialText}${supplementText}`).toHaveLength(desiredPreNormalizationLength);
+    const initial = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: initialText, sourceIds: ["ref_1"] }] };
+    const supplement = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: supplementText, sourceIds: ["ref_1"] }] };
+    const provider = () => {
+      let calls = 0;
+      const fetcher: typeof fetch = async () => {
+        calls += 1;
+        return new Response(JSON.stringify({
+          output: { choices: [{ message: { content: JSON.stringify(calls === 1 ? initial : supplement) } }], search_info: { search_results: [{ index: 1, title: `来源${calls}`, url: `https://example.com/normalized-length-${calls}` }] } },
+        }));
+      };
+      return { fetcher, calls: () => calls };
+    };
+
+    for (const attempt of [1, 2]) {
+      const strict = provider();
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: strict.fetcher, globalSnapshot: [], attempt })).rejects.toThrow(/字数应为600至1600/);
+      expect(strict.calls()).toBe(2);
+    }
+
+    const finalAttempt = provider();
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: finalAttempt.fetcher, globalSnapshot: [], attempt: 3 });
+    expect(finalAttempt.calls()).toBe(2);
+    expect(JSON.stringify(result.section)).not.toContain("建议买入");
+    expect(result.section.status).toBe("complete");
   });
 
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
