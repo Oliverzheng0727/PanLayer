@@ -277,6 +277,24 @@ describe("V2 morning brief contract", () => {
       .toContain("投资建议");
   });
 
+  it("checks summary and each tag for investment advice without joining semantic units", () => {
+    const invalidSummary = structuredClone(brief.sections[0]);
+    invalidSummary.summary = "建议买入相关标的。";
+    expect(validateBriefSection(invalidSummary, new Set(["s0"])).errors.join(" "))
+      .toContain("投资建议");
+
+    const invalidTag = structuredClone(brief.sections[0]);
+    invalidTag.tags = ["建议买入相关标的"];
+    expect(validateBriefSection(invalidTag, new Set(["s0"])).errors.join(" "))
+      .toContain("投资建议");
+
+    const factual = structuredClone(brief.sections[0]);
+    factual.summary = "建议评估政策变化及其传导路径。";
+    factual.tags = ["北向资金买入额上升"];
+    expect(validateBriefSection(factual, new Set(["s0"])).errors.join(" "))
+      .not.toContain("投资建议");
+  });
+
   it("rejects no-gap return promises while permitting neutral return facts", () => {
     ["本策略保证收益", "保本并实现年化回报"].forEach((text) => {
       const invalid = structuredClone(brief);

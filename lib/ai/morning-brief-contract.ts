@@ -246,15 +246,16 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
   }
   if (!BRIEF_STATUSES.has(section.status)) errors.push(`${section.title}状态不合法`);
   if (!isBeijingTimestamp(section.generatedAt)) errors.push(`${section.title}生成时间必须为北京时间`);
+  const semanticTextUnits = [section.summary, ...section.tags, ...section.blocks.flatMap(blockText)];
+  if (semanticTextUnits.some(hasInvestmentAdviceLanguage)) {
+    errors.push(`${section.title}包含投资建议语言`);
+  }
 
   section.blocks.forEach((block, index) => {
     if (block.type === "table") validateTableProvenance(errors, section.title, index, block);
     if (block.type === "callout") validateSnapshotCalloutProvenance(errors, section.title, index, block);
     if (requiresSources(block, section.status)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
-    }
-    if (blockText(block).some(hasInvestmentAdviceLanguage)) {
-      errors.push(`${section.title}包含投资建议语言`);
     }
   });
 
