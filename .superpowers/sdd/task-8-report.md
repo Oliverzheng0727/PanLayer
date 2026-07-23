@@ -15,7 +15,7 @@
 | Command | Result |
 | --- | --- |
 | Focused morning-brief/admin/UI/persistence/runner suite | Passed: 9 files, 60 tests. |
-| `npm test` | Passed: 37 files, 168 tests; 1 skipped (169 total). |
+| `npm test` | Passed: 37 files, 169 tests; 1 skipped (170 total). |
 | `npm run lint` | Passed with no warnings or errors. |
 | `npm run build` | Passed. |
 | `npm run test:render` | Passed: 7 render tests. |
@@ -40,3 +40,7 @@ Self-review confirmed that all admin mutations remain behind the existing server
 - Extended the explicit snapshot grammar to bounded punctuation and verb variants (`，报`, `指数收报`, `上涨至`) while retaining reverse-form and rounding checks.
 - Moved all post-acquisition morning-job work, including `job_runs` creation, under the lease-release `finally`; absent run IDs now skip status writes safely.
 - Added deterministic full `runPanLayerJob` overlap regressions for delayed global snapshots and delayed provider failure. They prove that a stale token cannot persist global rows, failed/success sections, or aggregates after a newer run acquires the lease.
+
+## Numeric false-positive closure
+
+- Removed the generic `label 为 number` branch. Snapshot number checks now require an explicit financial quote verb, so constituent/company counts and associated dates or times are not interpreted as prices.

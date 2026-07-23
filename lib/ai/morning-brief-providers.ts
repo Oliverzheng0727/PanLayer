@@ -335,7 +335,7 @@ function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: 
     const allowed = [point.value, point.previousClose, point.pctChange].filter((value): value is number => value !== null);
     if (allowed.length === 0 || !point.label) continue;
     const escaped = point.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const labelFirst = new RegExp(`${escaped}(?:指数)?[\\s，,:：]{0,3}(?:报|收报|收于|前收(?:为)?|涨跌幅(?:为)?|数值(?:为)?|价格(?:为)?|点位(?:为)?|为|上涨(?:至)?|下跌(?:至)?|涨至|跌至|涨|跌)\\s*([+-]?\\d[\\d,.，]*[%％]?)`, "g");
+    const labelFirst = new RegExp(`${escaped}(?:指数)?[\\s，,:：]{0,3}(?:报|收报|收于|前收为|涨跌幅为|数值为|价格为|点位为|上涨至|下跌至|涨至|跌至)\\s*([+-]?\\d[\\d,.，]*[%％]?)`, "g");
     const numberFirst = new RegExp(`([+-]?\\d[\\d,.，]*[%％]?)(?:点|美元|元|%|％)?的${escaped}(?:指数)?`, "g");
     const mentions = [...narrative.matchAll(labelFirst), ...narrative.matchAll(numberFirst)];
     for (const mention of mentions) {
