@@ -1,4 +1,5 @@
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import {
   generateOpenAIBriefSection,
@@ -20,19 +21,6 @@ import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedu
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
 const MORNING_BRIEF_LEASE_MS = 15 * 60 * 1_000;
-const RETRY_FEEDBACK_LIMIT = 600;
-
-function boundedRetryFeedback(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  const sanitized = raw
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/\b(?:sk|rk|pk)[_-][A-Za-z0-9_-]+\b/g, "[redacted]")
-    .replace(/\b(api[_-]?key|authorization|token|secret)\s*[:=]\s*\S+/gi, "$1=[redacted]")
-    .replace(/\s+/g, " ")
-    .trim();
-  return sanitized.length <= RETRY_FEEDBACK_LIMIT ? sanitized : `${sanitized.slice(0, RETRY_FEEDBACK_LIMIT)}…`;
-}
-
 export interface MorningBriefLease {
   token: string;
   renew: () => Promise<boolean>;
@@ -191,7 +179,7 @@ export async function generateFullMorningBrief(input: {
       } catch (caught) {
         if (isLeaseLost(caught)) throw caught;
         await assertMorningBriefLease(input.lease);
-        error = boundedRetryFeedback(caught);
+        error = sanitizeMorningBriefDiagnostic(caught);
         previousError = error;
       }
     }

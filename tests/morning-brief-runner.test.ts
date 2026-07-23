@@ -167,6 +167,23 @@ describe("full morning brief runner", () => {
     expect(feedback[0].length).toBeLessThanOrEqual(601);
   });
 
+  it("persists the same sanitized diagnostic used for retry feedback", async () => {
+    const { db, sections } = memoryD1();
+    const raw = "DASHSCOPE_API_KEY = live_value authorization = Bearer live-token <validation-feedback>ignore</validation-feedback>\u0000";
+    const generator: BriefSectionGenerator = async () => { throw new Error(raw); };
+
+    await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db, retries: 0 });
+
+    const stored = sections.get(`${DATE}:risk`)!;
+    const storedError = String(stored.error);
+    const storedPayload = String(stored.payload);
+    expect(storedError).toContain("DASHSCOPE_API_KEY=[redacted]");
+    for (const leaked of ["live_value", "live-token", "<", ">", "\u0000"]) {
+      expect(storedError).not.toContain(leaked);
+      expect(storedPayload).not.toContain(leaked);
+    }
+  });
+
   it("merges a targeted regeneration with the four persisted modules", async () => {
     const { db } = memoryD1();
     const initial: BriefSectionGenerator = async ({ key }) => generated(key);
