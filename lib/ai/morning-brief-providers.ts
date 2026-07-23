@@ -31,7 +31,6 @@ export interface ProviderSectionInput {
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
 export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const TRUSTED_DOH_URL = "https://cloudflare-dns.com/dns-query";
 
 type ProviderSearchResult = {
   index?: number;
@@ -44,6 +43,7 @@ type ProviderSearchResult = {
 };
 
 type ParsedSection = Omit<BriefSection, "status" | "generatedAt" | "sourceIds">;
+type ProviderSource = Omit<BriefSource, "retrievedAt">;
 
 const OPENAI_SECTION_SCHEMA = {
   type: "object",
@@ -248,14 +248,18 @@ function referencedSourceIds(blocks: BriefBlock[]): string[] {
   return [...new Set(ids)];
 }
 
-function sourcesFromMetadata(key: BriefSectionKey, searchResults: ProviderSearchResult[]): BriefSource[] {
+function providerPublishedAt(source: ProviderSearchResult): string | null {
+  const publishedAt = source.published_time ?? source.publish_time ?? source.published_at ?? source.publishedAt;
+  return typeof publishedAt === "string" && validIsoTimestamp(publishedAt) ? publishedAt : null;
+}
+
+function sourcesFromMetadata(key: BriefSectionKey, searchResults: ProviderSearchResult[]): ProviderSource[] {
   const seen = new Set<number>();
   return searchResults.flatMap((source, fallbackIndex) => {
     const index = Number.isFinite(source.index) && Number(source.index) > 0 ? Number(source.index) : fallbackIndex + 1;
-    const publishedAt = source.published_time ?? source.publish_time ?? source.published_at ?? source.publishedAt;
-    if (seen.has(index) || typeof source.title !== "string" || typeof source.url !== "string" || typeof publishedAt !== "string") return [];
+    if (seen.has(index) || typeof source.title !== "string" || typeof source.url !== "string") return [];
     seen.add(index);
-    return [{ id: `${key}_ref_${index}`, title: source.title, url: source.url, publishedAt }];
+    return [{ id: `${key}_ref_${index}`, title: source.title, url: source.url, publishedAt: providerPublishedAt(source) }];
   });
 }
 
@@ -289,12 +293,15 @@ function validateGeneratedSources(sources: BriefSource[]): void {
     } catch {
       errors.push(`source ${source.id} has an invalid URL`);
     }
-    if (!validIsoTimestamp(source.publishedAt)) errors.push(`source ${source.id} has an invalid published time`);
+    if (source.publishedAt !== null && !validIsoTimestamp(source.publishedAt)) errors.push(`source ${source.id} has an invalid published time`);
+    if (!/\+08:00$/.test(source.retrievedAt) || !validIsoTimestamp(source.retrievedAt)) errors.push(`source ${source.id} has an invalid retrieval time`);
   });
   if (errors.length > 0) throw new Error(`Brief section source validation failed: ${errors.join("; ")}`);
 }
 
-function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, sources: BriefSource[], namespaceReferences = true): GeneratedBriefSection {
+function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
+  const generatedAt = beijingTimestamp(new Date());
+  const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
   const blocks = [...modelBlocks, ...snapshotBlocks(key, globalSnapshot)];
@@ -303,7 +310,7 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
     blocks,
     sourceIds: referencedSourceIds(modelBlocks),
     status: "complete",
-    generatedAt: beijingTimestamp(new Date()),
+    generatedAt,
   };
   const validation = validateBriefSection(section, new Set(sources.map((source) => source.id)));
   if (!validation.ok) throw new Error(`Brief section validation failed: ${validation.errors.join("; ")}`);
@@ -322,7 +329,7 @@ function qwenSearchResults(payload: unknown): ProviderSearchResult[] {
   return Array.isArray(value.output?.search_info?.search_results) ? value.output.search_info.search_results.filter(isRecord) : [];
 }
 
-type OpenAISearchSource = { index?: number; url?: string };
+type OpenAISearchSource = Pick<ProviderSearchResult, "url" | "published_time" | "publish_time" | "published_at" | "publishedAt">;
 type OpenAIUrlCitation = { title: string; url: string };
 
 function openAIText(payload: unknown): string {
@@ -357,93 +364,6 @@ function comparableUrl(value: string): string | null {
   }
 }
 
-function metadataPublicationTime(document: string): string | null {
-  const candidates: string[] = [];
-  for (const tag of document.match(/<meta\b[^>]*>/gi) ?? []) {
-    const name = /\b(?:property|name|itemprop)\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1]?.toLowerCase();
-    const content = /\bcontent\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1];
-    if (content && (name === "article:published_time" || name === "datepublished" || name === "published_time")) candidates.push(content);
-  }
-  for (const match of document.matchAll(/"(?:datePublished|published_time)"\s*:\s*"([^"\\]+)"/gi)) candidates.push(match[1]);
-  return candidates.find(validIsoTimestamp) ?? null;
-}
-
-function isBlockedIpLiteral(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^0\./.test(host)) return true;
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (ipv4) {
-    const [first, second, third] = ipv4.slice(1).map(Number);
-    return first >= 224
-      || first === 172 && second >= 16 && second <= 31
-      || first === 100 && second >= 64 && second <= 127
-      || first === 192 && (second === 0 || second === 2)
-      || first === 198 && (second === 18 || second === 19 || second === 51)
-      || first === 203 && second === 0
-      || first === 255 && second === 255 && third === 255;
-  }
-  const mappedIpv6 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
-  if (mappedIpv6) {
-    const first = Number.parseInt(mappedIpv6[1], 16);
-    const second = Number.parseInt(mappedIpv6[2], 16);
-    return isBlockedIpLiteral(`${first >> 8}.${first & 255}.${second >> 8}.${second & 255}`);
-  }
-  return host === "::" || host === "::1" || /^fc|^fd|^fe[89ab]|^ff|^2001:db8|^2001:10/.test(host);
-}
-
-function isIpLiteral(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "");
-  return /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":");
-}
-
-async function resolvePublicHostname(hostname: string, fetcher: typeof fetch): Promise<void> {
-  const query = async (type: "A" | "AAAA") => {
-    const response = await fetcher(`${TRUSTED_DOH_URL}?name=${encodeURIComponent(hostname)}&type=${type}`, {
-      headers: { accept: "application/dns-json" },
-    });
-    if (!response.ok) throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
-    const payload: unknown = await response.json();
-    if (!isRecord(payload) || (typeof payload.Status === "number" && payload.Status !== 0 && payload.Status !== 3)) {
-      throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
-    }
-    if (!Array.isArray(payload.Answer)) return [] as string[];
-    return payload.Answer.flatMap((answer) => isRecord(answer) && typeof answer.data === "string" && (answer.type === 1 || answer.type === 28) ? [answer.data] : []);
-  };
-  let addresses: string[];
-  try {
-    addresses = (await Promise.all([query("A"), query("AAAA")])).flat();
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("outbound URL policy")) throw error;
-    throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
-  }
-  if (addresses.length === 0 || addresses.some(isBlockedIpLiteral)) {
-    throw new Error(`OpenAI outbound URL policy blocked: DNS resolved ${hostname} to a non-public address`);
-  }
-}
-
-async function assertSafeOutboundUrl(value: string, fetcher: typeof fetch): Promise<string> {
-  const url = comparableUrl(value);
-  if (!url) throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
-  const hostname = new URL(url).hostname;
-  if (hostname === "localhost" || hostname === "localhost." || hostname.endsWith(".localhost") || hostname.endsWith(".local") || isBlockedIpLiteral(hostname)) {
-    throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
-  }
-  if (!isIpLiteral(hostname)) await resolvePublicHostname(hostname, fetcher);
-  return url;
-}
-
-async function fetchCitedPage(url: string, fetcher: typeof fetch): Promise<Response> {
-  let current = await assertSafeOutboundUrl(url, fetcher);
-  for (let redirects = 0; redirects <= 3; redirects += 1) {
-    const response = await fetcher(current, { headers: { accept: "text/html,application/xhtml+xml" }, redirect: "manual" });
-    if (response.status < 300 || response.status >= 400) return response;
-    const location = response.headers.get("location");
-    if (!location) throw new Error(`OpenAI cited source could not be validated: ${current} redirected without Location`);
-    current = await assertSafeOutboundUrl(new URL(location, current).href, fetcher);
-  }
-  throw new Error(`OpenAI cited source could not be validated: ${url} exceeded redirect limit`);
-}
-
 function replaceSourceUrls(blocks: BriefBlock[], sourceIdsByUrl: Map<string, string>): BriefBlock[] {
   const sourceId = (url: string) => {
     const normalized = comparableUrl(url);
@@ -459,32 +379,31 @@ function replaceSourceUrls(blocks: BriefBlock[], sourceIdsByUrl: Map<string, str
   });
 }
 
-async function hydrateOpenAISources(
+function sourcesFromOpenAI(
   key: BriefSectionKey,
   parsed: ParsedSection,
   payload: unknown,
-  fetcher: typeof fetch,
-): Promise<BriefSource[]> {
+): ProviderSource[] {
   const actionSources = openAISearchResults(payload);
   const citations = openAIUrlCitations(payload);
   const citationsByUrl = new Map(citations.flatMap((citation) => {
     const url = comparableUrl(citation.url);
     return url && citation.title.trim() ? [[url, citation] as const] : [];
   }));
-  const actionUrls = new Set(actionSources.flatMap((source) => typeof source.url === "string" ? [comparableUrl(source.url)] : []).filter((url): url is string => Boolean(url)));
+  const actionByUrl = new Map(actionSources.flatMap((source) => {
+    const url = typeof source.url === "string" ? comparableUrl(source.url) : null;
+    return url ? [[url, source] as const] : [];
+  }));
   const sourceUrls = referencedSourceIds(parsed.blocks).map((url) => comparableUrl(url));
   if (sourceUrls.some((url) => !url)) throw new Error("OpenAI cited source could not be validated: malformed cited URL");
   const uniqueUrls = [...new Set(sourceUrls as string[])].sort();
 
-  return Promise.all(uniqueUrls.map(async (url, index) => {
+  return uniqueUrls.map((url, index) => {
     const citation = citationsByUrl.get(url);
-    if (!actionUrls.has(url) || !citation) throw new Error(`OpenAI cited source could not be validated: ${url} lacks a matching search source or URL citation`);
-    const response = await fetchCitedPage(url, fetcher);
-    if (!response.ok) throw new Error(`OpenAI cited source could not be validated: ${citation.url} returned HTTP ${response.status}`);
-    const publishedAt = metadataPublicationTime(await response.text());
-    if (!publishedAt) throw new Error(`OpenAI cited source could not be validated: ${citation.url} has no verifiable publication time`);
-    return { id: `${key}_ref_${index + 1}`, title: citation.title, url: citation.url, publishedAt };
-  }));
+    const action = actionByUrl.get(url);
+    if (!action || !citation) throw new Error(`OpenAI cited source could not be validated: ${url} lacks a matching search source or URL citation`);
+    return { id: `${key}_ref_${index + 1}`, title: citation.title, url: citation.url, publishedAt: providerPublishedAt(action) };
+  });
 }
 
 export async function generateQwenBriefSection({
@@ -561,7 +480,7 @@ export async function generateOpenAIBriefSection({
   const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
   const parsed = parseSection(openAIText(payload), key, "sourceUrls");
-  const sources = await hydrateOpenAISources(key, parsed, payload, fetcher);
+  const sources = sourcesFromOpenAI(key, parsed, payload);
   const sourceIdsByUrl = new Map(sources.flatMap((source) => {
     const url = comparableUrl(source.url);
     return url ? [[url, source.id] as const] : [];

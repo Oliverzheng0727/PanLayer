@@ -34,6 +34,7 @@ const brief: MorningBrief = {
   sources: BRIEF_SECTION_DEFINITIONS.map((_, index) => ({
     id: `s${index}`, title: `来源${index}`, url: `https://example.com/${index}`,
     publishedAt: "2026-07-23T06:00:00+08:00",
+    retrievedAt: "2026-07-23T07:15:00+08:00",
   })),
   disclaimer: "仅供市场复盘，不构成投资建议。",
 };
@@ -63,11 +64,20 @@ describe("V2 morning brief contract", () => {
 
   it("rejects malformed, duplicate, and unreferencable source records", () => {
     const invalid = structuredClone(brief);
-    invalid.sources[0] = { id: "s0", title: "", url: "ftp://example.com", publishedAt: "not-a-date" };
+    invalid.sources[0] = { id: "s0", title: "", url: "ftp://example.com", publishedAt: "not-a-date", retrievedAt: "2026-07-23T07:15:00Z" };
     invalid.sources[1].id = "s0";
     const result = validateMorningBrief(invalid);
     expect(result.ok).toBe(false);
-    expect(result.errors.join(" ")).toMatch(/缺少标题|URL|发布时间|ID重复/);
+    expect(result.errors.join(" ")).toMatch(/缺少标题|URL|发布时间|获取时间|ID重复/);
+  });
+
+  it("accepts explicit missing publication times but requires Beijing retrieval times", () => {
+    const valid = structuredClone(brief);
+    valid.sources[0].publishedAt = null;
+    expect(validateMorningBrief(valid).ok).toBe(true);
+
+    valid.sources[0].retrievedAt = "2026-07-23T07:15:00Z";
+    expect(validateMorningBrief(valid).errors.join(" ")).toContain("获取时间");
   });
 
   it("requires snapshot tables to identify a Beijing market snapshot", () => {

@@ -148,6 +148,6 @@ export const demoBrief: LegacyMorningBrief = {
     { title: "板块利好、利空与内需映射", items: [{ text: "机器人、算力/光模块和存储芯片处于高热度区；若高开后成交额未同步放大，应降低对持续性的判断。", sourceIds: ["s4"] }] },
     { title: "盘前情绪、观察方向与风险", items: [{ text: "早盘先观察连板梯队晋级率、上涨家数扩散和主流ETF成交变化；避免把单一消息直接等同于确定性行情。", sourceIds: ["s5"] }] },
   ],
-  sources: [1, 2, 3, 4, 5].map((index) => ({ id: `s${index}`, title: "演示来源占位", url: "https://example.com", publishedAt: "2026-07-22T07:00:00+08:00" })),
+  sources: [1, 2, 3, 4, 5].map((index) => ({ id: `s${index}`, title: "演示来源占位", url: "https://example.com", publishedAt: "2026-07-22T07:00:00+08:00", retrievedAt: "2026-07-22T07:15:00+08:00" })),
   disclaimer: "只做客观市场复盘，不构成投资建议。",
 };

@@ -11,7 +11,8 @@ export interface BriefSource {
   id: string;
   title: string;
   url: string;
-  publishedAt: string;
+  publishedAt: string | null;
+  retrievedAt: string;
 }
 
 export type BriefBlock =
@@ -268,9 +269,12 @@ function validateSources(sources: BriefSource[]): { errors: string[]; validIds: 
       validUrl = false;
     }
     if (!validUrl) errors.push(`${label}URL必须为http(s)地址`);
-    if (!isIsoTimestamp(source.publishedAt)) errors.push(`${label}发布时间必须为有效ISO时间`);
+    const validPublishedAt = source.publishedAt === null || isIsoTimestamp(source.publishedAt);
+    if (!validPublishedAt) errors.push(`${label}发布时间必须为有效ISO时间`);
+    const validRetrievedAt = isBeijingTimestamp(source.retrievedAt);
+    if (!validRetrievedAt) errors.push(`${label}获取时间必须为北京时间`);
 
-    if (id && (counts.get(source.id) ?? 0) === 1 && isNonBlankString(source.title) && validUrl && isIsoTimestamp(source.publishedAt)) {
+    if (id && (counts.get(source.id) ?? 0) === 1 && isNonBlankString(source.title) && validUrl && validPublishedAt && validRetrievedAt) {
       validIds.add(source.id);
     }
   });

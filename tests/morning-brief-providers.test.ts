@@ -2,12 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import { generateOpenAIBriefSection, generateQwenBriefSection } from "../lib/ai/morning-brief-providers";
 
-const DOH_PREFIX = "https://cloudflare-dns.com/dns-query";
-
-function publicDnsResponse() {
-  return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: "93.184.216.34" }] }));
-}
-
 function modelSection(key: BriefSectionKey) {
   const definitions: Record<BriefSectionKey, { title: string; terms: string[] }> = {
     "global-markets": { title: "全球外围市场全景", terms: ["道琼斯", "标普", "纳斯达克", "费城半导体", "英伟达", "美光", "中概", "A50", "人民币", "美债", "原油", "黄金", "工业金属"] },
@@ -69,20 +63,18 @@ describe("independent morning-brief section providers", () => {
     expect(JSON.stringify(result.section)).toContain("global-industry_ref_1");
     expect(result.section.status).toBe("complete");
     expect(result.section.generatedAt).toMatch(/\+08:00$/);
+    expect(result.sources[0]).toMatchObject({ publishedAt: "2026-07-23T07:15:00+08:00", retrievedAt: result.section.generatedAt });
   });
 
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
     let request: { model?: string; reasoning?: unknown; tools?: unknown[]; tool_choice?: unknown; text?: { verbosity?: string; format?: Record<string, unknown> }; input?: string } = {};
+    const calls: string[] = [];
     const fetcher: typeof fetch = async (input, init) => {
-      if (String(input).startsWith(DOH_PREFIX)) return publicDnsResponse();
-      if (String(input) === "https://example.com/alpha") {
-        return new Response('<meta property="article:published_time" content="2026-07-23T07:15:00+08:00">');
-      }
-      if (String(input) === "https://example.com/beta") return new Response('<meta itemprop="datePublished" content="2026-07-23T06:15:00+08:00">');
+      calls.push(String(input));
       request = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
         output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/alpha" }, { type: "url", url: "https://example.com/beta" }] } },
+          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/alpha", published_at: "2026-07-23T07:15:00+08:00" }, { type: "url", url: "https://example.com/beta" }] } },
           {
             type: "message",
             content: [{
@@ -118,11 +110,12 @@ describe("independent morning-brief section providers", () => {
     expect(request.input).toContain("risk");
     expect(request.input).not.toContain("secret");
     expect(result.sources).toEqual([
-      { id: "risk_ref_1", title: "甲来源", url: "https://example.com/alpha", publishedAt: "2026-07-23T07:15:00+08:00" },
-      { id: "risk_ref_2", title: "乙来源", url: "https://example.com/beta", publishedAt: "2026-07-23T06:15:00+08:00" },
+      { id: "risk_ref_1", title: "甲来源", url: "https://example.com/alpha", publishedAt: "2026-07-23T07:15:00+08:00", retrievedAt: result.section.generatedAt },
+      { id: "risk_ref_2", title: "乙来源", url: "https://example.com/beta", publishedAt: null, retrievedAt: result.section.generatedAt },
     ]);
     expect(result.section.blocks[1]).toMatchObject({ sourceIds: ["risk_ref_2"] });
     expect(result.section.blocks[2]).toMatchObject({ sourceIds: ["risk_ref_1"] });
+    expect(calls).toEqual(["https://api.openai.com/v1/responses"]);
   });
 
   it("builds snapshot tables from the supplied reconciled data instead of model output", async () => {
@@ -168,7 +161,7 @@ describe("independent morning-brief section providers", () => {
     });
   });
 
-  it("rejects provider metadata with an invalid source timestamp", async () => {
+  it("uses null when Qwen search metadata omits or has an invalid publication timestamp", async () => {
     const fetcher: typeof fetch = async () => new Response(JSON.stringify({
       output: {
         choices: [{ message: { content: JSON.stringify(modelSection("risk")) } }],
@@ -176,145 +169,14 @@ describe("independent morning-brief section providers", () => {
       },
     }));
 
-    await expect(generateQwenBriefSection({
+    const result = await generateQwenBriefSection({
       date: "2026-07-23",
       key: "risk",
       apiKey: "secret",
       fetcher,
       globalSnapshot: [],
-    })).rejects.toThrow("source validation");
-  });
-
-  it("fails explicitly when a cited OpenAI URL has no verifiable publication metadata", async () => {
-    const fetcher: typeof fetch = async (input) => {
-      if (String(input).startsWith(DOH_PREFIX)) return publicDnsResponse();
-      if (String(input) === "https://example.com/openai") {
-        return new Response('<time datetime="2026-07-23T07:15:00+08:00">updated</time>', { headers: { "last-modified": "Wed, 23 Jul 2026 00:00:00 GMT" } });
-      }
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai" }] } },
-          {
-            type: "message",
-            content: [{
-              type: "output_text",
-              text: JSON.stringify(openAIModelSection("risk", ["https://example.com/openai", "https://example.com/openai"])),
-              annotations: [{ type: "url_citation", title: "搜索来源", url: "https://example.com/openai" }],
-            }],
-          },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({
-      date: "2026-07-23",
-      key: "risk",
-      apiKey: "secret",
-      fetcher,
-      globalSnapshot: [],
-    })).rejects.toThrow("cited source could not be validated");
-  });
-
-  it("blocks private cited URLs before any metadata request", async () => {
-    const calls: string[] = [];
-    const fetcher: typeof fetch = async (input) => {
-      calls.push(String(input));
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: "http://127.0.0.1/private" }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", ["http://127.0.0.1/private", "http://127.0.0.1/private"])), annotations: [{ type: "url_citation", title: "内网", url: "http://127.0.0.1/private" }] }] },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] }))
-      .rejects.toThrow("outbound URL policy");
-    expect(calls).toEqual(["https://api.openai.com/v1/responses"]);
-  });
-
-  it("blocks IPv4-mapped IPv6 loopback citation URLs before any metadata request", async () => {
-    const privateUrl = "http://[::ffff:127.0.0.1]/private";
-    const calls: string[] = [];
-    const fetcher: typeof fetch = async (input) => {
-      calls.push(String(input));
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: privateUrl }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", [privateUrl, privateUrl])), annotations: [{ type: "url_citation", title: "内网", url: privateUrl }] }] },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] }))
-      .rejects.toThrow("outbound URL policy");
-    expect(calls).toEqual(["https://api.openai.com/v1/responses"]);
-  });
-
-  it("blocks a public citation redirect to a private destination", async () => {
-    const calls: string[] = [];
-    const fetcher: typeof fetch = async (input, init) => {
-      calls.push(String(input));
-      if (String(input).startsWith(DOH_PREFIX)) return publicDnsResponse();
-      if (String(input) === "https://example.com/redirect") {
-        expect(init?.redirect).toBe("manual");
-        return new Response("", { status: 302, headers: { location: "http://127.0.0.1/private" } });
-      }
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/redirect" }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", ["https://example.com/redirect", "https://example.com/redirect"])), annotations: [{ type: "url_citation", title: "重定向来源", url: "https://example.com/redirect" }] }] },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] }))
-      .rejects.toThrow("outbound URL policy");
-    expect(calls).toContain("https://example.com/redirect");
-    expect(calls).not.toContain("http://127.0.0.1/private");
-  });
-
-  it("rejects a public-looking citation hostname that resolves to a private address before fetching the page", async () => {
-    const citedUrl = "https://private-resolution.example/article";
-    const calls: string[] = [];
-    const fetcher: typeof fetch = async (input) => {
-      calls.push(String(input));
-      if (String(input).startsWith(DOH_PREFIX)) return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: "127.0.0.1" }] }));
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: citedUrl }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", [citedUrl, citedUrl])), annotations: [{ type: "url_citation", title: "私网解析", url: citedUrl }] }] },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] }))
-      .rejects.toThrow("outbound URL policy");
-    expect(calls).not.toContain(citedUrl);
-  });
-
-  it("rejects a redirect hostname that resolves private before fetching that redirect destination", async () => {
-    const initialUrl = "https://example.com/redirect-private-dns";
-    const privateUrl = "https://private-resolution.example/private";
-    const calls: string[] = [];
-    const fetcher: typeof fetch = async (input) => {
-      const url = String(input);
-      calls.push(url);
-      if (url.startsWith(DOH_PREFIX)) {
-        return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 1, data: url.includes("private-resolution.example") ? "10.0.0.8" : "93.184.216.34" }] }));
-      }
-      if (url === initialUrl) return new Response("", { status: 302, headers: { location: privateUrl } });
-      return new Response(JSON.stringify({
-        output: [
-          { type: "web_search_call", action: { sources: [{ type: "url", url: initialUrl }] } },
-          { type: "message", content: [{ type: "output_text", text: JSON.stringify(openAIModelSection("risk", [initialUrl, initialUrl])), annotations: [{ type: "url_citation", title: "重定向私网", url: initialUrl }] }] },
-        ],
-      }));
-    };
-
-    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] }))
-      .rejects.toThrow("outbound URL policy");
-    expect(calls).toContain(initialUrl);
-    expect(calls).not.toContain(privateUrl);
+    });
+    expect(result.sources[0]).toMatchObject({ publishedAt: null, retrievedAt: result.section.generatedAt });
   });
 
   it("rejects OpenAI model-generated tables while preserving server snapshot tables", async () => {
@@ -336,9 +198,9 @@ describe("independent morning-brief section providers", () => {
   });
 
   it("accepts the exact server-built snapshot table when OpenAI returns no table", async () => {
+    const calls: string[] = [];
     const fetcher: typeof fetch = async (input) => {
-      if (String(input).startsWith(DOH_PREFIX)) return publicDnsResponse();
-      if (String(input) === "https://example.com/alpha") return new Response('<meta property="article:published_time" content="2026-07-23T07:15:00+08:00">');
+      calls.push(String(input));
       return new Response(JSON.stringify({
         output: [
           { type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/alpha" }] } },
@@ -369,5 +231,6 @@ describe("independent morning-brief section providers", () => {
         providers: ["Twelve Data", "Alpha Vantage"], receivedAt: "2026-07-23T00:00:00Z",
       },
     }]);
+    expect(calls).toEqual(["https://api.openai.com/v1/responses"]);
   });
 });
