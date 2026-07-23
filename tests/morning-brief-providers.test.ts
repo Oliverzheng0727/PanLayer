@@ -69,6 +69,29 @@ describe("independent morning-brief section providers", () => {
     expect(prompt).not.toContain("secret");
   });
 
+  it("accepts context-grounded mapping claims and rejects invented mainlines", async () => {
+    const marketContext = {
+      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] },
+      etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }],
+    };
+    const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), blocks: [{ type: "paragraph", text: `${modelSection("mapping").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线为算力，热点为算力，排名依据：涨停数、均涨幅。人工智能ETF代码159819，排名依据：成交额。") as typeof fetch, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线为虚构题材，排名依据：涨停数。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/marketContext|主线/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 虚构ETF代码999999，排名依据：成交额。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/marketContext|ETF/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线、热点、龙头与ETF映射上下文不可用。") as typeof fetch, globalSnapshot: [] })).resolves.toMatchObject({ section: { status: "complete" } });
+  });
+
+  it("enforces leader claims against context for the OpenAI finish path", async () => {
+    const context = {
+      review: { date: "2026-07-22", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [],
+    };
+    const fetcher = (leader: string): typeof fetch => async () => new Response(JSON.stringify({ output: [{ type: "web_search_call", action: { sources: [{ type: "url", url: "https://example.com/openai-context" }] } }, { type: "message", content: [{ type: "output_text", text: JSON.stringify({ ...openAIModelSection("risk", ["https://example.com/openai-context", "https://example.com/openai-context"]), blocks: [{ type: "paragraph", text: `${modelSection("risk").blocks[1].text} 龙头为${leader}，排名依据：连板、首次封板时间。`, sourceUrls: ["https://example.com/openai-context"] }] }), annotations: [{ type: "url_citation", title: "来源", url: "https://example.com/openai-context" }] }] }] }));
+
+    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher("龙头甲（600001.SH）"), globalSnapshot: [], marketContext: context })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher("虚构龙头"), globalSnapshot: [], marketContext: context })).rejects.toThrow(/marketContext|龙头/);
+  });
+
   it("rejects a narrative snapshot number that disagrees with the server table but permits unrelated counts", async () => {
     const bad = modelSection("global-markets");
     bad.blocks[1].text += " 标普500报630.3点，涨停数量80家。";
@@ -116,6 +139,14 @@ describe("independent morning-brief section providers", () => {
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500为500家公司编制，统计日期为7月23日，统计时间为07:15。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+  });
+
+  it("checks every snapshot-mentioned segment by numeric meaning, not a narrow quote verb", async () => {
+    const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
+    const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/segment-integrity" }] } } }));
+
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500上涨1%；标普500收盘630.20点；630.20点的标普500。标普500为500家公司，日期2026-07-23，时间07:15。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500上涨2%；标普500收盘630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
   });
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
     let request: { parameters?: { enable_search?: boolean }; input?: { messages?: Array<{ content?: string }> } } = {};

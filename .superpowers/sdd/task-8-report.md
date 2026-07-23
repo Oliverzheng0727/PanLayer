@@ -44,3 +44,11 @@ Self-review confirmed that all admin mutations remain behind the existing server
 ## Numeric false-positive closure
 
 - Removed the generic `label 为 number` branch. Snapshot number checks now require an explicit financial quote verb, so constituent/company counts and associated dates or times are not interpreted as prices.
+
+## Provider-trust closure
+
+- Added server-side market-context enforcement for mapping and risk narrative claims. Mainline/hotspot, leader, and ETF mapping assertions now require a matching reviewed sector, leader name/symbol, or ETF category/name/code, respectively, plus explicit ranking language and relevant ranking factors. Generic no-context disclosures remain permitted only when they state `上下文不可用` without inventing an entity.
+- Replaced verb-specific snapshot validation with a sentence/segment integrity boundary. Every segment that names a snapshot label now validates its financial numeric tokens, while excluding the label's embedded number, dates/times, and unrelated quantities such as company or instrument counts. Percentages are checked only against `pctChange`; prices, points, and currency amounts are checked only against value or previous close using decimal-aware rounding tolerance.
+- Added Qwen and OpenAI provider-path regressions for context-grounded and invented claims, ETF validation, no-context disclosure, rounded/reverse snapshot prose, `上涨`/`收盘` forms, and unrelated count/date/time text.
+
+Latest verification: focused provider tests passed (17 tests); `npm test` passed (37 files, 172 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.

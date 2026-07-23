@@ -329,31 +329,111 @@ function shownDecimalTolerance(value: string): number {
   return 0.5 * 10 ** -fraction.length + 1e-9;
 }
 
+function narrativeSegments(blocks: BriefBlock[]): string[] {
+  return blocks
+    .filter((block) => block.type !== "heading" && block.type !== "table")
+    .flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : [])
+    .flatMap((text) => text.split(/[。！？；;\n]+/))
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function snapshotNumbersInSegment(segment: string, label: string): Array<{ text: string; isPercent: boolean }> {
+  const withoutLabel = segment.split(label).join("标的");
+  const withoutUnrelatedValues = withoutLabel
+    .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "")
+    .replace(/\d{4}年\d{1,2}月\d{1,2}日/g, "")
+    .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, "")
+    .replace(/\d[\d,.，]*(?:家公司|家|只|个|人|年|月|日|时|分|秒)/g, "");
+  return [...withoutUnrelatedValues.matchAll(/[+-]?\d[\d,.，]*(?:[%％]|点|美元|元)?/g)]
+    .map((match) => ({
+      text: match[0].replace(/(?:点|美元|元)$/, ""),
+      isPercent: /[%％]$/.test(match[0]),
+    }));
+}
+
 function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: ReconciledGlobalPoint[]): void {
-  const narrative = blocks.filter((block) => block.type !== "table").flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : []).join("\n");
+  const segments = narrativeSegments(blocks);
   for (const point of globalSnapshot) {
-    const allowed = [point.value, point.previousClose, point.pctChange].filter((value): value is number => value !== null);
-    if (allowed.length === 0 || !point.label) continue;
-    const escaped = point.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const labelFirst = new RegExp(`${escaped}(?:指数)?[\\s，,:：]{0,3}(?:报|收报|收于|前收为|涨跌幅为|数值为|价格为|点位为|上涨至|下跌至|涨至|跌至)\\s*([+-]?\\d[\\d,.，]*[%％]?)`, "g");
-    const numberFirst = new RegExp(`([+-]?\\d[\\d,.，]*[%％]?)(?:点|美元|元|%|％)?的${escaped}(?:指数)?`, "g");
-    const mentions = [...narrative.matchAll(labelFirst), ...narrative.matchAll(numberFirst)];
-    for (const mention of mentions) {
-      const quotedText = mention[1];
-      const quoted = normalizeSnapshotNumber(quotedText);
+    if (!point.label) continue;
+    for (const segment of segments.filter((value) => value.includes(point.label))) {
+      for (const token of snapshotNumbersInSegment(segment, point.label)) {
+        const quoted = normalizeSnapshotNumber(token.text);
       if (quoted === null) continue;
-      if (!allowed.some((value) => Math.abs(value - quoted) <= shownDecimalTolerance(quotedText))) {
-        throw new Error(`快照数值与服务端表格不一致：${point.label}`);
+        const allowed = (token.isPercent ? [point.pctChange] : [point.value, point.previousClose])
+          .filter((value): value is number => value !== null);
+        if (allowed.length > 0 && !allowed.some((value) => Math.abs(value - quoted) <= shownDecimalTolerance(token.text))) {
+          throw new Error(`快照数值与服务端表格不一致：${point.label}`);
+        }
       }
     }
   }
 }
 
-function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
+function hasRequiredRankingBasis(segment: string, factors: RegExp): boolean {
+  return /排名(?:依据|靠前|居前|第?\d+)|排序依据/.test(segment) && factors.test(segment);
+}
+
+function claimedEntitiesAreKnown(claimed: string, known: string[]): boolean {
+  const entities = claimed.split(/[、/和及与]/).map((value) => value.trim()).filter(Boolean);
+  return entities.length > 0 && entities.every((entity) => {
+    const normalized = entity.replace(/[（(][^）)]*[）)]/g, "").replace(/\s/g, "");
+    return known.some((name) => normalized === name || /^(?:板块|题材|方向|概念|个股|股票)?$/.test(normalized.replace(name, "")));
+  });
+}
+
+function assertMarketContextClaims(key: BriefSectionKey, blocks: BriefBlock[], marketContext: MorningBriefMarketContext | undefined): void {
+  if (key !== "mapping" && key !== "risk") return;
+  const sectors = marketContext?.review?.sectors.map((item) => item.name) ?? [];
+  const leaders = marketContext?.review?.leaders.flatMap((item) => [item.name, item.symbol]) ?? [];
+  const etfs = marketContext?.etfs ?? [];
+
+  for (const segment of narrativeSegments(blocks)) {
+    for (const claim of segment.matchAll(/(?:主线|热点)(?:板块)?\s*(?:为|是|包括|来自|对应|[:：])\s*([^，。；;\n]+)/g)) {
+      const entity = claim[1].trim();
+      if (sectors.length === 0 || !claimedEntitiesAreKnown(entity, sectors)) {
+        throw new Error(`marketContext 主线/热点声明未匹配服务端复盘：${entity}`);
+      }
+      if (!hasRequiredRankingBasis(segment, /涨停|均涨幅|成交(?:额|增量)|连板|高度/)) {
+        throw new Error("marketContext 主线/热点声明缺少排名依据及复盘因素");
+      }
+    }
+
+    for (const claim of segment.matchAll(/龙头(?:股)?\s*(?:为|是|包括|来自|对应|[:：])\s*([^，。；;\n]+)/g)) {
+      const entity = claim[1].trim();
+      if (leaders.length === 0 || !claimedEntitiesAreKnown(entity, leaders)) {
+        throw new Error(`marketContext 龙头声明未匹配服务端复盘：${entity}`);
+      }
+      if (!hasRequiredRankingBasis(segment, /涨幅|成交额|连板|首次封板|封板时间/)) {
+        throw new Error("marketContext 龙头声明缺少排名依据及复盘因素");
+      }
+    }
+
+    const isEtfMapping = /(?:ETF\s*(?:代码|code|映射|对应|为|是|[:：])|(?:对应|映射)\s*(?:至|为)?\s*[^，。；;\n]{0,30}ETF)/i.test(segment);
+    if (!isEtfMapping) continue;
+    const hasKnownEtf = etfs.some((etf) => [etf.category, etf.name, etf.code].some((value) => segment.includes(value)));
+    const namedEtfCode = [...segment.matchAll(/(?:ETF\s*(?:代码|code)|代码\s*)([A-Za-z0-9.-]{4,16})/gi)].map((match) => match[1]);
+    const codesAreKnown = namedEtfCode.every((code) => etfs.some((etf) => etf.code === code));
+    const namedEtf = [...segment.matchAll(/([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff0-9\s-]{1,30}ETF)\s*(?:代码|code|映射|对应|为|是|[:：])/gi)].map((match) => match[1].trim());
+    const namesAreKnown = namedEtf.every((name) => etfs.some((etf) => name.includes(etf.name) || name.includes(etf.category)));
+    const unavailableText = segment.replace(/主线|热点|龙头(?:股)?|与|及|和|、/g, "");
+    const unavailableWithoutEntity = segment.includes("上下文不可用")
+      && !/[A-Za-z\u4e00-\u9fff]{2,}ETF|ETF\s*(?:代码|code)\s*[A-Za-z0-9.-]{4,16}/i.test(unavailableText);
+    if ((etfs.length === 0 && !unavailableWithoutEntity) || (etfs.length > 0 && (!hasKnownEtf || !codesAreKnown || !namesAreKnown))) {
+      throw new Error("marketContext ETF 映射未匹配服务端分类");
+    }
+    if (!unavailableWithoutEntity && !hasRequiredRankingBasis(segment, /成交额|规模|涨跌幅|流动性|跟踪/)) {
+      throw new Error("marketContext ETF 映射缺少排名依据及相关因素");
+    }
+  }
+}
+
+function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
   const generatedAt = beijingTimestamp(new Date());
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
+  assertMarketContextClaims(key, modelBlocks, marketContext);
   assertNarrativeSnapshotIntegrity(modelBlocks, globalSnapshot);
   const blocks = [...modelBlocks, ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
@@ -505,7 +585,7 @@ export async function generateQwenBriefSection({
       : `HTTP ${response.status}`;
     throw new Error(`DashScope Generation API ${detail}`);
   }
-  return finishSection(key, globalSnapshot, parseSection(qwenText(payload), key), sourcesFromMetadata(key, qwenSearchResults(payload)));
+  return finishSection(key, globalSnapshot, marketContext, parseSection(qwenText(payload), key), sourcesFromMetadata(key, qwenSearchResults(payload)));
 }
 
 export async function generateOpenAIBriefSection({
@@ -542,5 +622,5 @@ export async function generateOpenAIBriefSection({
     const url = comparableUrl(source.url);
     return url ? [[url, source.id] as const] : [];
   }));
-  return finishSection(key, globalSnapshot, { ...parsed, blocks: replaceSourceUrls(parsed.blocks, sourceIdsByUrl) }, sources, false);
+  return finishSection(key, globalSnapshot, marketContext, { ...parsed, blocks: replaceSourceUrls(parsed.blocks, sourceIdsByUrl) }, sources, false);
 }
