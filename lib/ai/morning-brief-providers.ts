@@ -359,16 +359,21 @@ const SNAPSHOT_QUOTE_CONTEXT = /报|收报|收于|收盘|开盘|前收|股价|�
 const BUSINESS_BRIDGE_EXPLICIT_QUOTE = /报|收报|收于|收盘|开盘|前收|点位|汇率|收益率/;
 const BUSINESS_BRIDGE_STOCK_SUBJECT_MOVE = /(?:标的|该股|股价|价格)[^，,。；;！？\n]{0,24}(?:上涨|下跌|涨|跌)/;
 const BUSINESS_BRIDGE_CAUSAL_MOVE = /(?:带动|推动|拖累|令|使|引发|支撑|压制|刺激|导致)(?:其|该股|标的)?[^，,。；;！？\n]{0,24}(?:上涨|下跌|涨|跌)/;
-const BUSINESS_BRIDGE_TEMPORAL_MOVE = /后[^，,。；;！？\n]{0,24}(?:其|该股|标的)[^，,。；;！？\n]{0,24}(?:上涨|下跌|涨|跌)/;
 const BUSINESS_METRIC_TERM = "营收|收入|营利|利润|盈利|出货|出货量|出货率|产能|产量|销量|交付|订单|公司数|员工数|装机|资本开支";
+const BUSINESS_METRIC_PATTERN = new RegExp(BUSINESS_METRIC_TERM);
 const BUSINESS_METRIC_VALUE = new RegExp(`(${BUSINESS_METRIC_TERM})([^，,。；;！？\\n\\d]{0,24})([+-]?\\d[\\d,.，]*(?:[%％]|家|只|个|人|年|月|日|时|分|秒|亿元|亿美元)?)`, "g");
+
+function hasTemporalStockMove(bridge: string): boolean {
+  const temporalLinks = bridge.matchAll(/后[^，,。；;！？\n]{0,24}(?:其|该股|标的)([^，,。；;！？\n]{0,24}?)(?:上涨|下跌|涨|跌)/g);
+  return [...temporalLinks].some((match) => !BUSINESS_METRIC_PATTERN.test(match[1]));
+}
 
 function hasStructuredQuoteConcept(bridge: string, labels: string[] = []): boolean {
   if (BUSINESS_BRIDGE_EXPLICIT_QUOTE.test(bridge)) return true;
   const withLabels = labels.reduce((text, label) => text.split(label).join("标的"), bridge);
   return BUSINESS_BRIDGE_STOCK_SUBJECT_MOVE.test(withLabels)
     || BUSINESS_BRIDGE_CAUSAL_MOVE.test(withLabels)
-    || BUSINESS_BRIDGE_TEMPORAL_MOVE.test(withLabels);
+    || hasTemporalStockMove(withLabels);
 }
 
 function businessMetricValueRanges(text: string, labels: string[] = []): Array<{ start: number; end: number }> {
