@@ -239,7 +239,7 @@ export function Dashboard({ review, brief, etfs, history, highDetailsByDate, use
 
           <section id="history" className="dashboard-section scroll-mt-24 pb-10">
             <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="像 Excel 一样排序、滚动并回看每个交易日。" />
-            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} />
+            <HistoryWorkspace initialRows={history} highDetailsByDate={highDetailsByDate} canManageHistory={canManageBrief} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

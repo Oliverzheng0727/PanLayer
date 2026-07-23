@@ -48,6 +48,7 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /ETF 全品类/);
   assert.match(html, /近20日均成交/);
   assert.match(html, /历史数据表/);
+  assert.match(html, /回补近20日/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
   const historyTable = html.match(/<table class="history-table">[\s\S]*?<\/table>/)?.[0] ?? "";

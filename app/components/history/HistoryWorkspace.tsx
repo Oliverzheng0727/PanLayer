@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Filter } from "lucide-react";
+import { DatabaseZap, Filter, LoaderCircle } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
 import { HistoryCalendar } from "./HistoryCalendar";
 import { HistoryTable } from "./HistoryTable";
@@ -20,13 +21,16 @@ interface StoredHistoryView {
   scrollLeft?: number;
 }
 
-export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {} }: { initialRows?: HistoryRow[]; highDetailsByDate?: Record<string, HighDetail[]> }) {
+export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {}, canManageHistory = false }: { initialRows?: HistoryRow[]; highDetailsByDate?: Record<string, HighDetail[]>; canManageHistory?: boolean }) {
+  const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [sector, setSector] = useState("");
   const [selected, setSelected] = useState(initialRows[0]?.date ?? "");
   const [visibleCount, setVisibleCount] = useState(12);
   const [drawer, setDrawer] = useState<{ date: string; type: HighDetailType } | null>(null);
+  const [backfillState, setBackfillState] = useState<"idle" | "running" | "complete" | "failed">("idle");
+  const [backfillLabel, setBackfillLabel] = useState("回补近20日");
   const [restored, setRestored] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
@@ -86,11 +90,47 @@ export function HistoryWorkspace({ initialRows = [], highDetailsByDate = {} }: {
     requestAnimationFrame(() => document.querySelector(`[data-history-date="${date}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
   };
 
+  const backfillHistory = async () => {
+    if (backfillState === "running") return;
+    setBackfillState("running");
+    setBackfillLabel("准备回补…");
+    let previousRemaining = Number.POSITIVE_INFINITY;
+    let stalledRuns = 0;
+    try {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const response = await fetch("/api/v1/admin/jobs/history-backfill/run?days=20", { method: "POST" });
+        const payload = await response.json().catch(() => ({})) as { error?: string; message?: string };
+        if (!response.ok) throw new Error(payload.error ?? "历史回补失败");
+        const message = payload.message ?? "";
+        const progress = message.match(/history-backfill\s+(\d+)\/(\d+);\s+remaining\s+(\d+)/);
+        if (!progress) throw new Error("历史回补未返回有效进度");
+        const completed = Number(progress[1]);
+        const target = Number(progress[2]);
+        const remaining = Number(progress[3]);
+        setBackfillLabel(`回补 ${completed}/${target}`);
+        if (remaining === 0) {
+          setBackfillState("complete");
+          setBackfillLabel("回补完成");
+          router.refresh();
+          return;
+        }
+        stalledRuns = remaining >= previousRemaining ? stalledRuns + 1 : 0;
+        if (stalledRuns >= 2) throw new Error("部分交易日数据源暂不可用，可稍后继续回补");
+        previousRemaining = remaining;
+      }
+      throw new Error("回补尚未完成，可再次继续");
+    } catch (error) {
+      setBackfillState("failed");
+      setBackfillLabel(error instanceof Error ? error.message : "历史回补失败");
+    }
+  };
+
   return (
     <div className="history-workspace panel">
       <div className="history-toolbar">
         <div><strong>历史数据表</strong><span>固定表头与日期列 · 默认显示 12 个交易日</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
+        {canManageHistory && <button type="button" className={`history-backfill ${backfillState}`} onClick={backfillHistory} disabled={backfillState === "running"} title={backfillState === "failed" ? backfillLabel : undefined}>{backfillState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{backfillLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
       <div className="history-layout">

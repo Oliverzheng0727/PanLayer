@@ -205,6 +205,11 @@ button, input { font: inherit; }
 .history-toolbar label { display:flex; align-items:center; gap:7px; margin-left:auto; border:1px solid rgba(255,255,255,.07); border-radius:999px; background:rgba(255,255,255,.025); padding:8px 12px; color:rgba(255,255,255,.28); }
 .history-toolbar input { width:130px; border:0; outline:0; background:transparent; color:rgba(255,255,255,.72); font-size:10px; }
 .history-toolbar input::placeholder { color:rgba(255,255,255,.22); }
+.history-backfill { display:inline-flex; align-items:center; gap:6px; border:1px solid rgba(232,112,42,.2); border-radius:999px; background:rgba(232,112,42,.07); padding:8px 11px; color:#f0a16f; font-size:9px; white-space:nowrap; }
+.history-backfill:hover { background:rgba(232,112,42,.13); }
+.history-backfill:disabled { cursor:wait; opacity:.66; }
+.history-backfill.complete { border-color:rgba(59,201,135,.2); background:rgba(59,201,135,.07); color:#70d9a8; }
+.history-backfill.failed { max-width:190px; overflow:hidden; border-color:rgba(239,91,88,.2); background:rgba(239,91,88,.07); color:#ef7774; text-overflow:ellipsis; }
 .history-count { white-space:nowrap; font-size:9px; color:rgba(255,255,255,.25); }
 .history-layout { display:grid; grid-template-columns:260px minmax(0,1fr); min-width:0; }
 .history-calendar { border-right:1px solid rgba(255,255,255,.06); background:rgba(0,0,0,.12); padding:18px; }
