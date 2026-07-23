@@ -10,6 +10,7 @@ export interface ReviewOverview {
   consecutive: number | null;
   maxStreak: number;
   allTimeHigh: number | null;
+  high20: number | null;
   high120: number | null;
   closePremium: number | null;
   openPremium: number | null;
@@ -29,6 +30,7 @@ export function historyRowToOverview(row: HistoryRow): ReviewOverview {
     consecutive: row.consecutive,
     maxStreak: row.maxStreak,
     allTimeHigh: row.allTimeHigh,
+    high20: row.high20,
     high120: row.high120,
     closePremium: row.closePremium,
     openPremium: row.openPremium,

@@ -5,6 +5,8 @@ export type MarketDatumStatus = "complete" | "partial" | "failed";
 export interface AdjustedBar {
   date: string;
   close: number;
+  amount?: number;
+  pctChange?: number;
 }
 
 export interface BoardPoolItem {

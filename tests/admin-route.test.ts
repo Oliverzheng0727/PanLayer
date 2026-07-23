@@ -9,6 +9,11 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toMatch(/days[\s\S]*1[\s\S]*20/);
   });
 
+  it("exposes the resumable new-high initialization job", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+    expect(adminRouteSource).toContain('job === "new-high-bootstrap"');
+  });
+
   it("validates a requested brief section before passing it to the runner", async () => {
     const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
 
@@ -39,5 +44,11 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toContain("searchParams.getAll");
     expect(adminRouteSource).toMatch(/unknown query parameter[\s\S]*status:\s*400/);
     expect(adminRouteSource).toMatch(/force must be true or false[\s\S]*status:\s*400/);
+  });
+
+  it("does not let a manual refresh write a close review before the market close window", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+    expect(adminRouteSource).toContain("canRunCloseReview");
+    expect(adminRouteSource).toContain("收盘复盘将在北京时间 16:10 后生成");
   });
 });

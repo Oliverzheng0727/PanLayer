@@ -10,7 +10,7 @@ import {
   type GeneratedBriefSection,
   type MorningBriefMarketContext,
 } from "../ai/morning-brief-providers";
-import { bucketLimitLadder, calculateBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
+import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import { buildMarketComparison } from "../domain/comparison";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
@@ -22,6 +22,12 @@ import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { withRetry } from "../data/resilience";
 import { runHistoryBackfillBatch } from "../history/backfill";
+import {
+  createD1NewHighStateStore,
+  newHighBootstrapTargetDate,
+  patchBackfilledReviewHighCounts,
+} from "../history/new-high-d1-store";
+import { runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
@@ -342,7 +348,7 @@ export async function persistGlobalPoints(db: D1Database, date: string, points: 
 }
 
 export function buildDailyReview({
-  date, quotes, limitPool, breadth, marginBalance, high120, allTimeHigh, source,
+  date, quotes, limitPool, breadth, marginBalance, high20 = null, high120, allTimeHigh, source,
   boardPools, marketAggregate, indices = [], receivedAt = new Date().toISOString(),
 }: {
   date: string;
@@ -350,6 +356,7 @@ export function buildDailyReview({
   limitPool: Quote[];
   breadth: Array<Breadth & { time: string }>;
   marginBalance: number | null;
+  high20?: number | null;
   high120: number | null;
   allTimeHigh: number | null;
   source: string;
@@ -385,9 +392,21 @@ export function buildDailyReview({
   const comparisonComplete = comparison
     ? Object.values(comparison.evidence).every((item) => item.status === "complete")
     : boardPools === undefined;
+  const quoteByCode = new Map(quotes.map((quote) => [quote.symbol.split(".")[0], quote]));
+  const premium = boardPools
+    ? calculateLimitPremium(boardPools.yesterdayLimitUp.flatMap((item) => {
+        const quote = quoteByCode.get(item.code);
+        if (!quote || quote.isST || quote.previousClose <= 0 || quote.open <= 0) return [];
+        return [{
+          previousStreak: item.previousLimitStreak,
+          openPct: Number(((quote.open / quote.previousClose - 1) * 100).toFixed(4)),
+          closePct: quote.pctChange,
+        }];
+      }))
+    : { openPct: null, closePct: null, sampleSize: 0 };
   return {
     date,
-    status: high120 === null || allTimeHigh === null || !comparisonComplete ? "partial" : "complete",
+    status: high20 === null || high120 === null || allTimeHigh === null || !comparisonComplete ? "partial" : "complete",
     source,
     updatedAt: receivedAt,
     breadth: resolvedBreadth,
@@ -396,11 +415,12 @@ export function buildDailyReview({
       limitDown: merged.filter((item) => classifyLimitStatus(item) === "limit-down").length,
       consecutive: limitUps.filter((item) => item.limitStreak >= 2).length,
       largeRise: merged.filter((item) => item.pctChange >= 7 && classifyLimitStatus(item) !== "limit-up").length,
+      high20,
       high120,
       allTimeHigh,
       marginBalance,
     },
-    premium: { openPct: null, closePct: null, sampleSize: 0 },
+    premium,
     ladder: bucketLimitLadder(merged),
     sectors: rankedSectorMetrics,
     leaders: rankLeaders(limitUps).slice(0, 20),
@@ -417,6 +437,8 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS job_leases (job TEXT NOT NULL, trade_date TEXT NOT NULL, token TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (job, trade_date))`,
   `CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, trade_date TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT)`,
   `CREATE TABLE IF NOT EXISTS new_high_details (trade_date TEXT NOT NULL, type TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL, sector TEXT NOT NULL, pct_change REAL NOT NULL, close REAL NOT NULL, high_price REAL NOT NULL, amount REAL NOT NULL, interval_pct REAL NOT NULL, high_date TEXT NOT NULL, is_all_time INTEGER NOT NULL, PRIMARY KEY (trade_date, type, symbol))`,
+  `CREATE TABLE IF NOT EXISTS new_high_states (symbol TEXT PRIMARY KEY, name TEXT NOT NULL, sector TEXT NOT NULL, last_date TEXT NOT NULL, last_close REAL NOT NULL, closes_json TEXT NOT NULL, all_time_high REAL NOT NULL, all_time_high_date TEXT NOT NULL, first_close REAL NOT NULL, initialized_through TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS new_high_states_progress_idx ON new_high_states(status, initialized_through)`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
 ];
@@ -478,6 +500,28 @@ export async function runPanLayerJob(
       const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
       if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
       return { ok: true, message };
+    } else if (job.type === "new-high-bootstrap") {
+      const targetDate = await newHighBootstrapTargetDate(db, date);
+      const progress = await runNewHighBootstrapBatch({
+        store: createD1NewHighStateStore(db),
+        provider,
+        targetDate,
+        batchSize: 100,
+        concurrency: 5,
+      });
+      if (progress.remaining === 0 && progress.target > 0) {
+        await patchBackfilledReviewHighCounts(db, targetDate);
+      }
+      const message =
+        `new-high-bootstrap ${progress.completed}/${progress.target}; ` +
+        `remaining ${progress.remaining}; failed ${progress.failed}`;
+      const status = progress.failed > 0 ? "partial" : "complete";
+      if (run?.id) {
+        await db.prepare(
+          "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
+        ).bind(status, message, new Date().toISOString(), run.id).run();
+      }
+      return { ok: true, message };
     } else if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
@@ -508,6 +552,7 @@ export async function runPanLayerJob(
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
+      await persistStockUniverse(db, market.quotes, new Date().toISOString());
       const [limitPool, marginBalance, boardPools, marketAggregate, indices] = await Promise.all([
         withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
         provider.getMarginBalance(date).catch(() => null),
@@ -515,6 +560,17 @@ export async function runPanLayerJob(
         withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
       ]);
+      const highSnapshot = await updateDailyNewHighSnapshot({
+        store: createD1NewHighStateStore(db),
+        tradeDate: date,
+        quotes: market.quotes,
+      }).catch(() => ({
+        high20: null,
+        high120: null,
+        allTimeHigh: null,
+        coveragePct: 0,
+        status: "partial" as const,
+      }));
       const breadth = await loadBreadth(db, date);
       const review = buildDailyReview({
         date,
@@ -522,8 +578,9 @@ export async function runPanLayerJob(
         limitPool,
         breadth,
         marginBalance,
-        high120: null,
-        allTimeHigh: null,
+        high20: highSnapshot.high20,
+        high120: highSnapshot.high120,
+        allTimeHigh: highSnapshot.allTimeHigh,
         source: market.source,
         boardPools,
         marketAggregate,

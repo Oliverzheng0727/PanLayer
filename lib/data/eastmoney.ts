@@ -429,12 +429,17 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     async getAdjustedBars(symbol) {
       const [code, exchange] = symbol.split(".");
       const secid = `${exchange === "SH" ? 1 : 0}.${code}`;
-      const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53`;
+      const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53,f57,f59`;
       const payload = await fetchJson<{ data?: { klines?: string[] } }>(fetcher, url);
       const rows: string[] = Array.isArray(payload?.data?.klines) ? payload.data.klines : [];
       return rows.map((row) => {
-        const [date, close] = row.split(",");
-        return { date, close: numberValue(close) };
+        const [date, close, amount, pctChange] = row.split(",");
+        return {
+          date,
+          close: numberValue(close),
+          amount: numberValue(amount),
+          pctChange: numberValue(pctChange),
+        };
       }).filter((bar) => bar.date && bar.close > 0);
     },
     async getSectors() {
@@ -479,12 +484,28 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       }).filter((item) => item.symbol && item.price > 0);
     },
     async getMarginBalance(date) {
-      const filter = encodeURIComponent(`(TRADE_DATE='${date}')`);
-      const url = `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_LSSH&columns=ALL&filter=${filter}&pageNumber=1&pageSize=10&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB`;
-      const payload = await fetchJson<{ result?: { data?: Array<{ RZRQYE?: number | string; RZYE?: number | string }> } }>(fetcher, url);
-      const row = payload?.result?.data?.[0];
-      const value = numberValue(row?.RZRQYE ?? row?.RZYE);
-      return value > 0 ? value : null;
+      const filter = encodeURIComponent(`(DIM_DATE<='${date}')`);
+      const url = `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_LSSH&columns=ALL&filter=${filter}&pageNumber=1&pageSize=10&sortColumns=DIM_DATE&sortTypes=-1&source=WEB&client=WEB`;
+      const payload = await fetchJson<{
+        result?: {
+          data?: Array<{
+            DIM_DATE?: string;
+            RZRQYE?: number | string;
+            RZYE?: number | string;
+          }>;
+        };
+      }>(fetcher, url);
+      const rows = payload?.result?.data ?? [];
+      const latestDate = rows
+        .map((row) => row.DIM_DATE?.slice(0, 10))
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1);
+      if (!latestDate) return null;
+      const value = rows
+        .filter((row) => row.DIM_DATE?.slice(0, 10) === latestDate)
+        .reduce((sum, row) => sum + numberValue(row.RZRQYE ?? row.RZYE), 0);
+      return value > 0 ? Number((value / 1e8).toFixed(2)) : null;
     },
   };
 }

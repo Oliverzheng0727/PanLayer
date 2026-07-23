@@ -121,6 +121,23 @@ export const newHighDetails = sqliteTable("new_high_details", {
   isAllTime: integer("is_all_time", { mode: "boolean" }).notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.type, table.symbol] }), index("new_high_date_idx").on(table.tradeDate, table.type)]);
 
+export const newHighStates = sqliteTable("new_high_states", {
+  symbol: text("symbol").primaryKey(),
+  name: text("name").notNull(),
+  sector: text("sector").notNull(),
+  lastDate: text("last_date").notNull(),
+  lastClose: real("last_close").notNull(),
+  closesJson: text("closes_json").notNull(),
+  allTimeHigh: real("all_time_high").notNull(),
+  allTimeHighDate: text("all_time_high_date").notNull(),
+  firstClose: real("first_close").notNull(),
+  initializedThrough: text("initialized_through").notNull(),
+  status: text("status").notNull().default("active"),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("new_high_states_progress_idx").on(table.status, table.initializedThrough),
+]);
+
 export const marketSourceAudits = sqliteTable("market_source_audits", {
   tradeDate: text("trade_date").notNull(),
   snapshotTime: text("snapshot_time").notNull(),

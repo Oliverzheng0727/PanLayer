@@ -53,6 +53,26 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(drawer).toContain("仅供市场复盘，不构成投资建议");
   });
 
+  it("opens verified 20d, 120d and all-time stock lists from the overview card", async () => {
+    const [dashboard, drawer] = await Promise.all([
+      readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/components/history/HighDetailDrawer.tsx", import.meta.url), "utf8"),
+    ]);
+
+    expect(dashboard).toContain("HighDetailDrawer");
+    expect(dashboard).toContain("/api/v1/history/");
+    expect(dashboard).toContain("20日新高");
+    expect(drawer).toContain("20日新高");
+    expect(drawer).toContain("120日新高");
+    expect(drawer).toContain("历史新高");
+  });
+
+  it("provides an administrator control for resumable new-high initialization", async () => {
+    const workspace = await readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8");
+    expect(workspace).toContain("/api/v1/admin/jobs/new-high-bootstrap/run");
+    expect(workspace).toContain("初始化新高");
+  });
+
   it("keeps the header and date column frozen inside a two-axis scroll area", async () => {
     const [css, table] = await Promise.all([
       readFile(new URL("../app/globals.css", import.meta.url), "utf8"),

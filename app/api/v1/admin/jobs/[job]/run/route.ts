@@ -1,7 +1,7 @@
 import { authorizeAdminApi } from "../../../../../../auth-guard";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../../../../../../../lib/ai/morning-brief-contract";
 import { runPanLayerJob } from "../../../../../../../lib/jobs/runner";
-import type { ScheduledJob } from "../../../../../../../lib/jobs/schedule";
+import { canRunCloseReview, type ScheduledJob } from "../../../../../../../lib/jobs/schedule";
 
 export async function POST(request: Request, context: { params: Promise<{ job: string }> }) {
   const denied = await authorizeAdminApi();
@@ -15,6 +15,8 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   }
   const mapped: ScheduledJob | null = job === "morning-brief"
     ? { type: "morning-brief" }
+    : job === "new-high-bootstrap"
+      ? { type: "new-high-bootstrap" }
     : job === "close-review"
       ? { type: "close-review" }
       : job === "history-backfill"
@@ -53,6 +55,12 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
     if (mapped.type !== "morning-brief") return Response.json({ error: "mode is only supported for morning-brief" }, { status: 400 });
     if (mode !== "failed") return Response.json({ error: "unknown brief mode" }, { status: 400 });
     if (section !== null || forceParam !== null) return Response.json({ error: "mode=failed cannot be combined with section or force" }, { status: 400 });
+  }
+  if (mapped.type === "close-review" && !canRunCloseReview(new Date())) {
+    return Response.json({
+      ok: true,
+      message: "收盘复盘将在北京时间 16:10 后生成",
+    });
   }
   const { env } = await import("cloudflare:workers");
   try {

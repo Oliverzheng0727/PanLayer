@@ -452,11 +452,12 @@ describe("close review aggregation", () => {
       limitPool: [q("A", 10, 2)],
       breadth: [{ time: "15:00", rising: 3, falling: 1, flat: 0 }],
       marginBalance: 26_000,
+      high20: 7,
       high120: 4,
       allTimeHigh: 2,
       source: "东方财富",
     });
-    expect(review.metrics).toMatchObject({ limitUp: 1, limitDown: 1, consecutive: 1, largeRise: 1, high120: 4, allTimeHigh: 2 });
+    expect(review.metrics).toMatchObject({ limitUp: 1, limitDown: 1, consecutive: 1, largeRise: 1, high20: 7, high120: 4, allTimeHigh: 2 });
     expect(review.ladder.second[0].symbol).toBe("A");
     expect(review.leaders[0].symbol).toBe("A");
     expect(review.sectors.every((sector) => sector.amountGrowthPct === null)).toBe(true);
@@ -503,6 +504,7 @@ describe("close review aggregation", () => {
       marketAmount: 18_000,
       brokenBoard: { count: 1, rate: 100, sampleSize: 1 },
     });
+    expect(review.premium).toEqual({ openPct: 2, closePct: -2, sampleSize: 1 });
   });
 
   it("marks unavailable new-high data partial instead of inventing zero values", () => {

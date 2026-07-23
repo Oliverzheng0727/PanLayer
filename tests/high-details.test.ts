@@ -21,4 +21,10 @@ describe("new-high detail query", () => {
   it("rejects an unsafe sort field", () => {
     expect(() => parseHighDetailQuery(new URLSearchParams("type=120d&sort=payload"))).toThrow("invalid high detail sort");
   });
+
+  it("accepts 20-day high details as a first-class filter", () => {
+    expect(parseHighDetailQuery(new URLSearchParams("type=20d"))).toMatchObject({
+      type: "20d",
+    });
+  });
 });

@@ -17,12 +17,13 @@ const emptyComparisonColumns = {
   cycleLeader: "无明确周期龙头",
   recognition: "—",
   indexSummary: "暂缺",
+  high20: null,
 };
 
 const rows: HistoryRow[] = [
-  { ...emptyComparisonColumns, date: "2026-07-22", rising: 1530, falling: 2798, flat: 101, riseFallRatio: .55, limitUp: 47, limitDown: 8, largeRise: 23, consecutive: 12, maxStreak: 6, openPremium: 1.79, closePremium: 7.05, high120: 20, allTimeHigh: 8, marginBalance: 26978.8, topSector: "机器人 / 算力", backfilled: false, status: "complete", source: "东方财富", updatedAt: "2026-07-22 16:10" },
-  { ...emptyComparisonColumns, date: "2026-07-21", rising: 3107, falling: 1280, flat: 88, riseFallRatio: 2.43, limitUp: 121, limitDown: 21, largeRise: 195, consecutive: 5, maxStreak: 4, openPremium: 2.2, closePremium: 3.16, high120: 19, allTimeHigh: 2, marginBalance: 26966.4, topSector: "医药 / 芯片", backfilled: false, status: "complete", source: "东方财富", updatedAt: "2026-07-21 16:10" },
-  { ...emptyComparisonColumns, date: "2026-07-20", rising: 1740, falling: 2670, flat: 92, riseFallRatio: .65, limitUp: 53, limitDown: 12, largeRise: 18, consecutive: 7, maxStreak: 3, openPremium: -0.3, closePremium: -0.82, high120: 17, allTimeHigh: 4, marginBalance: null, topSector: "汽车 / 电池", backfilled: true, status: "partial", source: "历史回补", updatedAt: "2026-07-20 16:10" },
+  { ...emptyComparisonColumns, date: "2026-07-22", rising: 1530, falling: 2798, flat: 101, riseFallRatio: .55, limitUp: 47, limitDown: 8, largeRise: 23, consecutive: 12, maxStreak: 6, openPremium: 1.79, closePremium: 7.05, high20: 31, high120: 20, allTimeHigh: 8, marginBalance: 26978.8, topSector: "机器人 / 算力", backfilled: false, status: "complete", source: "东方财富", updatedAt: "2026-07-22 16:10" },
+  { ...emptyComparisonColumns, date: "2026-07-21", rising: 3107, falling: 1280, flat: 88, riseFallRatio: 2.43, limitUp: 121, limitDown: 21, largeRise: 195, consecutive: 5, maxStreak: 4, openPremium: 2.2, closePremium: 3.16, high20: 28, high120: 19, allTimeHigh: 2, marginBalance: 26966.4, topSector: "医药 / 芯片", backfilled: false, status: "complete", source: "东方财富", updatedAt: "2026-07-21 16:10" },
+  { ...emptyComparisonColumns, date: "2026-07-20", rising: 1740, falling: 2670, flat: 92, riseFallRatio: .65, limitUp: 53, limitDown: 12, largeRise: 18, consecutive: 7, maxStreak: 3, openPremium: -0.3, closePremium: -0.82, high20: 24, high120: 17, allTimeHigh: 4, marginBalance: null, topSector: "汽车 / 电池", backfilled: true, status: "partial", source: "历史回补", updatedAt: "2026-07-20 16:10" },
 ];
 
 const review: DailyReview = {
@@ -31,7 +32,7 @@ const review: DailyReview = {
   source: "东方财富",
   updatedAt: "2026-07-22 16:10",
   breadth: [{ time: "15:00", rising: 1530, falling: 2798, flat: 101 }],
-  metrics: { limitUp: 47, limitDown: 8, consecutive: 12, largeRise: 23, high120: 20, allTimeHigh: 8, marginBalance: 26978.8 },
+  metrics: { limitUp: 47, limitDown: 8, consecutive: 12, largeRise: 23, high20: 31, high120: 20, allTimeHigh: 8, marginBalance: 26978.8 },
   premium: { openPct: 1.79, closePct: 7.05, sampleSize: 12 },
   ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] },
   sectors: [{ name: "机器人", limitUpCount: 9, averagePct: 3.2, amountGrowthPct: 10, maxStreak: 6 }],
@@ -77,6 +78,10 @@ describe("history table query", () => {
 
   it("calculates a finite rise-fall ratio", () => {
     expect(reviewToHistoryRow(review).riseFallRatio).toBeCloseTo(1530 / 2798, 2);
+  });
+
+  it("maps the 20-day high count into the historical comparison row", () => {
+    expect(reviewToHistoryRow(review).high20).toBe(31);
   });
 
   it("keeps unavailable values last when sorting either direction", () => {

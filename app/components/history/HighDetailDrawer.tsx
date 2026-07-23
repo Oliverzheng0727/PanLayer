@@ -35,6 +35,7 @@ export function HighDetailDrawer({ date, type, items, onTypeChange, onClose }: {
   }, [onClose]);
 
   const result = useMemo(() => queryHighDetails(items, { type, query, sort, order }), [items, order, query, sort, type]);
+  const total20 = items.filter((item) => item.type === "20d").length;
   const total120 = items.filter((item) => item.type === "120d").length;
   const totalAllTime = items.filter((item) => item.type === "all-time").length;
 
@@ -61,10 +62,10 @@ export function HighDetailDrawer({ date, type, items, onTypeChange, onClose }: {
           </div>
         ) : (
           <>
-            <div className="high-drawer-tabs"><button type="button" className={type === "120d" ? "active" : ""} onClick={() => onTypeChange("120d")}>120日新高 <span>{total120}</span></button><button type="button" className={type === "all-time" ? "active" : ""} onClick={() => onTypeChange("all-time")}>历史新高 <span>{totalAllTime}</span></button></div>
+            <div className="high-drawer-tabs"><button type="button" className={type === "20d" ? "active" : ""} onClick={() => onTypeChange("20d")}>20日新高 <span>{total20}</span></button><button type="button" className={type === "120d" ? "active" : ""} onClick={() => onTypeChange("120d")}>120日新高 <span>{total120}</span></button><button type="button" className={type === "all-time" ? "active" : ""} onClick={() => onTypeChange("all-time")}>历史新高 <span>{totalAllTime}</span></button></div>
             <div className="high-drawer-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索股票、代码或行业" /><span>{result.length} 家</span></div>
             {result.length ? <div className="high-detail-table-wrap"><table className="high-detail-table"><thead><tr>{sortColumns.map((column) => <th key={column.field}><button type="button" className={sort === column.field ? "active" : ""} onClick={() => cycleSort(column.field)}>{column.label}{sort !== column.field ? <ChevronsUpDown size={11} /> : order === "desc" ? <ArrowDown size={11} /> : <ArrowUp size={11} />}</button></th>)}<th>收盘</th><th>行业</th></tr></thead><tbody>{result.map((item) => <tr key={`${item.type}-${item.symbol}`} onClick={() => setSelectedStock(item)}><td><strong>{item.name}</strong><span>{item.symbol}</span></td><td className={item.pctChange >= 0 ? "rise" : "fall"}>{pct(item.pctChange)}</td><td>{formatAmount(item.amount)}</td><td className="rise">{pct(item.intervalPct)}</td><td>{item.close.toFixed(2)}</td><td><span className="history-sector">{item.sector}</span></td></tr>)}</tbody></table></div> : <div className="high-detail-empty"><strong>明细数据暂缺</strong><p>没有符合当前类型和搜索条件的股票明细。</p></div>}
-            <footer className="high-drawer-footer"><span>点击股票可查看分时、日K、周K、月K</span><span>演示数据 · 不构成投资建议</span></footer>
+            <footer className="high-drawer-footer"><span>点击股票可查看分时、日K、周K、月K</span><span>前复权真实行情 · 不构成投资建议</span></footer>
           </>
         )}
       </aside>

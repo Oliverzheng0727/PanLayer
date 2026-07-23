@@ -17,6 +17,7 @@ const localBindingConfig = {
   triggers: {
     crons: [
       "15 23 * * 0-4",
+      "30 0 * * 1-5",
       "25 1 * * 1-5",
       "0 2 * * 1-5",
       "0 3 * * 1-5",

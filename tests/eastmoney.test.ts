@@ -130,6 +130,27 @@ describe("Eastmoney provider", () => {
     });
   });
 
+  it("keeps real amount and daily return fields in forward-adjusted stock bars", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get("fqt")).toBe("1");
+      expect(url.searchParams.get("fields2")).toBe("f51,f53,f57,f59");
+      return new Response(JSON.stringify({
+        data: {
+          klines: [
+            "2026-07-22,10.25,860000000,3.12",
+            "2026-07-23,10.66,920000000,4.00",
+          ],
+        },
+      }));
+    };
+
+    await expect(createEastmoneyProvider(fetcher).getAdjustedBars("600001.SH")).resolves.toEqual([
+      { date: "2026-07-22", close: 10.25, amount: 860000000, pctChange: 3.12 },
+      { date: "2026-07-23", close: 10.66, amount: 920000000, pctChange: 4 },
+    ]);
+  });
+
   it("rotates Eastmoney hosts when the preferred edge returns 520", async () => {
     const hosts: string[] = [];
     const fetcher: typeof fetch = async (input) => {
@@ -281,6 +302,23 @@ describe("Eastmoney provider", () => {
     const provider = createEastmoneyProvider(fetcher);
     const pool = await provider.getLimitPool("2026-07-22");
     expect(pool[0]).toMatchObject({ symbol: "600000.SH", limitStreak: 2, firstLimitTime: "09:35:00", sector: "银行" });
+  });
+
+  it("sums the latest Shanghai and Shenzhen margin balances using the current DIM_DATE field", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get("filter")).toContain("DIM_DATE");
+      expect(url.searchParams.get("sortColumns")).toBe("DIM_DATE");
+      return new Response(JSON.stringify({
+        result: { data: [
+          { DIM_DATE: "2026-07-22 00:00:00", SCDM: "007", RZRQYE: 1_350_000_000_000 },
+          { DIM_DATE: "2026-07-22 00:00:00", SCDM: "001", RZRQYE: 720_000_000_000 },
+          { DIM_DATE: "2026-07-21 00:00:00", SCDM: "007", RZRQYE: 1_340_000_000_000 },
+        ] },
+      }));
+    };
+
+    await expect(createEastmoneyProvider(fetcher).getMarginBalance("2026-07-24")).resolves.toBe(20_700);
   });
 
   it("paginates the ETF market so products beyond the first provider page stay searchable", async () => {

@@ -4,7 +4,7 @@ export const HISTORY_SORT_FIELDS = [
   "date", "rising", "falling", "flat", "riseFallRatio", "limitUp", "limitDown", "consecutive",
   "brokenCount", "largeDownCount", "sealRate", "yesterdaySuccessRate", "continuationAveragePct",
   "marketAmount", "maxStreak", "brokenBoardCount", "brokenBoardRate",
-  "openPremium", "closePremium", "high120", "allTimeHigh", "marginBalance",
+  "openPremium", "closePremium", "high20", "high120", "allTimeHigh", "marginBalance",
 ] as const;
 
 export type HistorySortField = (typeof HISTORY_SORT_FIELDS)[number];
@@ -37,6 +37,7 @@ export interface HistoryRow {
   indexSummary: string;
   openPremium: number | null;
   closePremium: number | null;
+  high20: number | null;
   high120: number | null;
   allTimeHigh: number | null;
   marginBalance: number | null;
@@ -102,6 +103,7 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     indexSummary: comparison?.indices.map((item) => `${item.name} ${formatSignedPct(item.pctChange)}`).join(" / ") || "暂缺",
     openPremium: review.premium.openPct,
     closePremium: review.premium.closePct,
+    high20: review.metrics.high20 ?? null,
     high120: review.metrics.high120,
     allTimeHigh: review.metrics.allTimeHigh,
     marginBalance: review.metrics.marginBalance,

@@ -1,4 +1,4 @@
-export type HighDetailType = "120d" | "all-time";
+export type HighDetailType = "20d" | "120d" | "all-time";
 export type HighDetailSort = "name" | "pctChange" | "amount" | "intervalPct";
 export type HighDetailOrder = "asc" | "desc";
 
@@ -28,7 +28,7 @@ export const HIGH_DETAIL_SORT_FIELDS: HighDetailSort[] = ["name", "pctChange", "
 
 export function parseHighDetailQuery(params: URLSearchParams): HighDetailQuery {
   const type = params.get("type") ?? "120d";
-  if (type !== "120d" && type !== "all-time") throw new Error("invalid high detail type");
+  if (type !== "20d" && type !== "120d" && type !== "all-time") throw new Error("invalid high detail type");
   const sort = params.get("sort") ?? "amount";
   if (!HIGH_DETAIL_SORT_FIELDS.includes(sort as HighDetailSort)) throw new Error("invalid high detail sort");
   const order = params.get("order") ?? "desc";

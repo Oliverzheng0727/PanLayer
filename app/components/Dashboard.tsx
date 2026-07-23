@@ -10,11 +10,13 @@ import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import { historyRowToOverview } from "../../lib/history/overview";
+import type { HighDetail, HighDetailType } from "../../lib/history/high-details";
 import type { HistoryRow } from "../../lib/history/query";
 import { shouldPoll } from "../../lib/live/polling";
 import { formatBeijingDateTime } from "../../lib/live/market-clock";
 import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
 import { HistoryWorkspace } from "./history/HistoryWorkspace";
+import { HighDetailDrawer } from "./history/HighDetailDrawer";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
@@ -69,6 +71,11 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
+  const [highDrawer, setHighDrawer] = useState<{
+    date: string;
+    type: HighDetailType;
+    items: HighDetail[];
+  } | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState(
     () => history.find((row) => row.date === review.date)?.date ?? history[0]?.date ?? review.date,
@@ -116,6 +123,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
   const overviewConsecutive = isViewingCurrentReview ? review.metrics.consecutive : selectedHistoricalOverview.consecutive;
   const overviewMaxStreak = isViewingCurrentReview ? ladderHeight : selectedHistoricalOverview.maxStreak;
   const overviewAllTimeHigh = isViewingCurrentReview ? review.metrics.allTimeHigh : selectedHistoricalOverview.allTimeHigh;
+  const overviewHigh20 = isViewingCurrentReview ? review.metrics.high20 ?? null : selectedHistoricalOverview.high20;
   const overviewHigh120 = isViewingCurrentReview ? review.metrics.high120 : selectedHistoricalOverview.high120;
   const overviewClosePremium = isViewingCurrentReview ? review.premium.closePct : selectedHistoricalOverview.closePremium;
   const overviewOpenPremium = isViewingCurrentReview ? review.premium.openPct : selectedHistoricalOverview.openPremium;
@@ -127,6 +135,20 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
     ? "暂缺"
     : `${overviewMarginBalance.toLocaleString("zh-CN")}亿`;
   const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
+
+  const openHighDrawer = useCallback(async (type: HighDetailType) => {
+    const types: HighDetailType[] = ["20d", "120d", "all-time"];
+    const responses = await Promise.all(types.map(async (highType) => {
+      const response = await fetch(
+        `/api/v1/history/${overviewDate}/highs?type=${highType}&sort=amount&order=desc`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return [];
+      const payload = await response.json() as { items?: HighDetail[] };
+      return payload.items ?? [];
+    }));
+    setHighDrawer({ date: overviewDate, type, items: responses.flat() });
+  }, [overviewDate]);
 
   const refreshLiveBreadth = useCallback(async () => {
     if (liveRequestInFlight.current) return;
@@ -225,7 +247,12 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
               <Metric label="上涨家数" value={overviewRising === null ? "暂缺" : String(overviewRising)} note={overviewFalling === null ? "涨跌家数数据暂缺" : `下跌 ${overviewFalling}`} />
               <Metric label="涨停数量" value={overviewLimitUp === null ? "暂缺" : String(overviewLimitUp)} note={overviewLimitDown === null ? "跌停数据暂缺" : `跌停 ${overviewLimitDown}`} />
               <Metric label="连板家数" value={overviewConsecutive === null ? "暂缺" : String(overviewConsecutive)} note={overviewLadderNote} />
-              <Metric label="历史新高" value={overviewAllTimeHigh === null ? "暂缺" : String(overviewAllTimeHigh)} note={overviewHigh120 === null ? "120日新高 数据暂缺" : `120日新高 ${overviewHigh120}`} />
+              <Metric
+                label="历史新高"
+                value={overviewAllTimeHigh === null ? "暂缺" : String(overviewAllTimeHigh)}
+                note={`20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`}
+                onClick={() => void openHighDrawer("all-time")}
+              />
               <Metric label="连板收盘溢价" value={pct(overviewClosePremium)} note={`开盘 ${pct(overviewOpenPremium)}`} accent />
               <Metric label="两融余额" value={overviewMarginBalanceValue} note="沪深京融资余额" />
             </div>
@@ -275,11 +302,25 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>
         </div>
       </main>
+      {highDrawer && (
+        <HighDetailDrawer
+          date={highDrawer.date}
+          type={highDrawer.type}
+          items={highDrawer.items}
+          onTypeChange={(type) => setHighDrawer((current) => current ? { ...current, type } : current)}
+          onClose={() => setHighDrawer(null)}
+        />
+      )}
     </div>
   );
 }
 
-function Metric({ label, value, note, accent = false }: { label: string; value: string; note: string; accent?: boolean }) { return <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}><span className="text-xs text-white/35">{label}</span><div className="mt-5"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong></div><p className="mt-3 text-[11px] text-white/25">{note}</p></div> }
+function Metric({ label, value, note, accent = false, onClick }: { label: string; value: string; note: string; accent?: boolean; onClick?: () => void }) {
+  const content = <><span className="text-xs text-white/35">{label}</span><div className="mt-5"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong></div><p className="mt-3 text-[11px] text-white/25">{note}</p></>;
+  return onClick
+    ? <button type="button" className={`metric-card text-left transition hover:border-[#e8702a]/30 ${accent ? "metric-card-accent" : ""}`} onClick={onClick}>{content}</button>
+    : <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}>{content}</div>;
+}
 function Panel({ title, eyebrow, id, children }: { title: string; eyebrow: string; id?: string; children: React.ReactNode }) { return <div id={id} className="panel scroll-mt-24 p-5 sm:p-6"><div className="flex items-center justify-between"><div><p className="text-[9px] font-semibold tracking-[0.2em] text-[#e8702a]">{eyebrow}</p><h3 className="mt-2 text-lg font-medium">{title}</h3></div><Table2 size={17} className="text-white/15"/></div>{children}</div> }
 function BreadthBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) { return <div><div className="mb-2 flex items-center justify-between text-xs"><span className="text-white/40">{label}</span><strong>{value.toLocaleString()}</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]"><div className="h-full rounded-full" style={{ width: `${value / max * 100}%`, background: color }}/></div></div> }
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-2xl bg-white/[0.035] p-4"><span className="text-[10px] text-white/30">{label}</span><strong className="mt-2 block text-lg">{value}</strong></div> }

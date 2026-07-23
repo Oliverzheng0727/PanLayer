@@ -36,6 +36,8 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
   const [evidenceDrawer, setEvidenceDrawer] = useState<{ row: HistoryRow; kind: MarketEvidenceKind } | null>(null);
   const [backfillState, setBackfillState] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [backfillLabel, setBackfillLabel] = useState("回补近20日");
+  const [newHighState, setNewHighState] = useState<"idle" | "running" | "complete" | "failed">("idle");
+  const [newHighLabel, setNewHighLabel] = useState("初始化新高");
   const [restored, setRestored] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
@@ -141,12 +143,42 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false, o
     }
   };
 
+  const initializeNewHighs = async () => {
+    if (newHighState === "running") return;
+    setNewHighState("running");
+    setNewHighLabel("初始化中…");
+    try {
+      const response = await fetch("/api/v1/admin/jobs/new-high-bootstrap/run", {
+        method: "POST",
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string;
+        message?: string;
+      };
+      if (!response.ok) throw new Error(payload.error ?? "新高初始化失败");
+      const progress = (payload.message ?? "").match(
+        /new-high-bootstrap\s+(\d+)\/(\d+);\s+remaining\s+(\d+)/,
+      );
+      if (!progress) throw new Error("新高初始化未返回有效进度");
+      const completed = Number(progress[1]);
+      const target = Number(progress[2]);
+      const remaining = Number(progress[3]);
+      setNewHighLabel(`新高 ${completed}/${target}`);
+      setNewHighState(remaining === 0 ? "complete" : "idle");
+      if (remaining === 0) router.refresh();
+    } catch (error) {
+      setNewHighState("failed");
+      setNewHighLabel(error instanceof Error ? error.message : "新高初始化失败");
+    }
+  };
+
   return (
     <div className="history-workspace panel">
       <div className="history-toolbar">
         <div><strong>历史数据表</strong><span>当前查看 {selected || "暂无记录"} · 固定表头与日期列</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
         {canManageHistory && <button type="button" className={`history-backfill ${backfillState}`} onClick={backfillHistory} disabled={backfillState === "running"} title={backfillState === "failed" ? backfillLabel : undefined}>{backfillState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{backfillLabel}</button>}
+        {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running"} title={newHighState === "failed" ? newHighLabel : "每次初始化100只，失败可继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
       <div className="history-layout">

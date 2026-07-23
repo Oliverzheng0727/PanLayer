@@ -107,6 +107,7 @@ export interface DailyReview {
     limitDown: number | null;
     consecutive: number | null;
     largeRise: number | null;
+    high20?: number | null;
     high120: number | null;
     allTimeHigh: number | null;
     marginBalance: number | null;

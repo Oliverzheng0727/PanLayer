@@ -97,7 +97,7 @@ export async function readHighDetails(date: string): Promise<HighDetail[]> {
       trade_date: string; type: string; symbol: string; name: string; sector: string; pct_change: number; close: number;
       high_price: number; amount: number; interval_pct: number; high_date: string; is_all_time: number;
     }>();
-    return (result.results ?? []).flatMap((row) => row.type === "120d" || row.type === "all-time" ? [{
+    return (result.results ?? []).flatMap((row) => row.type === "20d" || row.type === "120d" || row.type === "all-time" ? [{
       date: row.trade_date,
       type: row.type,
       symbol: row.symbol,
