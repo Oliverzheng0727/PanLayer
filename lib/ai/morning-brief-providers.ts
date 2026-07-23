@@ -177,12 +177,15 @@ function snapshotBlocks(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPo
   });
 }
 
-function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, citationField: "sourceIds" | "sourceUrls" = "sourceIds"): string {
+function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], citationField: "sourceIds" | "sourceUrls" = "sourceIds"): string {
   const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
+  const modelRequiredTerms = (key === "mapping" || key === "risk")
+    ? definition.requiredTerms.filter((term) => term !== "ETF")
+    : definition.requiredTerms;
   return `生成 ${date} 北京时间 07:15 的A股隔夜早参模块。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。
 
-本模块必须逐项覆盖：${definition.requiredTerms.join("、")}。正文内容长度（仅内容块文字）必须为 1000 至 1600 个字符。
+本模块必须逐项覆盖：${modelRequiredTerms.join("、")}。正文内容长度（仅内容块文字）必须为 1000 至 1600 个字符。
 主动检索从上一交易日收盘至当前的可靠来源。${citationField === "sourceIds"
     ? "每条事实、解读和风险说明均须在 sourceIds 中引用联网搜索返回的本地编号 ref_1、ref_2 等；不可引用不存在的编号、不可虚构 URL、不可在 JSON 中输出 sources。"
     : "每条事实、解读和风险说明均须在 sourceUrls 中引用联网搜索返回的精确 URL；不可引用不存在的 URL、不可虚构 URL、不可在 JSON 中输出 sources。"}若没有可靠更新，请明确写“未查到可靠更新”并仍引用检索来源。
@@ -191,8 +194,7 @@ function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: Re
 以下是服务端已校验的全球数值快照：${JSON.stringify(globalSnapshot)}
 指数、股票、汇率、利率和商品数值只能使用以上快照。不要在叙述中重复这些快照数字；不要输出 table 类型内容；服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
 
-${key === "mapping" || key === "risk" ? `以下为服务端裁剪的 marketContext（只含上一交易日复盘和最近 ETF 分类映射）：${JSON.stringify(marketContext ?? { review: null, etfs: [] })}
-主线/热点/龙头只能来自此上下文；每次使用都必须写明 ranking basis（排名依据）及其因素。若 review 或 ETF 映射不可用，必须明确写“上下文不可用”，不得从搜索结果推断主线、热点、龙头或 ETF 对应关系。` : ""}
+${key === "mapping" || key === "risk" ? `服务端会在最终模块中追加已校验的复盘排名、龙头排名和 ETF 映射表；模型正文不得输出“主线”“热点”“龙头”或“ETF”这些保留词，也不得复述、推断或改写任何排名/映射结论。` : ""}
 
 仅返回合法 JSON 对象，不要 Markdown 代码块，形状如下：
 {"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","${citationField}":[${citationField === "sourceIds" ? '"ref_1"' : '"https://example.com/cited-page"'}]}]}`;
@@ -338,9 +340,10 @@ function narrativeSegments(blocks: BriefBlock[]): string[] {
     .filter(Boolean);
 }
 
-function snapshotNumbersInSegment(segment: string, label: string): Array<{ text: string; isPercent: boolean }> {
-  const withoutLabel = segment.split(label).join("标的");
+function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text: string; isPercent: boolean }> {
+  const withoutLabel = labels.reduce((text, label) => text.split(label).join("标的"), clause);
   const withoutUnrelatedValues = withoutLabel
+    .replace(/[A-Za-z]+\d[\d,.，]*/g, "")
     .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "")
     .replace(/\d{4}年\d{1,2}月\d{1,2}日/g, "")
     .replace(/\d{1,2}:\d{2}(?::\d{2})?/g, "")
@@ -352,80 +355,111 @@ function snapshotNumbersInSegment(segment: string, label: string): Array<{ text:
     }));
 }
 
+function snapshotClauses(blocks: BriefBlock[], labels: string[]): string[] {
+  return narrativeSegments(blocks).flatMap((sentence) => {
+    const clauses: string[] = [];
+    let start = 0;
+    for (let index = 0; index < sentence.length; index += 1) {
+      const character = sentence[index];
+      if (character !== "，" && character !== ",") continue;
+      if (/\d/.test(sentence[index - 1] ?? "") && /\d/.test(sentence[index + 1] ?? "")) continue;
+      const before = sentence.slice(start, index);
+      const after = sentence.slice(index + 1);
+      const beforeLabels = labels.filter((label) => before.includes(label));
+      const afterLabels = labels.filter((label) => after.includes(label));
+      if (beforeLabels.length > 0 && afterLabels.some((label) => !beforeLabels.includes(label))) {
+        if (before.trim()) clauses.push(before.trim());
+        start = index + 1;
+      }
+    }
+    const tail = sentence.slice(start).trim();
+    if (tail) clauses.push(tail);
+    return clauses;
+  });
+}
+
 function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: ReconciledGlobalPoint[]): void {
-  const segments = narrativeSegments(blocks);
-  for (const point of globalSnapshot) {
-    if (!point.label) continue;
-    for (const segment of segments.filter((value) => value.includes(point.label))) {
-      for (const token of snapshotNumbersInSegment(segment, point.label)) {
+  const points = globalSnapshot.filter((point) => point.label);
+  const labels = points.map((point) => point.label).sort((left, right) => right.length - left.length);
+  for (const clause of snapshotClauses(blocks, labels)) {
+    const mentioned = points.filter((point) => clause.includes(point.label));
+    if (mentioned.length === 0) continue;
+    const tokens = snapshotNumbersInClause(clause, labels);
+    if (mentioned.length > 1 && tokens.length > 0) {
+      throw new Error("快照数值归属歧义：同一子句包含多个标的");
+    }
+    const point = mentioned[0];
+    for (const token of tokens) {
         const quoted = normalizeSnapshotNumber(token.text);
-      if (quoted === null) continue;
+        if (quoted === null) continue;
         const allowed = (token.isPercent ? [point.pctChange] : [point.value, point.previousClose])
           .filter((value): value is number => value !== null);
         if (allowed.length > 0 && !allowed.some((value) => Math.abs(value - quoted) <= shownDecimalTolerance(token.text))) {
           throw new Error(`快照数值与服务端表格不一致：${point.label}`);
         }
-      }
     }
   }
 }
 
-function hasRequiredRankingBasis(segment: string, factors: RegExp): boolean {
-  return /排名(?:依据|靠前|居前|第?\d+)|排序依据/.test(segment) && factors.test(segment);
-}
-
-function claimedEntitiesAreKnown(claimed: string, known: string[]): boolean {
-  const entities = claimed.split(/[、/和及与]/).map((value) => value.trim()).filter(Boolean);
-  return entities.length > 0 && entities.every((entity) => {
-    const normalized = entity.replace(/[（(][^）)]*[）)]/g, "").replace(/\s/g, "");
-    return known.some((name) => normalized === name || /^(?:板块|题材|方向|概念|个股|股票)?$/.test(normalized.replace(name, "")));
-  });
-}
-
-function assertMarketContextClaims(key: BriefSectionKey, blocks: BriefBlock[], marketContext: MorningBriefMarketContext | undefined): void {
+function assertNoModelRankingTokens(key: BriefSectionKey, summary: string, blocks: BriefBlock[]): void {
   if (key !== "mapping" && key !== "risk") return;
-  const sectors = marketContext?.review?.sectors.map((item) => item.name) ?? [];
-  const leaders = marketContext?.review?.leaders.flatMap((item) => [item.name, item.symbol]) ?? [];
-  const etfs = marketContext?.etfs ?? [];
+  const reserved = /主线|热点|龙头|ETF/i;
+  const offending = [summary, ...narrativeSegments(blocks)].find((segment) => reserved.test(segment));
+  if (offending) throw new Error(`模型正文包含排名保留词：${offending}`);
+}
 
-  for (const segment of narrativeSegments(blocks)) {
-    for (const claim of segment.matchAll(/(?:主线|热点)(?:板块)?\s*(?:为|是|包括|来自|对应|[:：])\s*([^，。；;\n]+)/g)) {
-      const entity = claim[1].trim();
-      if (sectors.length === 0 || !claimedEntitiesAreKnown(entity, sectors)) {
-        throw new Error(`marketContext 主线/热点声明未匹配服务端复盘：${entity}`);
-      }
-      if (!hasRequiredRankingBasis(segment, /涨停|均涨幅|成交(?:额|增量)|连板|高度/)) {
-        throw new Error("marketContext 主线/热点声明缺少排名依据及复盘因素");
-      }
-    }
+function contextSnapshotTable(label: string, columns: string[], rows: string[][], generatedAt: string): BriefBlock {
+  return {
+    type: "table",
+    columns,
+    rows,
+    sourceIds: [],
+    provenance: {
+      kind: "snapshot",
+      label,
+      marketTime: generatedAt,
+      providers: ["服务端 marketContext"],
+      receivedAt: generatedAt,
+    },
+  };
+}
 
-    for (const claim of segment.matchAll(/龙头(?:股)?\s*(?:为|是|包括|来自|对应|[:：])\s*([^，。；;\n]+)/g)) {
-      const entity = claim[1].trim();
-      if (leaders.length === 0 || !claimedEntitiesAreKnown(entity, leaders)) {
-        throw new Error(`marketContext 龙头声明未匹配服务端复盘：${entity}`);
-      }
-      if (!hasRequiredRankingBasis(segment, /涨幅|成交额|连板|首次封板|封板时间/)) {
-        throw new Error("marketContext 龙头声明缺少排名依据及复盘因素");
-      }
-    }
+function contextUnavailableCallout(label: string, text: string, generatedAt: string): BriefBlock {
+  return {
+    type: "callout",
+    tone: "missing",
+    text,
+    sourceIds: [],
+    provenance: {
+      kind: "snapshot",
+      label,
+      marketTime: generatedAt,
+      providers: ["服务端 marketContext"],
+      receivedAt: generatedAt,
+    },
+  };
+}
 
-    const isEtfMapping = /(?:ETF\s*(?:代码|code|映射|对应|为|是|[:：])|(?:对应|映射)\s*(?:至|为)?\s*[^，。；;\n]{0,30}ETF)/i.test(segment);
-    if (!isEtfMapping) continue;
-    const hasKnownEtf = etfs.some((etf) => [etf.category, etf.name, etf.code].some((value) => segment.includes(value)));
-    const namedEtfCode = [...segment.matchAll(/(?:ETF\s*(?:代码|code)|代码\s*)([A-Za-z0-9.-]{4,16})/gi)].map((match) => match[1]);
-    const codesAreKnown = namedEtfCode.every((code) => etfs.some((etf) => etf.code === code));
-    const namedEtf = [...segment.matchAll(/([A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff0-9\s-]{1,30}ETF)\s*(?:代码|code|映射|对应|为|是|[:：])/gi)].map((match) => match[1].trim());
-    const namesAreKnown = namedEtf.every((name) => etfs.some((etf) => name.includes(etf.name) || name.includes(etf.category)));
-    const unavailableText = segment.replace(/主线|热点|龙头(?:股)?|与|及|和|、/g, "");
-    const unavailableWithoutEntity = segment.includes("上下文不可用")
-      && !/[A-Za-z\u4e00-\u9fff]{2,}ETF|ETF\s*(?:代码|code)\s*[A-Za-z0-9.-]{4,16}/i.test(unavailableText);
-    if ((etfs.length === 0 && !unavailableWithoutEntity) || (etfs.length > 0 && (!hasKnownEtf || !codesAreKnown || !namesAreKnown))) {
-      throw new Error("marketContext ETF 映射未匹配服务端分类");
-    }
-    if (!unavailableWithoutEntity && !hasRequiredRankingBasis(segment, /成交额|规模|涨跌幅|流动性|跟踪/)) {
-      throw new Error("marketContext ETF 映射缺少排名依据及相关因素");
-    }
+function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMarketContext | undefined, generatedAt: string): BriefBlock[] {
+  if (key !== "mapping" && key !== "risk") return [];
+  const review = marketContext?.review;
+  const blocks: BriefBlock[] = [];
+  if (review?.sectors.length) {
+    blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct}%；最高连板${sector.factors.maxStreak}`]), generatedAt));
+  } else {
+    blocks.push(contextUnavailableCallout("服务端主线热点复盘", "服务端复盘上下文不可用：主线与热点排名暂缺。", generatedAt));
   }
+  if (review?.leaders.length) {
+    blocks.push(contextSnapshotTable("服务端龙头复盘", ["龙头", "代码", "排名依据", "因素"], review.leaders.map((leader) => [leader.name, leader.symbol, "涨幅、成交额、连板、首次封板时间", `涨幅${leader.factors.pctChange}%；成交额${leader.factors.amount}；连板${leader.factors.limitStreak}；首次封板${leader.factors.firstLimitTime ?? "暂缺"}`]), generatedAt));
+  } else {
+    blocks.push(contextUnavailableCallout("服务端龙头复盘", "服务端复盘上下文不可用：龙头排名暂缺。", generatedAt));
+  }
+  if (marketContext?.etfs.length) {
+    blocks.push(contextSnapshotTable("服务端ETF映射", ["ETF分类", "ETF名称", "代码", "映射依据"], marketContext.etfs.map((etf) => [etf.category, etf.name, etf.code, "服务端 ETF 分类映射"]), generatedAt));
+  } else {
+    blocks.push(contextUnavailableCallout("服务端ETF映射", "服务端 ETF 映射上下文不可用。", generatedAt));
+  }
+  return blocks;
 }
 
 function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
@@ -433,9 +467,9 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
-  assertMarketContextClaims(key, modelBlocks, marketContext);
+  assertNoModelRankingTokens(key, parsed.summary, modelBlocks);
   assertNarrativeSnapshotIntegrity(modelBlocks, globalSnapshot);
-  const blocks = [...modelBlocks, ...snapshotBlocks(key, globalSnapshot)];
+  const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext, generatedAt), ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
     ...parsed,
     blocks,
@@ -559,7 +593,7 @@ export async function generateQwenBriefSection({
       input: {
         messages: [
           { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
-          { role: "user", content: promptForSection(date, key, globalSnapshot, marketContext) },
+          { role: "user", content: promptForSection(date, key, globalSnapshot) },
         ],
       },
       parameters: {
@@ -607,7 +641,7 @@ export async function generateOpenAIBriefSection({
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "required",
       include: ["web_search_call.action.sources"],
-      input: promptForSection(date, key, globalSnapshot, marketContext, "sourceUrls"),
+      input: promptForSection(date, key, globalSnapshot, "sourceUrls"),
       text: {
         verbosity: "high",
         format: { type: "json_schema", name: "panlayer_morning_brief_section", strict: true, schema: strictOpenAISectionSchema(key) },

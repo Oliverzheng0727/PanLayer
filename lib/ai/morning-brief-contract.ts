@@ -28,7 +28,13 @@ export type BriefBlock =
       | { kind: "search" }
       | { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string };
   }
-  | { type: "callout"; tone: "insight" | "risk" | "missing"; text: string; sourceIds: string[] };
+  | {
+    type: "callout";
+    tone: "insight" | "risk" | "missing";
+    text: string;
+    sourceIds: string[];
+    provenance?: { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string };
+  };
 
 export interface BriefSection {
   key: BriefSectionKey;
@@ -98,8 +104,9 @@ function blockSourceIds(block: BriefBlock): string[] {
     case "heading":
       return [];
     case "paragraph":
-    case "callout":
       return block.sourceIds;
+    case "callout":
+      return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
     case "table":
       return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
     case "bullets":
@@ -110,7 +117,7 @@ function blockSourceIds(block: BriefBlock): string[] {
 function requiresSources(block: BriefBlock, sectionStatus: BriefStatus): boolean {
   return block.type !== "heading"
     && !(block.type === "callout" && block.tone === "missing" && sectionStatus !== "complete")
-    && !(block.type === "table" && block.provenance?.kind === "snapshot");
+    && !((block.type === "table" || block.type === "callout") && block.provenance?.kind === "snapshot");
 }
 
 function isExplicitFailedSectionCallout(block: BriefBlock): boolean {
@@ -183,6 +190,19 @@ function validateTableProvenance(errors: string[], sectionTitle: string, index: 
   }
 }
 
+function validateSnapshotCalloutProvenance(errors: string[], sectionTitle: string, index: number, block: Extract<BriefBlock, { type: "callout" }>): void {
+  if (!block.provenance) return;
+  const provenance = block.provenance;
+  if (!isNonBlankString(provenance.label)
+    || !isBeijingTimestamp(provenance.marketTime)
+    || !Array.isArray(provenance.providers)
+    || provenance.providers.length === 0
+    || provenance.providers.some((provider) => !isNonBlankString(provider))
+    || !isIsoTimestamp(provenance.receivedAt)) {
+    errors.push(`${sectionTitle}第${index + 1}个服务端提示缺少合法快照来源`);
+  }
+}
+
 export function briefTextLength(section: BriefSection): number {
   return section.blocks.flatMap(blockText).join("").length;
 }
@@ -213,6 +233,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
 
   section.blocks.forEach((block, index) => {
     if (block.type === "table") validateTableProvenance(errors, section.title, index, block);
+    if (block.type === "callout") validateSnapshotCalloutProvenance(errors, section.title, index, block);
     if (requiresSources(block, section.status)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }

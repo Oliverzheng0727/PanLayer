@@ -52,3 +52,11 @@ Self-review confirmed that all admin mutations remain behind the existing server
 - Added Qwen and OpenAI provider-path regressions for context-grounded and invented claims, ETF validation, no-context disclosure, rounded/reverse snapshot prose, `上涨`/`收盘` forms, and unrelated count/date/time text.
 
 Latest verification: focused provider tests passed (17 tests); `npm test` passed (37 files, 172 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.
+
+## Deterministic provider-trust closure
+
+- Replaced natural-language claim parsing with a deterministic model boundary: mapping/risk model summaries and non-heading blocks reject the reserved ranking tokens `主线`、`热点`、`龙头` and `ETF` regardless of phrasing. Prompts now prohibit those tokens, while server-authored snapshot tables append the reviewed sector factors, leader factors, and ETF mappings. Missing review or ETF data is rendered as an uncited, provenance-marked server `上下文不可用` callout.
+- Extended server-snapshot citation exemptions to provenance-marked callouts, while validating their Beijing timestamp and provider metadata. Final section length and required-term validation continues to run after all server blocks have been appended.
+- Snapshot integrity now creates label-associated clauses at sentence/comma boundaries, preserves thousands separators, validates each clause only against its named label, and rejects numeric clauses with multiple labels as ambiguous.
+
+Latest verification: focused provider tests passed (18 tests); `npm test` passed (37 files, 173 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.
