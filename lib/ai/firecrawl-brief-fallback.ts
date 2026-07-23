@@ -150,6 +150,16 @@ function resultArray(value: unknown): FirecrawlResult[] {
   return value.filter((item): item is FirecrawlResult => typeof item === "object" && item !== null && !Array.isArray(item));
 }
 
+function resolveSearchEndpoint(value?: string): string {
+  if (!value) return FIRECRAWL_SEARCH_URL;
+  const url = new URL(value);
+  const path = url.pathname.replace(/\/+$/, "");
+  if (!path.endsWith("/v2/search")) url.pathname = `${path}/v2/search`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
 async function readJsonWithAbort(response: Response, signal: AbortSignal): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     let settled = false;
@@ -184,7 +194,7 @@ export async function searchFirecrawlBriefSources(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await (input.fetcher ?? fetch)(input.endpoint ?? FIRECRAWL_SEARCH_URL, {
+    const response = await (input.fetcher ?? fetch)(resolveSearchEndpoint(input.endpoint), {
       method: "POST",
       headers: {
         "content-type": "application/json",

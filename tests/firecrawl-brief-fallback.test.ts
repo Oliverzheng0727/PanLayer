@@ -59,6 +59,25 @@ describe("Firecrawl morning brief fallback", () => {
     expect(JSON.stringify(sources)).not.toContain("firecrawl-secret");
   });
 
+  it("accepts a self-hosted Firecrawl base URL", async () => {
+    let requestUrl = "";
+    const fetcher: typeof fetch = async (input) => {
+      requestUrl = String(input);
+      return Response.json({ success: true, data: { news: [], web: [] } });
+    };
+
+    await searchFirecrawlBriefSources({
+      date: "2026-07-23",
+      key: "global-markets",
+      apiKey: "secret",
+      fetcher,
+      endpoint: "https://firecrawl.example/",
+      deadlineAt: Date.now() + 40_000,
+    });
+
+    expect(requestUrl).toBe("https://firecrawl.example/v2/search");
+  });
+
   it("deduplicates, quality-orders, and rejects unsafe or empty pages", async () => {
     const fetcher: typeof fetch = async () => Response.json({
       success: true,
