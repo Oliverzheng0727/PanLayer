@@ -1,5 +1,9 @@
 import type { ReconciledGlobalPoint } from "../data/global/types";
 
+// V2 callers can adopt the contract without disrupting the legacy generators
+// until their provider and assembly modules are migrated.
+export * from "./morning-brief-contract";
+
 export interface BriefSource {
   id: string;
   title: string;
