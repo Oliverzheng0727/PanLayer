@@ -355,9 +355,19 @@ function textSegments(texts: string[]): string[] {
     .filter(Boolean);
 }
 
+const SNAPSHOT_QUOTE_CONTEXT = /报|收报|收于|收盘|开盘|前收|股价|价格|点位|汇率|收益率|涨幅|跌幅|上涨|下跌|涨|跌/;
+const BUSINESS_METRIC_TERM = "营收|收入|营利|利润|盈利|出货|出货量|出货率|产能|产量|销量|交付|订单|公司数|员工数|装机|资本开支";
+const BUSINESS_METRIC_VALUE = new RegExp(`(?:${BUSINESS_METRIC_TERM})[^，,。；;！？\\n\\d]{0,24}[+-]?\\d[\\d,.，]*(?:[%％]|家|只|个|人|年|月|日|时|分|秒|亿元|亿美元)?`, "g");
+
+function hasStructuredQuoteContext(clause: string): boolean {
+  return SNAPSHOT_QUOTE_CONTEXT.test(clause);
+}
+
 function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text: string; isPercent: boolean }> {
+  if (!hasStructuredQuoteContext(clause)) return [];
   const withoutLabel = labels.reduce((text, label) => text.split(label).join("标的"), clause);
   const withoutUnrelatedValues = withoutLabel
+    .replace(BUSINESS_METRIC_VALUE, "")
     .replace(/[A-Za-z]+\d[\d,.，]*/g, "")
     .replace(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/g, "")
     .replace(/\d{4}年\d{1,2}月\d{1,2}日/g, "")
@@ -371,6 +381,11 @@ function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text
     .filter((match) => !malformed.some((invalid) => (match.index ?? 0) >= (invalid.index ?? 0) && (match.index ?? 0) < (invalid.index ?? 0) + invalid[0].length));
   return [...numeric, ...malformed]
     .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+    .filter((match) => {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      return SNAPSHOT_QUOTE_CONTEXT.test(withoutUnrelatedValues.slice(Math.max(0, start - 24), Math.min(withoutUnrelatedValues.length, end + 16)));
+    })
     .map((match) => ({
       text: match[0].replace(/(?:点|美元|元)$/, ""),
       isPercent: /[%％]$/.test(match[0]),
@@ -455,6 +470,103 @@ function assertNarrativeSnapshotIntegrity(texts: string[], globalSnapshot: Recon
   }
 }
 
+function snapshotIntegrityError(texts: string[], globalSnapshot: ReconciledGlobalPoint[]): Error | null {
+  try {
+    assertNarrativeSnapshotIntegrity(texts, globalSnapshot);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+function labelCharacterRanges(text: string, labels: string[]): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const label of labels) {
+    let start = text.indexOf(label);
+    while (start >= 0) {
+      ranges.push({ start, end: start + label.length });
+      start = text.indexOf(label, start + label.length);
+    }
+  }
+  return ranges;
+}
+
+function structuredQuoteNumberRanges(sentence: string, labels: string[]): Array<{ start: number; end: number }> {
+  const labelRanges = labelCharacterRanges(sentence, labels);
+  const businessRanges = [...sentence.matchAll(BUSINESS_METRIC_VALUE)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
+  return [...sentence.matchAll(/[+-]?\d[\d,.，]*(?:\s*[^\d\s，,。；;！？点美元元%％.]+(?:\s+[^\d\s，,。；;！？点美元元%％.]+)*\s*)?(?:[%％]|点|美元|元)?/g)]
+    .flatMap((match) => {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      const localContext = sentence.slice(Math.max(0, start - 24), Math.min(sentence.length, end + 16));
+      const following = sentence.slice(end, end + 10);
+      const overlaps = (range: { start: number; end: number }) => start < range.end && end > range.start;
+      const isDateOrCount = /^[-/]\d|^:\d|^(?:家公司|家|只|个|人|年|月|日|时|分|秒)/.test(following);
+      return labelRanges.some(overlaps) || businessRanges.some(overlaps) || !SNAPSHOT_QUOTE_CONTEXT.test(localContext) || isDateOrCount ? [] : [{ start, end }];
+    });
+}
+
+function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
+  const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
+  const withoutQuoteValues = tokens.reduce((result, token) => `${result.slice(0, token.start)}${result.slice(token.end)}`, sentence)
+    .replace(/\s{2,}/g, " ")
+    .replace(/，\s*，/g, "，")
+    .trim();
+  const suffix = /([。！？；;\n])$/.exec(withoutQuoteValues)?.[1] ?? "";
+  const body = suffix ? withoutQuoteValues.slice(0, -suffix.length).trim() : withoutQuoteValues;
+  return `${body.replace(/[，,]\s*$/, "")}，以服务端快照表为准${suffix || "。"}`;
+}
+
+function normalizeFinalSnapshotText(text: string, globalSnapshot: ReconciledGlobalPoint[]): string {
+  const labels = globalSnapshot.filter((point) => point.label).map((point) => point.label).sort((left, right) => right.length - left.length);
+  if (labels.length === 0) return text;
+  return text.replace(/[^。！？；;\n]+[。！？；;\n]*/g, (sentence) => snapshotIntegrityError([sentence], globalSnapshot)
+    ? normalizeSnapshotSentence(sentence, labels)
+    : sentence);
+}
+
+function removeReservedRankingSentences(text: string): string {
+  return text
+    .split(/(?<=[。！？；;\n])/)
+    .filter((sentence) => !/主线|热点|龙头|ETF/i.test(sentence))
+    .join("")
+    .trim();
+}
+
+function normalizeFinalQwenSection(parsed: ParsedSection, key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[]): ParsedSection {
+  const normalizeText = (text: string) => {
+    const withoutRankedClaim = key === "mapping" || key === "risk" ? removeReservedRankingSentences(text) : text;
+    return normalizeFinalSnapshotText(withoutRankedClaim, globalSnapshot);
+  };
+  const blocks = parsed.blocks.flatMap((block): BriefBlock[] => {
+    if (block.type === "heading") {
+      const text = normalizeText(block.text);
+      return text ? [{ ...block, text }] : [];
+    }
+    if (block.type === "paragraph" || block.type === "callout") {
+      const text = normalizeText(block.text);
+      return text ? [{ ...block, text }] : [];
+    }
+    if (block.type === "bullets") {
+      const items = block.items.flatMap((item) => {
+        const text = normalizeText(item.text);
+        return text ? [{ ...item, text }] : [];
+      });
+      return items.length ? [{ ...block, items }] : [];
+    }
+    return [block];
+  });
+  return {
+    ...parsed,
+    summary: normalizeText(parsed.summary),
+    tags: parsed.tags.flatMap((tag) => {
+      const text = normalizeText(tag);
+      return text ? [text] : [];
+    }),
+    blocks,
+  };
+}
+
 function modelAuthoredText(summary: string, tags: string[], blocks: BriefBlock[]): string[] {
   return [summary, ...tags, ...blocks.flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : [])];
 }
@@ -526,17 +638,18 @@ function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMa
   return blocks;
 }
 
-function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true): GeneratedBriefSection {
+function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[], marketContext: MorningBriefMarketContext | undefined, parsed: ParsedSection, providerSources: ProviderSource[], namespaceReferences = true, normalizeFinalAttempt = false): GeneratedBriefSection {
   const generatedAt = beijingTimestamp(new Date());
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
-  const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
-  const modelText = modelAuthoredText(parsed.summary, parsed.tags, modelBlocks);
+  const normalized = normalizeFinalAttempt ? normalizeFinalQwenSection(parsed, key, globalSnapshot) : parsed;
+  const modelBlocks = namespaceReferences ? namespaceBlocks(key, normalized.blocks) : normalized.blocks;
+  const modelText = modelAuthoredText(normalized.summary, normalized.tags, modelBlocks);
   assertNoModelRankingTokens(key, modelText);
   assertNarrativeSnapshotIntegrity(modelText, globalSnapshot);
   const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext), ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
-    ...parsed,
+    ...normalized,
     blocks,
     sourceIds: referencedSourceIds(modelBlocks),
     status: "complete",
@@ -686,7 +799,7 @@ export async function generateQwenBriefSection({
       : `HTTP ${response.status}`;
     throw new Error(`DashScope Generation API ${detail}`);
   }
-  return finishSection(key, globalSnapshot, marketContext, parseSection(qwenText(payload), key), sourcesFromMetadata(key, qwenSearchResults(payload)));
+  return finishSection(key, globalSnapshot, marketContext, parseSection(qwenText(payload), key), sourcesFromMetadata(key, qwenSearchResults(payload)), true, attempt === 3);
 }
 
 export async function generateOpenAIBriefSection({
