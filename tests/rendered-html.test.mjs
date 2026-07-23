@@ -66,7 +66,7 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /部分/);
   assert.match(html, /失败/);
   assert.match(html, /演示/);
-  assert.doesNotMatch(html, /OPENAI_API_KEY|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
+  assert.doesNotMatch(html, /OPENAI_API_KEY|FIRECRAWL_API_KEY|fc-[A-Za-z0-9_-]+|TWELVE_DATA_API_KEY|ALPHA_VANTAGE_API_KEY|FRED_API_KEY|EIA_API_KEY/);
 });
 
 test("binds morning brief cards to source-aware details instead of a placeholder URL", async () => {
