@@ -159,6 +159,23 @@ describe("V2 morning brief contract", () => {
     });
   });
 
+  it("rejects reader directives and investment actions separated by long factual context", () => {
+    const longGap = structuredClone(brief);
+    longGap.sections[0].blocks = [{
+      type: "paragraph",
+      text: `建议投资者先阅读市场背景。${"全球宏观与公司基本面事实。".repeat(20)}随后买入英伟达。`,
+      sourceIds: ["s0"],
+    }];
+    expect(validateBriefSection(longGap.sections[0], new Set(longGap.sources.map((item) => item.id))).errors.join(" "))
+      .toContain("投资建议");
+
+    const factual = structuredClone(brief);
+    const firstBlock = factual.sections[0].blocks[0];
+    if (firstBlock.type === "paragraph") firstBlock.text += "北向资金买入额上升。";
+    expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
+      .not.toContain("投资建议");
+  });
+
   it("rejects calendar-impossible ISO timestamps for runs, sources, and snapshots", () => {
     const invalid = structuredClone(brief);
     invalid.sections[0].generatedAt = "2026-02-30T07:15:00+08:00";
