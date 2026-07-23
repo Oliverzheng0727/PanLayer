@@ -149,6 +149,8 @@ describe("V2 morning brief contract", () => {
       "建议投资者逢低逐步布局英伟达",
       "可以适当加仓",
       "不妨关注并配置",
+      "建议投资者降低持仓至三成",
+      "建议投资者空仓观望",
     ];
 
     instructions.forEach((text) => {
