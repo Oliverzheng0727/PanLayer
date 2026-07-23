@@ -131,7 +131,8 @@ describe("V2 morning brief contract", () => {
       .toContain("投资建议");
 
     const factual = structuredClone(brief);
-    factual.sections[0].blocks[0].text += "券商推荐评级下调。";
+    const firstBlock = factual.sections[0].blocks[0];
+    if (firstBlock.type === "paragraph") firstBlock.text += "券商推荐评级下调。";
     expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
       .not.toContain("投资建议");
   });
@@ -140,5 +141,38 @@ describe("V2 morning brief contract", () => {
     const invalid = structuredClone(brief);
     invalid.date = "2026-02-31";
     expect(validateMorningBrief(invalid).errors.join(" ")).toContain("日期");
+  });
+
+  it("rejects qualified reader-directed investment instructions", () => {
+    const instructions = [
+      "建议考虑买入英伟达",
+      "建议投资者逢低逐步布局英伟达",
+      "可以适当加仓",
+      "不妨关注并配置",
+    ];
+
+    instructions.forEach((text) => {
+      const invalid = structuredClone(brief);
+      invalid.sections[0].blocks = [{ type: "paragraph", text, sourceIds: ["s0"] }];
+      expect(validateBriefSection(invalid.sections[0], new Set(invalid.sources.map((item) => item.id))).errors.join(" "))
+        .toContain("投资建议");
+    });
+  });
+
+  it("rejects calendar-impossible ISO timestamps for runs, sources, and snapshots", () => {
+    const invalid = structuredClone(brief);
+    invalid.sections[0].generatedAt = "2026-02-30T07:15:00+08:00";
+    invalid.sources[0].publishedAt = "2026-02-30T07:15:00-05:00";
+    invalid.sections[1].blocks.push({
+      type: "table",
+      columns: ["指标"],
+      rows: [["100"]],
+      sourceIds: [],
+      provenance: { kind: "snapshot", label: "全球行情快照", marketTime: "2026-02-30T25:61:61+08:00" },
+    });
+    const result = validateMorningBrief(invalid);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(" ")).toMatch(/生成时间.*发布时间|发布时间.*生成时间/);
+    expect(result.errors.join(" ")).toContain("市场时间");
   });
 });

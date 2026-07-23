@@ -69,10 +69,11 @@ export interface BriefValidationResult {
 
 const RECOMMENDATION_LANGUAGE = /(?:建议|可|宜|应|值得|推荐)(?:买入|卖出|加仓|减仓|关注|持有)|(?:逢低|逢高)(?:吸纳|买入|卖出|减仓)|(?:买点|卖点|仓位(?:建议|配置|管理)?|收益承诺|目标价|止损|止盈|重仓|满仓|清仓|建仓|抄底|追高)/;
 const DIRECT_STOCK_ATTENTION_LANGUAGE = /(?:重点关注|(?:推荐|建议)关注|推荐)(?!评级)[\s：:，、]*(?:[A-Za-z0-9\u4E00-\u9FFF]{2,})/;
+const QUALIFIED_INSTRUCTION_LANGUAGE = /(?:建议|可以|可|宜|应当?|不妨|值得|投资者|读者)(?:[^。；;\n]{0,20})(?:买入|卖出|加仓|减仓|布局|配置|建仓|清仓|止损|止盈|吸纳|持有)/;
 const BRIEF_STATUSES = new Set<BriefStatus>(["complete", "partial", "failed"]);
 const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS.map((item) => item.key));
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 const BEIJING_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\+08:00$/;
 
 function blockText(block: BriefBlock): string[] {
@@ -129,12 +130,28 @@ function isNonBlankString(value: unknown): value is string {
 function isCalendarDate(value: unknown): value is string {
   if (!isNonBlankString(value) || !DATE_PATTERN.test(value)) return false;
   const [year, month, day] = value.split("-").map(Number);
+  return hasCalendarDate(year, month, day);
+}
+
+function hasCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
   const date = new Date(Date.UTC(year, month - 1, day));
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function isIsoTimestamp(value: unknown): value is string {
-  return isNonBlankString(value) && ISO_TIMESTAMP_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
+  if (!isNonBlankString(value)) return false;
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second = 0] = match.slice(1, 7).map(Number);
+  const offsetHour = match[9] ? Number(match[9]) : 0;
+  const offsetMinute = match[10] ? Number(match[10]) : 0;
+  return hasCalendarDate(year, month, day)
+    && hour <= 23
+    && minute <= 59
+    && second <= 59
+    && offsetHour <= 23
+    && offsetMinute <= 59;
 }
 
 function isBeijingTimestamp(value: unknown): value is string {
@@ -189,7 +206,9 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     if (requiresSources(block)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
-    if (RECOMMENDATION_LANGUAGE.test(blockText(block).join("")) || DIRECT_STOCK_ATTENTION_LANGUAGE.test(blockText(block).join(""))) {
+    if (RECOMMENDATION_LANGUAGE.test(blockText(block).join(""))
+      || DIRECT_STOCK_ATTENTION_LANGUAGE.test(blockText(block).join(""))
+      || QUALIFIED_INSTRUCTION_LANGUAGE.test(blockText(block).join(""))) {
       errors.push(`${section.title}包含投资建议语言`);
     }
   });
