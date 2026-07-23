@@ -265,7 +265,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     }
     const length = briefTextLength(section);
     if (length < 1_000 || length > 1_600) {
-      errors.push(`${section.title}字数应为1000至1600字符`);
+      errors.push(`${section.title}字数应为1000至1600字符（实际 ${length} 字符）`);
     }
     const renderedText = section.blocks.flatMap(blockText).join("");
     const missingTerms = definition?.requiredTerms.filter((term) => !renderedText.includes(term)) ?? [];

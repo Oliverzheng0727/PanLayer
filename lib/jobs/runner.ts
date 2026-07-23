@@ -20,6 +20,18 @@ import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedu
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
 const MORNING_BRIEF_LEASE_MS = 15 * 60 * 1_000;
+const RETRY_FEEDBACK_LIMIT = 600;
+
+function boundedRetryFeedback(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const sanitized = raw
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(?:sk|rk|pk)[_-][A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\b(api[_-]?key|authorization|token|secret)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sanitized.length <= RETRY_FEEDBACK_LIMIT ? sanitized : `${sanitized.slice(0, RETRY_FEEDBACK_LIMIT)}…`;
+}
 
 export interface MorningBriefLease {
   token: string;
@@ -168,17 +180,19 @@ export async function generateFullMorningBrief(input: {
 
   const runSectionWithRetry = async (key: BriefSectionKey): Promise<SectionRunResult> => {
     let attempts = 0;
+    let previousError: string | undefined;
     let error = "未知错误";
     while (attempts < maxAttempts) {
       attempts += 1;
       try {
-        const result = await input.generator({ date: input.date, key, globalSnapshot, marketContext: input.marketContext });
+        const result = await input.generator({ date: input.date, key, attempt: attempts, previousError, globalSnapshot, marketContext: input.marketContext });
         await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources, input.lease);
         return result;
       } catch (caught) {
         if (isLeaseLost(caught)) throw caught;
         await assertMorningBriefLease(input.lease);
-        error = caught instanceof Error ? caught.message : String(caught);
+        error = boundedRetryFeedback(caught);
+        previousError = error;
       }
     }
     const failed = failedBriefSection(key, error, beijingTimestamp());
@@ -378,8 +392,8 @@ export async function runPanLayerJob(
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
       const generator: BriefSectionGenerator = ai.provider === "qwen"
-        ? ({ date: sectionDate, key, globalSnapshot, marketContext: sectionContext }) => generateQwenBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext })
-        : ({ date: sectionDate, key, globalSnapshot, marketContext: sectionContext }) => generateOpenAIBriefSection({ date: sectionDate, key, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext });
+        ? ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext }) => generateQwenBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext })
+        : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext });
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,

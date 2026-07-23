@@ -74,6 +74,13 @@ describe("V2 morning brief contract", () => {
     expect(result.errors.join(" ")).toMatch(/来源|投资建议|字数|覆盖/);
   });
 
+  it("reports the actual narrative length when a complete module is too short", () => {
+    const invalid = structuredClone(brief.sections[1]);
+    invalid.blocks = [{ type: "paragraph", text: BRIEF_SECTION_DEFINITIONS[1].requiredTerms.join("、"), sourceIds: ["s1"] }];
+    const result = validateBriefSection(invalid, new Set(["s1"]));
+    expect(result.errors.join(" ")).toContain(`实际 ${briefTextLength(invalid)} 字符`);
+  });
+
   it("requires complete sections and complete missing callouts to cite a valid source", () => {
     const invalid = structuredClone(brief);
     invalid.sections[0].blocks = [{

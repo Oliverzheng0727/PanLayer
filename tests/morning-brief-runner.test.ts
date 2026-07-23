@@ -130,8 +130,10 @@ describe("full morning brief runner", () => {
   it("retries a transient section failure twice before persisting its final result", async () => {
     const { db, sections } = memoryD1();
     let attempts = 0;
-    const generator: BriefSectionGenerator = async ({ key }) => {
+    const inputs: Array<{ attempt: number; previousError?: string }> = [];
+    const generator: BriefSectionGenerator = async ({ key, attempt, previousError }) => {
       attempts += 1;
+      inputs.push({ attempt, previousError });
       if (attempts < 3) throw new Error("transient provider timeout");
       return generated(key);
     };
@@ -139,7 +141,30 @@ describe("full morning brief runner", () => {
     await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db, retries: 2 });
 
     expect(attempts).toBe(3);
+    expect(inputs).toEqual([
+      { attempt: 1, previousError: undefined },
+      { attempt: 2, previousError: "transient provider timeout" },
+      { attempt: 3, previousError: "transient provider timeout" },
+    ]);
     expect(sections.get(`${DATE}:risk`)).toMatchObject({ status: "complete", attempts: 3, error: "" });
+  });
+
+  it("bounds and redacts retry feedback before it reaches a later provider attempt", async () => {
+    const { db } = memoryD1();
+    const feedback: string[] = [];
+    const generator: BriefSectionGenerator = async ({ key, attempt, previousError }) => {
+      if (attempt === 1) throw new Error(`Bearer secret-token api_key=top-secret sk-proj-production-secret ${"x".repeat(700)}`);
+      feedback.push(previousError ?? "");
+      return generated(key);
+    };
+
+    await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: ["risk"], generator, db, retries: 1 });
+
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]).not.toContain("secret-token");
+    expect(feedback[0]).not.toContain("top-secret");
+    expect(feedback[0]).not.toContain("sk-proj-production-secret");
+    expect(feedback[0].length).toBeLessThanOrEqual(601);
   });
 
   it("merges a targeted regeneration with the four persisted modules", async () => {
