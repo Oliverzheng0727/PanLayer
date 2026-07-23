@@ -36,7 +36,7 @@ function generated(key: BriefSectionKey): GeneratedBriefSection {
 function memoryD1() {
   const sections = new Map<string, Record<string, unknown>>();
   const briefs = new Map<string, Record<string, unknown>>();
-  let lease: { token: string; expiresAt: string } | null = null;
+  let lease: { token: string; acquiredAt: string; expiresAt: string } | null = null;
   const calls: Array<{ sql: string; values: unknown[] }> = [];
   return {
     sections,
@@ -66,15 +66,14 @@ function memoryD1() {
           async first() {
             if (sql.includes("job_leases")) {
               if (sql.startsWith("INSERT")) {
-                const [,, token,,, now] = call.values as string[];
-                const expiresAt = String(call.values[4]);
-                if (lease && lease.expiresAt > now) return null;
-                lease = { token, expiresAt };
+                const [,, token, acquiredAt, expiresAt, now, staleAt] = call.values as string[];
+                if (lease && lease.expiresAt > now && lease.acquiredAt > staleAt) return null;
+                lease = { token, acquiredAt, expiresAt };
                 return { token };
               }
-              const [, expiresAt,,, token, now] = call.values as string[];
+              const [acquiredAt, expiresAt,,, token, now] = call.values as string[];
               if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
-              lease = { token, expiresAt };
+              lease = { token, acquiredAt, expiresAt };
               return { token };
             }
             const [date] = call.values;

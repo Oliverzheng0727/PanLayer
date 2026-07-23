@@ -1043,7 +1043,7 @@ export async function generateQwenBriefSection({
   const initial = parseSection(qwenText(initialPayload), key);
   const initialSources = sourcesFromMetadata(key, qwenSearchResults(initialPayload));
   if (modelContentText(initial.blocks).join("").length >= 1_000) {
-    return finishSection(key, globalSnapshot, marketContext, initial, initialSources, true, attempt === 3);
+    return finishSection(key, globalSnapshot, marketContext, initial, initialSources, true, true);
   }
 
   const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, qwenSupplementPrompt(date, key, globalSnapshot, initial));
@@ -1056,7 +1056,7 @@ export async function generateQwenBriefSection({
     blocks: [...initial.blocks, ...namespaceBlocks(supplementNamespace, supplement.blocks)],
   };
   const sources = [...initialSources, ...sourcesFromMetadata(supplementNamespace, qwenSearchResults(supplementPayload))];
-  return finishSection(key, globalSnapshot, marketContext, merged, sources, true, attempt === 3);
+  return finishSection(key, globalSnapshot, marketContext, merged, sources, true, true);
 }
 
 export async function generateOpenAIBriefSection({

@@ -20,7 +20,7 @@ import { fetchTencentQuotes } from "../data/tencent";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
-const MORNING_BRIEF_LEASE_MS = 15 * 60 * 1_000;
+const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
 export interface MorningBriefLease {
   token: string;
   renew: () => Promise<boolean>;
@@ -65,8 +65,9 @@ export async function acquireJobLease(db: D1Database, job: string, tradeDate: st
   const token = crypto.randomUUID();
   const acquiredAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + MORNING_BRIEF_LEASE_MS).toISOString();
-  const row = await db.prepare(`INSERT INTO job_leases (job, trade_date, token, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job, trade_date) DO UPDATE SET token=excluded.token, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at WHERE job_leases.expires_at <= ? RETURNING token`)
-    .bind(job, tradeDate, token, acquiredAt, expiresAt, acquiredAt).first<{ token: string }>();
+  const staleAt = new Date(now.getTime() - MORNING_BRIEF_LEASE_MS).toISOString();
+  const row = await db.prepare(`INSERT INTO job_leases (job, trade_date, token, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job, trade_date) DO UPDATE SET token=excluded.token, acquired_at=excluded.acquired_at, expires_at=excluded.expires_at WHERE job_leases.expires_at <= ? OR job_leases.acquired_at <= ? RETURNING token`)
+    .bind(job, tradeDate, token, acquiredAt, expiresAt, acquiredAt, staleAt).first<{ token: string }>();
   return row?.token === token ? token : null;
 }
 
@@ -391,6 +392,8 @@ export async function runPanLayerJob(
         globalSnapshot: global.reconciled,
         marketContext,
         lease: morningBriefLease,
+        concurrency: 2,
+        retries: ai.provider === "qwen" ? 0 : undefined,
       });
       finalStatus = brief.status;
       const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);

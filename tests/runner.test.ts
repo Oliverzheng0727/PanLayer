@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -20,6 +20,7 @@ const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
 
 function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
   const jobUpdates: Array<{ status: string; message: string }> = [];
+  const requests: Partial<Record<BriefSectionKey, number>> = {};
   let nextJobRunId = 1;
   const db = {
     prepare(sql: string) {
@@ -46,6 +47,7 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
     const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
     const prompt = request.input.messages[1].content;
     const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
+    if (definition) requests[definition.key] = (requests[definition.key] ?? 0) + 1;
     if (!definition || failedKeys.includes(definition.key)) {
       return new Response(JSON.stringify({ message: "provider unavailable" }), { status: 503 });
     }
@@ -67,11 +69,11 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
       },
     }), { status: 200 });
   };
-  return { db, fetcher, jobUpdates };
+  return { db, fetcher, jobUpdates, requests };
 }
 
 function orchestratedLeaseHarness() {
-  let lease: { token: string; expiresAt: string } | null = null;
+  let lease: { token: string; acquiredAt: string; expiresAt: string } | null = null;
   const globalWrites: string[] = [];
   const sectionWrites: Array<{ key: string; status: string; model: string }> = [];
   const aggregateWrites: string[] = [];
@@ -83,16 +85,15 @@ function orchestratedLeaseHarness() {
         bind(...bound: unknown[]) { values = bound; return this; },
         async first() {
           if (sql.startsWith("INSERT INTO job_leases")) {
-            const [,, token,,, now] = values as string[];
-            const expiresAt = String(values[4]);
-            if (lease && lease.expiresAt > now) return null;
-            lease = { token, expiresAt };
+            const [,, token, acquiredAt, expiresAt, now, staleAt] = values as string[];
+            if (lease && lease.expiresAt > now && lease.acquiredAt > staleAt) return null;
+            lease = { token, acquiredAt, expiresAt };
             return { token };
           }
           if (sql.startsWith("UPDATE job_leases")) {
-            const [, expiresAt,,, token, now] = values as string[];
+            const [acquiredAt, expiresAt,,, token, now] = values as string[];
             if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
-            lease = { token, expiresAt };
+            lease = { token, acquiredAt, expiresAt };
             return { token };
           }
           if (sql.startsWith("INSERT INTO job_runs")) return { id: ++runId };
@@ -204,8 +205,8 @@ describe("close review aggregation", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("keeps an active morning lease through a stale release so an overlap cannot take its writes", async () => {
-    let lease: { token: string; expiresAt: string } | null = null;
+  it("reclaims cancelled leases after three minutes but preserves renewed active leases", async () => {
+    let lease: { token: string; acquiredAt: string; expiresAt: string } | null = null;
     const db = {
       prepare(sql: string) {
         let values: unknown[] = [];
@@ -213,9 +214,15 @@ describe("close review aggregation", () => {
           bind(...bound: unknown[]) { values = bound; return this; },
           async first() {
             if (!sql.includes("job_leases")) return null;
-            const [,, token,, expiresAt, now] = values as string[];
-            if (lease && lease.expiresAt > now) return null;
-            lease = { token, expiresAt };
+            if (sql.startsWith("INSERT")) {
+              const [,, token, acquiredAt, expiresAt, now, staleAt] = values as string[];
+              if (lease && lease.expiresAt > now && lease.acquiredAt > staleAt) return null;
+              lease = { token, acquiredAt, expiresAt };
+              return { token };
+            }
+            const [acquiredAt, expiresAt,,, token, now] = values as string[];
+            if (!lease || lease.token !== token || lease.expiresAt <= now) return null;
+            lease = { token, acquiredAt, expiresAt };
             return { token };
           },
           async run() {
@@ -225,13 +232,21 @@ describe("close review aggregation", () => {
         };
       },
     } as unknown as D1Database;
-    const first = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:00:00Z"));
-    const overlapping = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:01:00Z"));
+    const start = new Date("2026-07-22T23:00:00Z");
+    const first = await acquireJobLease(db, "morning-brief", "2026-07-23", start);
+    const beforeExpiry = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:02:59Z"));
 
     expect(first).toBeTruthy();
-    expect(overlapping).toBeNull();
+    expect(beforeExpiry).toBeNull();
+    const recovered = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:03:00Z"));
+    expect(recovered).toBeTruthy();
+    expect(recovered).not.toBe(first);
+
+    await expect(renewJobLease(db, "morning-brief", "2026-07-23", recovered!, new Date("2026-07-22T23:05:00Z"))).resolves.toBe(true);
+    const protectedOverlap = await acquireJobLease(db, "morning-brief", "2026-07-23", new Date("2026-07-22T23:07:00Z"));
+    expect(protectedOverlap).toBeNull();
     await releaseJobLease(db, "morning-brief", "2026-07-23", "stale-token");
-    expect(lease?.token).toBe(first);
+    expect(lease?.token).toBe(recovered);
   });
 
   it("releases an acquired morning lease when job-run creation fails", async () => {
@@ -355,6 +370,14 @@ describe("close review aggregation", () => {
       .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
 
     expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "failed modules: mapping" });
+  });
+
+  it("makes one external Qwen attempt per failed module", async () => {
+    const { db, fetcher, requests } = morningBriefJobHarness(["risk"]);
+
+    await runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
+
+    expect(requests.risk).toBe(1);
   });
 
   it("persists a failed morning job run and names every failed module", async () => {

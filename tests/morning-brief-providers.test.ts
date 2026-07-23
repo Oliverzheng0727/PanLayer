@@ -71,7 +71,7 @@ describe("independent morning-brief section providers", () => {
     expect(prompt).not.toContain("secret");
   });
 
-  it("appends server-authored ranked context tables and rejects Qwen ranking-token bypasses", async () => {
+  it("appends server-authored ranked context tables and normalizes Qwen ranking-token bypasses", async () => {
     const marketContext = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: { rising: 3000, falling: 1800, flat: 100 }, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] },
       etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }],
@@ -88,14 +88,14 @@ describe("independent morning-brief section providers", () => {
     expect(result.section.blocks).toContainEqual(expect.objectContaining({ type: "table", columns: ["龙头", "代码", "排名依据", "因素"], rows: [["龙头甲", "600001.SH", LEADER_RANKING_BASIS.join("、"), "涨停状态:涨停；连板高度3；首次封板09:32:00；成交额1000000"]] }));
     const unavailable = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider("") as typeof fetch, globalSnapshot: [] });
     expect(unavailable.section.blocks).toContainEqual(expect.objectContaining({ type: "callout", tone: "missing", text: expect.stringContaining("上下文不可用"), sourceIds: [] }));
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线聚焦虚构题材。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 虚构ETF代码999999。") as typeof fetch, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|ETF/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 主线聚焦虚构题材。") as typeof fetch, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(" 虚构ETF代码999999。") as typeof fetch, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
     const headingBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), blocks: [{ type: "heading", text: "主线聚焦虚构题材" }, modelSection("mapping").blocks[1]] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: headingBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: headingBypass, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
     const summaryBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), summary: "主线聚焦虚构题材" }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: summaryBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|主线/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: summaryBypass, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
     const tagBypass: typeof fetch = async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("mapping"), tags: ["ETF 映射"] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context-enforcement" }] } } }));
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: tagBypass, globalSnapshot: [], marketContext })).rejects.toThrow(/保留词|ETF/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: tagBypass, globalSnapshot: [], marketContext })).resolves.toMatchObject({ section: { status: "complete" } });
   });
 
   it("rejects OpenAI ranking-token bypasses while retaining server context blocks", async () => {
@@ -110,7 +110,7 @@ describe("independent morning-brief section providers", () => {
     await expect(generateOpenAIBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: fetcher("", "ETF 映射"), globalSnapshot: [], marketContext: context })).rejects.toThrow(/保留词|ETF/);
   });
 
-  it("rejects a narrative snapshot number that disagrees with the server table but permits unrelated counts", async () => {
+  it("normalizes a narrative snapshot number that disagrees with the server table while retaining unrelated counts", async () => {
     const bad = modelSection("global-markets");
     bad.blocks[1].text += " 标普500报630.3点，涨停数量80家。";
     const fetcher: typeof fetch = async () => new Response(JSON.stringify({
@@ -119,7 +119,7 @@ describe("independent morning-brief section providers", () => {
     const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher, globalSnapshot: snapshot }))
-      .rejects.toThrow(/快照数值/);
+      .resolves.toMatchObject({ section: { status: "complete" } });
   });
 
   it("classifies only explicit quote/change numbers as snapshot claims, not cited Micron business metrics", async () => {
@@ -132,24 +132,9 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收报告显示同比增长30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收快报显示同比增长30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收快报：30亿元。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收股价报3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收报告称股价报3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收标的报130点。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光价格上涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比增长30%，股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动股价涨幅3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动股价上涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动美光涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累美光跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动该股涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累该股跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动其涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收拖累其跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动其大幅下跌3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收带动其盘中上涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收推动该股昨日涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收公布后其盘中上涨3%。"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    for (const mismatchedQuote of ["美光股价涨幅3%。", "美光营收股价报3%。", "美光营收报告称股价报3%。", "美光营收标的报130点。", "美光价格上涨3%。", "美光营收同比增长30%，股价涨幅3%。", "美光营收带动股价涨幅3%。", "美光营收带动股价上涨3%。", "美光营收带动美光涨3%。", "美光营收拖累美光跌3%。", "美光营收带动该股涨3。", "美光营收拖累该股跌3。", "美光营收带动其涨3。", "美光营收拖累其跌3。", "美光营收带动其大幅下跌3。", "美光营收带动其盘中上涨3。", "美光营收推动该股昨日涨3。", "美光营收公布后其盘中上涨3。"] ) {
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(` ${mismatchedQuote}`), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+    }
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收公布后其订单下跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比下跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光营收同比跌30%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
@@ -160,14 +145,14 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 美光出货的存储产品价格上涨3%。"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
 
-  it("rejects conflicting Qwen quote claims until the final attempt, then removes the number", async () => {
+  it("normalizes conflicting Qwen quote claims on every attempt", async () => {
     const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
     const provider: typeof fetch = async () => new Response(JSON.stringify({
       output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text} 标普500报630.3点，科技股表现仍是驱动因素。`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/conflict" }] } },
     }));
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 3 });
     const text = JSON.stringify(result.section);
     expect(text).toContain("以服务端快照表为准");
@@ -175,15 +160,15 @@ describe("independent morning-brief section providers", () => {
     expect(text).toContain("科技股表现仍是驱动因素");
   });
 
-  it("removes both conflicting quote directions and values only on Qwen's final attempt", async () => {
+  it("removes conflicting quote directions and values on every Qwen attempt", async () => {
     const provider = (text: string): typeof fetch => async () => new Response(JSON.stringify({
       output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text} ${text}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/direction-conflict" }] } },
     }));
     const negativeSnapshot = [{ key: "micron", label: "美光", value: 120, previousClose: 122, pctChange: -1.6393, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
     const positiveSnapshot = [{ ...negativeSnapshot[0], previousClose: 118, pctChange: 1.6949 }];
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 3 });
     expect(JSON.stringify(normalizedRise.section.blocks[0])).toContain("以服务端快照表为准");
     expect(JSON.stringify(normalizedRise.section.blocks[0])).toContain("美光股价表现，以服务端快照表为准");
@@ -195,8 +180,8 @@ describe("independent morning-brief section providers", () => {
     expect(JSON.stringify(normalizedFall.section.blocks[0])).not.toMatch(/下跌|3/);
 
     const metricAndConflictingQuote = "美光营收同比增长30%，股价上涨3%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedMetricAndQuote = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedMetricText = JSON.stringify(normalizedMetricAndQuote.section.blocks[0]);
     expect(normalizedMetricText).toContain("美光营收同比增长30%");
@@ -205,8 +190,8 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedMetricText).toContain("以服务端快照表为准");
 
     const connectedMetricAndQuote = "美光营收同比增长30%并带动股价上涨3%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedConnectedMetric = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedConnectedMetricText = JSON.stringify(normalizedConnectedMetric.section.blocks[0]);
     expect(normalizedConnectedMetricText).toContain("美光营收同比增长30%");
@@ -223,8 +208,8 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedBusinessDriverText).toContain("以服务端快照表为准");
 
     const intradayRise = "美光盘中上涨3%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedIntradayRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedIntradayRiseText = JSON.stringify(normalizedIntradayRise.section.blocks[0]);
     expect(normalizedIntradayRiseText).toContain("美光表现，以服务端快照表为准");
@@ -232,8 +217,8 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedIntradayRiseText).toContain("以服务端快照表为准");
 
     const intradayFall = "美光盘中下跌3%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 1 })).rejects.toThrow(/快照数值/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedIntradayFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 3 });
     const normalizedIntradayFallText = JSON.stringify(normalizedIntradayFall.section.blocks[0]);
     expect(normalizedIntradayFallText).toContain("美光表现，以服务端快照表为准");
@@ -241,7 +226,7 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedIntradayFallText).toContain("以服务端快照表为准");
   });
 
-  it("neutralizes shared multi-label quote directions only on Qwen's final attempt", async () => {
+  it("neutralizes shared multi-label quote directions on every Qwen attempt", async () => {
     const provider = (text: string): typeof fetch => async () => new Response(JSON.stringify({
       output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text} ${text}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/multi-direction-conflict" }] } },
     }));
@@ -253,32 +238,32 @@ describe("independent morning-brief section providers", () => {
     const positiveSnapshot = negativeSnapshot.map((point) => ({ ...point, previousClose: point.value - 100, pctChange: 1 }));
 
     const sharedRise = "标普500和纳斯达克分别上涨3%和4%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedRise), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedRiseText = JSON.stringify(normalizedRise.section.blocks[0]);
     expect(normalizedRiseText).toContain("标普500和纳斯达克表现，以服务端快照表为准");
     expect(normalizedRiseText).not.toMatch(/分别|上涨|3%|4%/);
 
     const sharedFall = "标普500及纳斯达克分别下跌3%和4%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(sharedFall), globalSnapshot: positiveSnapshot, attempt: 3 });
     const normalizedFallText = JSON.stringify(normalizedFall.section.blocks[0]);
     expect(normalizedFallText).toContain("标普500及纳斯达克表现，以服务端快照表为准");
     expect(normalizedFallText).not.toMatch(/分别|下跌|3%|4%/);
 
     const reportedGain = "标普500和纳斯达克分别录得3%和4%的涨幅。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedReportedGain = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedReportedGainText = JSON.stringify(normalizedReportedGain.section.blocks[0]);
     expect(normalizedReportedGainText).toContain("标普500和纳斯达克表现，以服务端快照表为准");
     expect(normalizedReportedGainText).not.toMatch(/分别|录得|涨幅|3%|4%/);
 
     const closingGain = "标普500及纳斯达克分别收涨3%和4%。";
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalizedClosingGain = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedClosingGainText = JSON.stringify(normalizedClosingGain.section.blocks[0]);
     expect(normalizedClosingGainText).toContain("标普500及纳斯达克表现，以服务端快照表为准");
@@ -291,7 +276,7 @@ describe("independent morning-brief section providers", () => {
     expect(normalizedReportedGainWithBusinessMetricText).not.toMatch(/分别|录得|涨幅|3%|4%/);
   });
 
-  it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {
+  it("normalizes ambiguous multi-label quotes on every Qwen attempt", async () => {
     const snapshot = [
       { key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
       { key: "nasdaq", label: "纳斯达克", value: 20_000, previousClose: 19_800, pctChange: 1.0101, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
@@ -300,13 +285,13 @@ describe("independent morning-brief section providers", () => {
       output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text} 标普500与纳斯达克报630.2点和20,000点，科技股表现仍是驱动因素。`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/ambiguous" }] } },
     }));
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 1 })).rejects.toThrow(/歧义/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider, globalSnapshot: snapshot, attempt: 3 });
     expect(JSON.stringify(result.section)).toContain("以服务端快照表为准");
     expect(JSON.stringify(result.section)).not.toContain("20,000");
   });
 
-  it("neutralizes reserved ranking terms only on final Qwen attempts and deletes explicit rankings", async () => {
+  it("neutralizes reserved ranking terms on every Qwen attempt and deletes explicit rankings", async () => {
     const context = {
       review: { date: "2026-07-22", marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z", status: "complete" as const, closeBreadth: null, metrics: { limitUp: 80, limitDown: 4, consecutive: 12, largeRise: 30, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: 50, second: 20, third: 5, fourth: 2, fivePlus: 1 }, sectors: [{ name: "算力", factors: { limitUpCount: 8, averagePct: 4.2, amountGrowthPct: 12, maxStreak: 3 } }], leaders: [{ name: "龙头甲", symbol: "600001.SH", factors: { pctChange: 10, amount: 1_000_000, limitStreak: 3, isLimitUp: true, firstLimitTime: "09:32:00", sector: "算力" } }] }, etfs: [{ category: "人工智能", name: "人工智能ETF", code: "159819" }], etfSnapshot: { marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T07:00:00Z" },
     };
@@ -316,8 +301,8 @@ describe("independent morning-brief section providers", () => {
     const ranked = modelSection("mapping");
     ranked.blocks[1].text = `指数、成交额、涨跌停、连板、资金、ETF、利好、利空、内需。${"热点板块围绕主线方向梳理龙头企业与ETF的客观事实。".repeat(38)}`;
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 1 })).rejects.toThrow(/保留词/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 2 })).rejects.toThrow(/保留词/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 2 })).resolves.toMatchObject({ section: { status: "complete" } });
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(ranked), globalSnapshot: [], marketContext: context, attempt: 3 });
     const modelText = `${result.section.summary}${result.section.tags.join("")}${result.section.blocks.filter((block) => block.type !== "table").map((block) => block.type === "bullets" ? block.items.map((item) => item.text).join("") : "text" in block ? block.text : "").join("")}`;
     expect(modelText).not.toMatch(/主线|热点|龙头|ETF/i);
@@ -390,7 +375,7 @@ describe("independent morning-brief section providers", () => {
     const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/variant" }] } } }));
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.3点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 630.3点的标普500。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500指数报630.2点；0.82%的标普500来自收盘记录。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
@@ -399,7 +384,7 @@ describe("independent morning-brief section providers", () => {
     const snapshot = [{ key: "sp500", label: "标普500", value: 630.2, previousClose: 625.1, pctChange: 0.8159, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" }];
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/punctuation" }] } } }));
     for (const phrase of [" 标普500，报630.3点。", " 标普500指数收报630.3点。", " 标普500上涨至630.3点。"]) {
-      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(phrase) as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(phrase) as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     }
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500，报630.20点；标普500指数收报630.20点；标普500上涨至630.20点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
@@ -409,7 +394,7 @@ describe("independent morning-brief section providers", () => {
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/counts" }] } } }));
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500为500家公司编制，统计日期为7月23日，统计时间为07:15。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.3点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
 
   it("checks every snapshot-mentioned segment by numeric meaning, not a narrow quote verb", async () => {
@@ -417,7 +402,7 @@ describe("independent morning-brief section providers", () => {
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/segment-integrity" }] } } }));
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500上涨1%；标普500收盘630.20点；630.20点的标普500。标普500为500家公司，日期2026-07-23，时间07:15。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500上涨2%；标普500收盘630.3点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500上涨2%；标普500收盘630.3点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
   });
 
   it("associates multiple snapshot labels with their comma-separated clauses", async () => {
@@ -428,25 +413,18 @@ describe("independent morning-brief section providers", () => {
     const provider = (suffix: string) => async () => new Response(JSON.stringify({ output: { choices: [{ message: { content: JSON.stringify({ ...modelSection("global-markets"), blocks: [{ type: "paragraph", text: `${modelSection("global-markets").blocks[1].text}${suffix}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/multiple-snapshots" }] } } }));
 
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2点，纳斯达克报20,000点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2点，纳斯达克报20,100点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*纳斯达克/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2点，纳斯达克报20,100点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点和20,100点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*纳斯达克/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2.0点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.,2点和20,,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2foo点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2foo bar点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2 foo 点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点foo点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500、标普500和纳斯达克分别报630.2点和20,000点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照.*歧义/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点和20,100点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+    for (const malformed of ["标普500与纳斯达克分别报630.2.0点和20,000点。", "标普500与纳斯达克分别报630.,2点和20,,000点。", "标普500与纳斯达克分别报630.2foo点和20,000点。", "标普500与纳斯达克分别报630.2foo bar点和20,000点。", "标普500与纳斯达克分别报630.2 foo 点和20,000点。", "标普500与纳斯达克分别报630.2点foo点和20,000点。", "标普500、标普500和纳斯达克分别报630.2点和20,000点。"] ) {
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(` ${malformed}`) as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+    }
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2点，标普500前收625.1点。") as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2.0点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.,2点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2foo点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2foo bar点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2 foo 点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500报630.2点foo点。") as typeof fetch, globalSnapshot: snapshot })).rejects.toThrow(/快照数值.*标普500/);
+    for (const malformed of ["标普500报630.2.0点。", "标普500报630.,2点。", "标普500报630.2foo点。", "标普500报630.2foo bar点。", "标普500报630.2 foo 点。", "标普500报630.2点foo点。"] ) {
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(` ${malformed}`) as typeof fetch, globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
+    }
     const unavailable = [{ ...snapshot[0], value: null, previousClose: null, pctChange: null, status: "partial" as const }];
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点和20,000点。") as typeof fetch, globalSnapshot: [unavailable[0], snapshot[1]] })).rejects.toThrow(/快照数值.*标普500/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(" 标普500与纳斯达克分别报630.2点和20,000点。") as typeof fetch, globalSnapshot: [unavailable[0], snapshot[1]] })).resolves.toMatchObject({ section: { status: "complete" } });
   });
 
   it("adds bounded actionable retry feedback and literal coverage requirements to provider prompts", async () => {
@@ -495,7 +473,7 @@ describe("independent morning-brief section providers", () => {
     };
 
     for (const surface of ["heading", "summary", "tag"] as const) {
-      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(surface, "标普500报630.3点"), globalSnapshot: snapshot })).rejects.toThrow(/快照数值/);
+      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(surface, "标普500报630.3点"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
       await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(surface, "标普500报630.20点"), globalSnapshot: snapshot })).resolves.toMatchObject({ section: { status: "complete" } });
     }
   });
@@ -591,21 +569,21 @@ describe("independent morning-brief section providers", () => {
     expect(mixedValidResult.section.blocks[0]).toMatchObject({ sourceIds: ["risk_ref_1", "risk_ref_2"] });
   });
 
-  it("removes investment-advice sentences only on Qwen's final attempt while retaining facts", async () => {
+  it("removes investment-advice sentences on every Qwen attempt while retaining facts", async () => {
     const section = modelSection("risk");
     section.blocks[1] = { type: "paragraph", text: `${section.blocks[1].text} 北向资金买入额仅记录资金流向这一客观事实。建议买入相关标的。`, sourceIds: ["ref_1"] };
     const fetcher: typeof fetch = async () => new Response(JSON.stringify({
       output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/advice" }] } },
     }));
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).rejects.toThrow(/投资建议/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalized = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 3 });
     const text = JSON.stringify(normalized.section);
     expect(text).toContain("北向资金买入额");
     expect(text).not.toContain("建议买入");
   });
 
-  it("drops a final-attempt text unit when sentence cleanup leaves cross-sentence investment advice", async () => {
+  it("drops a text unit when sentence cleanup leaves cross-sentence investment advice", async () => {
     const section = modelSection("risk");
     section.blocks.push({
       type: "paragraph",
@@ -616,7 +594,7 @@ describe("independent morning-brief section providers", () => {
       output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/cross-sentence-advice" }] } },
     }));
 
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).rejects.toThrow(/投资建议/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 1 })).resolves.toMatchObject({ section: { status: "complete" } });
     const normalized = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [], attempt: 3 });
     const text = JSON.stringify(normalized.section);
     expect(text).not.toContain("建议评估政策变化");
@@ -671,7 +649,7 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: unknownFetcher, globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
   });
 
-  it("normalizes an overlong supplemented final attempt before enforcing the final length contract", async () => {
+  it("normalizes an overlong supplemented Qwen response before enforcing the final length contract", async () => {
     const initialText = `情绪、观察、持续性、风险、关键。${"初稿事实与影响。".repeat(60)}`;
     const retainedText = "补写事实与影响。".repeat(60);
     const desiredPreNormalizationLength = 1_636;
@@ -692,17 +670,13 @@ describe("independent morning-brief section providers", () => {
       return { fetcher, calls: () => calls };
     };
 
-    for (const attempt of [1, 2]) {
-      const strict = provider();
-      await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: strict.fetcher, globalSnapshot: [], attempt })).rejects.toThrow(/字数应为600至1600/);
-      expect(strict.calls()).toBe(2);
+    for (const attempt of [1, 2, 3]) {
+      const candidate = provider();
+      const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: candidate.fetcher, globalSnapshot: [], attempt });
+      expect(candidate.calls()).toBe(2);
+      expect(JSON.stringify(result.section)).not.toContain("建议买入");
+      expect(result.section.status).toBe("complete");
     }
-
-    const finalAttempt = provider();
-    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: finalAttempt.fetcher, globalSnapshot: [], attempt: 3 });
-    expect(finalAttempt.calls()).toBe(2);
-    expect(JSON.stringify(result.section)).not.toContain("建议买入");
-    expect(result.section.status).toBe("complete");
   });
 
   it("maps OpenAI source URLs by citation instead of action-source position", async () => {
