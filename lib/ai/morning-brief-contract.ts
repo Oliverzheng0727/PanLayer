@@ -68,6 +68,7 @@ export interface BriefValidationResult {
 }
 
 const RECOMMENDATION_LANGUAGE = /(?:建议|可|宜|应|值得|推荐)(?:买入|卖出|加仓|减仓|关注|持有)|(?:逢低|逢高)(?:吸纳|买入|卖出|减仓)|(?:买点|卖点|仓位(?:建议|配置|管理)?|收益承诺|目标价|止损|止盈|重仓|满仓|清仓|建仓|抄底|追高)/;
+const DIRECT_STOCK_ATTENTION_LANGUAGE = /(?:重点关注|(?:推荐|建议)关注|推荐)(?!评级)[\s：:，、]*(?:[A-Za-z0-9\u4E00-\u9FFF]{2,})/;
 const BRIEF_STATUSES = new Set<BriefStatus>(["complete", "partial", "failed"]);
 const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS.map((item) => item.key));
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -123,6 +124,13 @@ function appendSourceErrors(errors: string[], label: string, sourceIds: string[]
 
 function isNonBlankString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isCalendarDate(value: unknown): value is string {
+  if (!isNonBlankString(value) || !DATE_PATTERN.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -181,7 +189,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
     if (requiresSources(block)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
-    if (RECOMMENDATION_LANGUAGE.test(blockText(block).join(""))) {
+    if (RECOMMENDATION_LANGUAGE.test(blockText(block).join("")) || DIRECT_STOCK_ATTENTION_LANGUAGE.test(blockText(block).join(""))) {
       errors.push(`${section.title}包含投资建议语言`);
     }
   });
@@ -244,7 +252,7 @@ export function validateMorningBrief(brief: MorningBrief): BriefValidationResult
   const errors: string[] = [];
   if (brief.schemaVersion !== 2) errors.push("schemaVersion必须为2");
   if (!BRIEF_STATUSES.has(brief.status)) errors.push("早参状态不合法");
-  if (!DATE_PATTERN.test(brief.date)) errors.push("早参日期必须为YYYY-MM-DD");
+  if (!isCalendarDate(brief.date)) errors.push("早参日期必须为YYYY-MM-DD的有效日期");
   if (!isBeijingTimestamp(brief.generatedAt)) errors.push("早参生成时间必须为北京时间");
 
   const sourceValidation = validateSources(brief.sources);

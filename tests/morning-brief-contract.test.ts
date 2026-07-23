@@ -119,4 +119,26 @@ describe("V2 morning brief contract", () => {
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toContain("投资建议");
   });
+
+  it("rejects direct individual-stock attention prompts but permits factual rating coverage", () => {
+    const direct = structuredClone(brief);
+    direct.sections[0].blocks = [{
+      type: "paragraph",
+      text: "重点关注英伟达，并推荐英伟达。",
+      sourceIds: ["s0"],
+    }];
+    expect(validateBriefSection(direct.sections[0], new Set(direct.sources.map((item) => item.id))).errors.join(" "))
+      .toContain("投资建议");
+
+    const factual = structuredClone(brief);
+    factual.sections[0].blocks[0].text += "券商推荐评级下调。";
+    expect(validateBriefSection(factual.sections[0], new Set(factual.sources.map((item) => item.id))).errors.join(" "))
+      .not.toContain("投资建议");
+  });
+
+  it("rejects calendar-impossible brief dates", () => {
+    const invalid = structuredClone(brief);
+    invalid.date = "2026-02-31";
+    expect(validateMorningBrief(invalid).errors.join(" ")).toContain("日期");
+  });
 });
