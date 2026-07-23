@@ -248,6 +248,7 @@ describe("independent morning-brief section providers", () => {
     const negativeSnapshot = [
       { key: "sp500", label: "标普500", value: 630.2, previousClose: 640.2, pctChange: -1.562, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
       { key: "nasdaq", label: "纳斯达克", value: 20_000, previousClose: 20_300, pctChange: -1.4778, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
+      { key: "micron", label: "美光", value: 120, previousClose: 122, pctChange: -1.6393, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", providers: ["provider"], status: "cross-checked" as const, message: "" },
     ];
     const positiveSnapshot = negativeSnapshot.map((point) => ({ ...point, previousClose: point.value - 100, pctChange: 1 }));
 
@@ -266,6 +267,28 @@ describe("independent morning-brief section providers", () => {
     const normalizedFallText = JSON.stringify(normalizedFall.section.blocks[0]);
     expect(normalizedFallText).toContain("标普500及纳斯达克表现，以服务端快照表为准");
     expect(normalizedFallText).not.toMatch(/分别|下跌|3%|4%/);
+
+    const reportedGain = "标普500和纳斯达克分别录得3%和4%的涨幅。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    const normalizedReportedGain = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGain), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedReportedGainText = JSON.stringify(normalizedReportedGain.section.blocks[0]);
+    expect(normalizedReportedGainText).toContain("标普500和纳斯达克表现，以服务端快照表为准");
+    expect(normalizedReportedGainText).not.toMatch(/分别|录得|涨幅|3%|4%/);
+
+    const closingGain = "标普500及纳斯达克分别收涨3%和4%。";
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 1 })).rejects.toThrow(/快照/);
+    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照/);
+    const normalizedClosingGain = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(closingGain), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedClosingGainText = JSON.stringify(normalizedClosingGain.section.blocks[0]);
+    expect(normalizedClosingGainText).toContain("标普500及纳斯达克表现，以服务端快照表为准");
+    expect(normalizedClosingGainText).not.toMatch(/分别|收涨|3%|4%/);
+
+    const reportedGainWithBusinessMetric = "标普500和纳斯达克分别录得3%和4%的涨幅，美光营收增长30%。";
+    const normalizedReportedGainWithBusinessMetric = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(reportedGainWithBusinessMetric), globalSnapshot: negativeSnapshot, attempt: 3 });
+    const normalizedReportedGainWithBusinessMetricText = JSON.stringify(normalizedReportedGainWithBusinessMetric.section.blocks[0]);
+    expect(normalizedReportedGainWithBusinessMetricText).toContain("标普500和纳斯达克表现，美光营收增长30%，以服务端快照表为准");
+    expect(normalizedReportedGainWithBusinessMetricText).not.toMatch(/分别|录得|涨幅|3%|4%/);
   });
 
   it("normalizes ambiguous multi-label quotes only on the final Qwen attempt", async () => {

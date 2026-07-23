@@ -570,7 +570,7 @@ function snapshotFallbackReplacement(sentence: string, range: { start: number; e
   const labelsBeforeRange = new Set(labelRanges
     .filter((label) => label.end <= range.start)
     .map((label) => sentence.slice(label.start, label.end)));
-  if (labelsBeforeRange.size >= 2 && /^(?:分别)?(?:上涨|下跌|涨幅|跌幅|涨|跌)/.test(segment)) return "表现";
+  if (labelsBeforeRange.size >= 2 && /^(?:分别)?(?:收涨|收跌|上涨|下跌|涨|跌|录得)/.test(segment)) return "表现";
   const subject = /股价|该股|标的/.exec(segment)?.[0];
   if (subject) {
     const priorCharacter = sentence[range.start - 1] ?? "";
@@ -582,19 +582,32 @@ function snapshotFallbackReplacement(sentence: string, range: { start: number; e
   return label ? `${sentence.slice(label.start, label.end)}表现` : "";
 }
 
+const MULTI_LABEL_QUOTE_PERCENT = "[+-]?\\d[\\d,.，]*[%％]";
+const MULTI_LABEL_QUOTE_CONNECTOR = "(?:和|及|、)";
+const MULTI_LABEL_PRE_DIRECTION_QUOTE = new RegExp(`(?:分别)?(?:收涨|收跌|上涨|下跌|涨|跌)\\s*${MULTI_LABEL_QUOTE_PERCENT}\\s*${MULTI_LABEL_QUOTE_CONNECTOR}\\s*${MULTI_LABEL_QUOTE_PERCENT}`, "g");
+const MULTI_LABEL_POST_DIRECTION_QUOTE = new RegExp(`(?:分别)?录得\\s*${MULTI_LABEL_QUOTE_PERCENT}\\s*${MULTI_LABEL_QUOTE_CONNECTOR}\\s*${MULTI_LABEL_QUOTE_PERCENT}(?:的)?(?:涨幅|跌幅)`, "g");
+
+function pairedKnownLabelsBeforeQuote(sentence: string, labelRanges: Array<{ start: number; end: number }>, quoteStart: number): boolean {
+  const labels = new Map<string, { start: number; end: number }>();
+  for (const range of labelRanges) {
+    if (range.end <= quoteStart) labels.set(sentence.slice(range.start, range.end), range);
+  }
+  const orderedLabels = [...labels.values()].sort((left, right) => left.start - right.start);
+  const latestLabel = orderedLabels[orderedLabels.length - 1];
+  const priorLabel = orderedLabels[orderedLabels.length - 2];
+  return labels.size >= 2
+    && Boolean(latestLabel)
+    && Boolean(priorLabel)
+    && /^(?:[和及、\s])+$/.test(sentence.slice(priorLabel.end, latestLabel.start))
+    && /^(?:[和及、\s]|分别)*$/.test(sentence.slice(latestLabel.end, quoteStart));
+}
+
 function sharedMultiLabelDirectionRange(sentence: string, labelRanges: Array<{ start: number; end: number }>): { start: number; end: number } | null {
-  for (const match of sentence.matchAll(/(?:分别)?(?:上涨|下跌|涨幅|跌幅|涨|跌)/g)) {
-    const start = match.index ?? 0;
-    const labels = new Set(labelRanges
-      .filter((label) => label.end <= start)
-      .map((label) => sentence.slice(label.start, label.end)));
-    const followingNumbers = [...sentence.matchAll(/[+-]?\d[\d,.，]*(?:[%％]|点|美元|元)?/g)]
-      .flatMap((number) => {
-        const numberStart = number.index ?? 0;
-        return numberStart >= start + match[0].length ? [{ start: numberStart, end: numberStart + number[0].length }] : [];
-      });
-    if (labels.size < 2 || followingNumbers.length < 2) continue;
-    return { start, end: followingNumbers.at(-1)!.end };
+  for (const pattern of [MULTI_LABEL_PRE_DIRECTION_QUOTE, MULTI_LABEL_POST_DIRECTION_QUOTE]) {
+    for (const match of sentence.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      if (pairedKnownLabelsBeforeQuote(sentence, labelRanges, start)) return { start, end: start + match[0].length };
+    }
   }
   return null;
 }
