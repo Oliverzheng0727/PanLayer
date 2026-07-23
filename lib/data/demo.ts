@@ -87,25 +87,32 @@ const historyLimitUp = [47, 121, 53, 33, 42, 72, 81, 29, 92, 75, 47, 66, 79, 38,
 const historyLimitDown = [8, 21, 12, 19, 33, 31, 22, 17, 4, 12, 41, 9, 15, 52, 18, 7, 29, 11];
 const historySectors = ["电子 / 算力", "医药 / 芯片", "汽车 / 电池", "银行 / 红利", "医药 / 电子", "基础化工 / 机器人", "医药 / 通信", "电子 / 计算机", "机械设备 / 军工", "电子 / 通信", "消费 / 医药", "机器人 / 汽车", "医药 / 机械", "红利 / 银行", "半导体 / 存储", "新能源 / 光伏", "消费 / 汽车", "算力 / 通信"];
 
-export const demoHistory: HistoryRow[] = historyDates.map((date, index) => ({
-  date,
-  rising: historyRising[index],
-  falling: 4429 - historyRising[index] - (70 + index % 6 * 9),
-  flat: 70 + index % 6 * 9,
-  limitUp: historyLimitUp[index],
-  limitDown: historyLimitDown[index],
-  largeRise: Math.max(6, Math.round(historyLimitUp[index] * 0.55)),
-  consecutive: [12, 5, 7, 9, 10, 16, 6, 10, 10, 6, 8, 11, 14, 5, 7, 13, 6, 9][index],
-  maxStreak: [6, 4, 3, 4, 3, 5, 3, 4, 4, 3, 3, 5, 5, 3, 4, 5, 3, 4][index],
-  openPremium: [1.79, 2.2, -0.3, -1.2, 0.8, 3.1, 1.3, -0.6, 2.7, 0.9, -1.1, 2.4, 1.8, -2.1, 0.6, 3.2, -0.4, 1.1][index],
-  closePremium: [7.05, 3.16, -0.82, -2.14, 1.42, 5.08, 2.17, -1.03, 4.21, 1.66, -2.32, 3.87, 2.92, -3.04, 1.13, 5.44, -0.91, 2.08][index],
-  high120: [20, 19, 17, 16, 21, 39, 16, 33, 47, 23, 18, 45, 79, 14, 28, 36, 20, 31][index],
-  allTimeHigh: [8, 2, 4, 4, 4, 9, 7, 15, 47, 23, 16, 20, 31, 8, 12, 18, 10, 15][index],
-  topSector: historySectors[index],
-  status: "demo",
-  source: "演示历史 · 正式上线后由每日任务替换",
-  updatedAt: `${date} 16:10`,
-}));
+export const demoHistory: HistoryRow[] = historyDates.map((date, index) => {
+  const flat = 70 + index % 6 * 9;
+  const falling = 4429 - historyRising[index] - flat;
+  return {
+    date,
+    rising: historyRising[index],
+    falling,
+    flat,
+    riseFallRatio: Number((historyRising[index] / falling).toFixed(2)),
+    limitUp: historyLimitUp[index],
+    limitDown: historyLimitDown[index],
+    largeRise: Math.max(6, Math.round(historyLimitUp[index] * 0.55)),
+    consecutive: [12, 5, 7, 9, 10, 16, 6, 10, 10, 6, 8, 11, 14, 5, 7, 13, 6, 9][index],
+    maxStreak: [6, 4, 3, 4, 3, 5, 3, 4, 4, 3, 3, 5, 5, 3, 4, 5, 3, 4][index],
+    openPremium: [1.79, 2.2, -0.3, -1.2, 0.8, 3.1, 1.3, -0.6, 2.7, 0.9, -1.1, 2.4, 1.8, -2.1, 0.6, 3.2, -0.4, 1.1][index],
+    closePremium: [7.05, 3.16, -0.82, -2.14, 1.42, 5.08, 2.17, -1.03, 4.21, 1.66, -2.32, 3.87, 2.92, -3.04, 1.13, 5.44, -0.91, 2.08][index],
+    high120: [20, 19, 17, 16, 21, 39, 16, 33, 47, 23, 18, 45, 79, 14, 28, 36, 20, 31][index],
+    allTimeHigh: [8, 2, 4, 4, 4, 9, 7, 15, 47, 23, 16, 20, 31, 8, 12, 18, 10, 15][index],
+    marginBalance: Number((26_900 + index * 11.8).toFixed(2)),
+    topSector: historySectors[index],
+    backfilled: false,
+    status: "demo",
+    source: "演示历史 · 正式上线后由每日任务替换",
+    updatedAt: `${date} 16:10`,
+  };
+});
 
 const detailSectors = ["半导体", "医药", "机器人", "汽车", "新能源", "算力", "消费", "通信", "军工", "有色"];
 
