@@ -186,10 +186,12 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
     const normalizedRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价上涨3%。"), globalSnapshot: negativeSnapshot, attempt: 3 });
     expect(JSON.stringify(normalizedRise.section.blocks[0])).toContain("以服务端快照表为准");
+    expect(JSON.stringify(normalizedRise.section.blocks[0])).toContain("美光股价表现，以服务端快照表为准");
     expect(JSON.stringify(normalizedRise.section.blocks[0])).not.toMatch(/上涨|3/);
 
     const normalizedFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider("美光股价下跌3%。"), globalSnapshot: positiveSnapshot, attempt: 3 });
     expect(JSON.stringify(normalizedFall.section.blocks[0])).toContain("以服务端快照表为准");
+    expect(JSON.stringify(normalizedFall.section.blocks[0])).toContain("美光股价表现，以服务端快照表为准");
     expect(JSON.stringify(normalizedFall.section.blocks[0])).not.toMatch(/下跌|3/);
 
     const metricAndConflictingQuote = "美光营收同比增长30%，股价上涨3%。";
@@ -198,7 +200,8 @@ describe("independent morning-brief section providers", () => {
     const normalizedMetricAndQuote = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(metricAndConflictingQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedMetricText = JSON.stringify(normalizedMetricAndQuote.section.blocks[0]);
     expect(normalizedMetricText).toContain("美光营收同比增长30%");
-    expect(normalizedMetricText).not.toMatch(/股价|上涨|3%/);
+    expect(normalizedMetricText).toContain("股价表现");
+    expect(normalizedMetricText).not.toMatch(/上涨|3%/);
     expect(normalizedMetricText).toContain("以服务端快照表为准");
 
     const connectedMetricAndQuote = "美光营收同比增长30%并带动股价上涨3%。";
@@ -207,13 +210,15 @@ describe("independent morning-brief section providers", () => {
     const normalizedConnectedMetric = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(connectedMetricAndQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedConnectedMetricText = JSON.stringify(normalizedConnectedMetric.section.blocks[0]);
     expect(normalizedConnectedMetricText).toContain("美光营收同比增长30%");
-    expect(normalizedConnectedMetricText).not.toMatch(/并带动|股价|上涨|3%/);
+    expect(normalizedConnectedMetricText).toContain("股价表现");
+    expect(normalizedConnectedMetricText).not.toMatch(/并带动|上涨|3%/);
     expect(normalizedConnectedMetricText).toContain("以服务端快照表为准");
 
     const businessDriverAndQuote = "美光利润增长30%并受其产品价格上涨支撑且带动股价上涨3%。";
     const normalizedBusinessDriver = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(businessDriverAndQuote), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedBusinessDriverText = JSON.stringify(normalizedBusinessDriver.section.blocks[0]);
     expect(normalizedBusinessDriverText).toContain("美光利润增长30%并受其产品价格上涨支撑");
+    expect(normalizedBusinessDriverText).toContain("股价表现");
     expect(normalizedBusinessDriverText).not.toMatch(/且带动|股价上涨3%/);
     expect(normalizedBusinessDriverText).toContain("以服务端快照表为准");
 
@@ -222,6 +227,7 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
     const normalizedIntradayRise = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayRise), globalSnapshot: negativeSnapshot, attempt: 3 });
     const normalizedIntradayRiseText = JSON.stringify(normalizedIntradayRise.section.blocks[0]);
+    expect(normalizedIntradayRiseText).toContain("美光表现，以服务端快照表为准");
     expect(normalizedIntradayRiseText).not.toMatch(/盘中上涨|3%/);
     expect(normalizedIntradayRiseText).toContain("以服务端快照表为准");
 
@@ -230,6 +236,7 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 2 })).rejects.toThrow(/快照数值/);
     const normalizedIntradayFall = await generateQwenBriefSection({ date: "2026-07-23", key: "global-markets", apiKey: "secret", fetcher: provider(intradayFall), globalSnapshot: positiveSnapshot, attempt: 3 });
     const normalizedIntradayFallText = JSON.stringify(normalizedIntradayFall.section.blocks[0]);
+    expect(normalizedIntradayFallText).toContain("美光表现，以服务端快照表为准");
     expect(normalizedIntradayFallText).not.toMatch(/盘中下跌|3%/);
     expect(normalizedIntradayFallText).toContain("以服务端快照表为准");
   });

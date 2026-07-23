@@ -565,8 +565,22 @@ function quoteDirectionPhraseStart(sentence: string, directionStart: number, lab
   return bridge ? subjectStart - bridge[0].length : subjectStart;
 }
 
+function snapshotFallbackReplacement(sentence: string, range: { start: number; end: number }, labelRanges: Array<{ start: number; end: number }>): string {
+  const segment = sentence.slice(range.start, range.end);
+  const subject = /股价|该股|标的/.exec(segment)?.[0];
+  if (subject) {
+    const priorCharacter = sentence[range.start - 1] ?? "";
+    const startsAfterLabel = labelRanges.some((label) => label.end === range.start);
+    const separator = range.start === 0 || startsAfterLabel || /[，,。；;！？\n]/.test(priorCharacter) ? "" : "；";
+    return `${separator}${subject}表现`;
+  }
+  const label = labelRanges.find((candidate) => candidate.start >= range.start && candidate.end <= range.end);
+  return label ? `${sentence.slice(label.start, label.end)}表现` : "";
+}
+
 function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
   const tokens = structuredQuoteNumberRanges(sentence, labels).sort((left, right) => right.start - left.start);
+  const labelRanges = labelCharacterRanges(sentence, labels);
   const directions = [...sentence.matchAll(/上涨|下跌|涨幅|跌幅|涨|跌/g)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length }));
   const quoteDirections = directions.flatMap((direction) => {
     const phraseStart = quoteDirectionPhraseStart(sentence, direction.start, labels);
@@ -587,7 +601,7 @@ function normalizeSnapshotSentence(sentence: string, labels: string[]): string {
       end: Math.max(direction.end, token.end),
     };
   }).sort((left, right) => right.start - left.start);
-  const withoutQuoteValues = replacementRanges.reduce((result, range) => `${result.slice(0, range.start)}${result.slice(range.end)}`, sentence)
+  const withoutQuoteValues = replacementRanges.reduce((result, range) => `${result.slice(0, range.start)}${snapshotFallbackReplacement(sentence, range, labelRanges)}${result.slice(range.end)}`, sentence)
     .replace(/\s{2,}/g, " ")
     .replace(/，\s*，/g, "，")
     .trim();
