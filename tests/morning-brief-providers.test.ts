@@ -354,6 +354,7 @@ describe("independent morning-brief section providers", () => {
     const claims = [
       "相关板块排名。", "相关板块排名前列。", "相关板块排名前三。", "相关板块位列第二。", "相关板块位列前三。", "相关板块位居前十。", "相关板块名列前茅。", "相关板块跻身前列。", "相关板块跻身首位。", "相关板块进入第一。", "相关板块高居第二。", "相关板块稳居第3。", "相关板块排名第3。",
       "相关板块排在第二。", "相关板块排在前三。", "相关板块排行第3。", "相关板块排行前三。", "相关板块排第3。", "相关板块处于第二位。", "相关板块处于前三位。",
+      "相关板块位列末位。", "相关板块处于行业末位。", "相关板块表现垫底。", "相关板块排名倒数第3。", "相关板块位居倒数第一。",
       "头部企业发布新公告。", "领军公司披露新计划。", "相关板块领先市场。", "相关板块领跑市场。", "相关板块领涨市场。",
       "相关板块最强。", "相关板块最佳。", "相关板块涨幅最大。", "相关板块涨幅最高。", "相关板块跌幅第二。", "相关板块成交额居前。", "相关板块涨停数最大。", "相关板块连板高度靠前。", "相关板块居前。", "相关板块靠前。",
     ];
@@ -365,9 +366,9 @@ describe("independent morning-brief section providers", () => {
     }
 
     const factual = modelSection("risk");
-    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排仍需结合事实核验。";
+    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排，以及末位淘汰制度仍需结合事实核验。";
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(factual), globalSnapshot: [], attempt: 3 });
-    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排");
+    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术与政策第一阶段、第一批、第一产业、第一季度、第3届及第2期安排，以及末位淘汰制度");
   });
 
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
