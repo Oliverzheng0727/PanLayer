@@ -31,6 +31,7 @@ export interface ProviderSectionInput {
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
 export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const TRUSTED_DOH_URL = "https://cloudflare-dns.com/dns-query";
 
 type ProviderSearchResult = {
   index?: number;
@@ -84,20 +85,6 @@ const OPENAI_SECTION_SCHEMA = {
               type: { const: "callout" }, tone: { type: "string", enum: ["insight", "risk", "missing"] }, text: { type: "string" }, sourceUrls: { type: "array", items: { type: "string" } },
             },
             required: ["type", "tone", "text", "sourceUrls"],
-          },
-          {
-            type: "object", additionalProperties: false,
-            properties: {
-              type: { const: "table" },
-              columns: { type: "array", items: { type: "string" } },
-              rows: { type: "array", items: { type: "array", items: { type: "string" } } },
-              sourceUrls: { type: "array", items: { type: "string" } },
-              provenance: {
-                type: "object", additionalProperties: false,
-                properties: { kind: { const: "search" } }, required: ["kind"],
-              },
-            },
-            required: ["type", "columns", "rows", "sourceUrls", "provenance"],
           },
         ],
       },
@@ -187,7 +174,7 @@ function promptForSection(date: string, key: BriefSectionKey, globalSnapshot: Re
 只做客观梳理。禁止推荐个股，禁止买卖、仓位、收益或保证性语言，也不要向读者下达投资行动指令。
 
 以下是服务端已校验的全球数值快照：${JSON.stringify(globalSnapshot)}
-指数、股票、汇率、利率和商品数值只能使用以上快照。${citationField === "sourceIds" ? "不要输出 table 类型内容；" : "如输出 table，其 provenance.kind 必须为 search，且使用 sourceUrls；不得输出 snapshot provenance。"}服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
+指数、股票、汇率、利率和商品数值只能使用以上快照。不要输出 table 类型内容；服务端会从这个快照单独构建带来源与北京时间的表格。status 为 partial、failed 或 unconfigured 时必须明确说明数据未完成交叉校验或暂缺，不得从网页搜索结果猜测数值。
 
 仅返回合法 JSON 对象，不要 Markdown 代码块，形状如下：
 {"key":"${key}","title":"${definition.title}","summary":"最多三行摘要","tags":["AI","存储"],"blocks":[{"type":"heading","text":"AI 大模型"},{"type":"paragraph","text":"事实与盘面映射","${citationField}":[${citationField === "sourceIds" ? '"ref_1"' : '"https://example.com/cited-page"'}]}]}`;
@@ -198,7 +185,7 @@ function stringArray(value: unknown, label: string): string[] {
   return value;
 }
 
-function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls", allowSearchTables = false): BriefBlock[] {
+function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"): BriefBlock[] {
   if (!Array.isArray(value)) throw new Error("Provider section JSON has invalid blocks");
   return value.map((block, index) => {
     if (!isRecord(block) || typeof block.type !== "string") throw new Error(`Provider section JSON has invalid block ${index + 1}`);
@@ -216,18 +203,12 @@ function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls", 
         }),
       };
     }
-    if (block.type === "table" && allowSearchTables && Array.isArray(block.columns) && Array.isArray(block.rows) && isRecord(block.provenance) && block.provenance.kind === "search") {
-      if (block.columns.some((column) => typeof column !== "string") || block.rows.some((row) => !Array.isArray(row) || row.some((cell) => typeof cell !== "string"))) {
-        throw new Error(`Provider section JSON has invalid table ${index + 1}`);
-      }
-      return { type: "table", columns: [...block.columns], rows: block.rows.map((row) => [...row]), sourceIds: stringArray(block[citationField], citationField), provenance: { kind: "search" } };
-    }
-    if (block.type === "table") throw new Error("Provider section JSON must not contain model-generated snapshot tables");
+    if (block.type === "table") throw new Error("Provider section JSON must not contain model-generated tables");
     throw new Error(`Provider section JSON has invalid block ${index + 1}`);
   });
 }
 
-function parseSection(text: string, key: BriefSectionKey, citationField: "sourceIds" | "sourceUrls" = "sourceIds", allowSearchTables = false): ParsedSection {
+function parseSection(text: string, key: BriefSectionKey, citationField: "sourceIds" | "sourceUrls" = "sourceIds"): ParsedSection {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -240,7 +221,7 @@ function parseSection(text: string, key: BriefSectionKey, citationField: "source
     || typeof value.summary !== "string") {
     throw new Error("Provider response did not include a valid requested section");
   }
-  return { key, title: value.title, summary: value.summary, tags: stringArray(value.tags, "tags"), blocks: parseBlocks(value.blocks, citationField, allowSearchTables) };
+  return { key, title: value.title, summary: value.summary, tags: stringArray(value.tags, "tags"), blocks: parseBlocks(value.blocks, citationField) };
 }
 
 function namespaceSourceId(key: BriefSectionKey, sourceId: string): string {
@@ -392,8 +373,14 @@ function isBlockedIpLiteral(hostname: string): boolean {
   if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^0\./.test(host)) return true;
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (ipv4) {
-    const [first, second] = ipv4.slice(1).map(Number);
-    return first === 172 && second >= 16 && second <= 31 || first === 100 && second >= 64 && second <= 127;
+    const [first, second, third] = ipv4.slice(1).map(Number);
+    return first >= 224
+      || first === 172 && second >= 16 && second <= 31
+      || first === 100 && second >= 64 && second <= 127
+      || first === 192 && (second === 0 || second === 2)
+      || first === 198 && (second === 18 || second === 19 || second === 51)
+      || first === 203 && second === 0
+      || first === 255 && second === 255 && third === 255;
   }
   const mappedIpv6 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
   if (mappedIpv6) {
@@ -401,27 +388,58 @@ function isBlockedIpLiteral(hostname: string): boolean {
     const second = Number.parseInt(mappedIpv6[2], 16);
     return isBlockedIpLiteral(`${first >> 8}.${first & 255}.${second >> 8}.${second & 255}`);
   }
-  return host === "::" || host === "::1" || /^fc|^fd|^fe[89ab]/.test(host);
+  return host === "::" || host === "::1" || /^fc|^fd|^fe[89ab]|^ff|^2001:db8|^2001:10/.test(host);
 }
 
-function assertSafeOutboundUrl(value: string): string {
+function isIpLiteral(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "");
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":");
+}
+
+async function resolvePublicHostname(hostname: string, fetcher: typeof fetch): Promise<void> {
+  const query = async (type: "A" | "AAAA") => {
+    const response = await fetcher(`${TRUSTED_DOH_URL}?name=${encodeURIComponent(hostname)}&type=${type}`, {
+      headers: { accept: "application/dns-json" },
+    });
+    if (!response.ok) throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
+    const payload: unknown = await response.json();
+    if (!isRecord(payload) || (typeof payload.Status === "number" && payload.Status !== 0 && payload.Status !== 3)) {
+      throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
+    }
+    if (!Array.isArray(payload.Answer)) return [] as string[];
+    return payload.Answer.flatMap((answer) => isRecord(answer) && typeof answer.data === "string" && (answer.type === 1 || answer.type === 28) ? [answer.data] : []);
+  };
+  let addresses: string[];
+  try {
+    addresses = (await Promise.all([query("A"), query("AAAA")])).flat();
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("outbound URL policy")) throw error;
+    throw new Error(`OpenAI outbound URL policy blocked: DNS lookup failed for ${hostname}`);
+  }
+  if (addresses.length === 0 || addresses.some(isBlockedIpLiteral)) {
+    throw new Error(`OpenAI outbound URL policy blocked: DNS resolved ${hostname} to a non-public address`);
+  }
+}
+
+async function assertSafeOutboundUrl(value: string, fetcher: typeof fetch): Promise<string> {
   const url = comparableUrl(value);
   if (!url) throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
   const hostname = new URL(url).hostname;
   if (hostname === "localhost" || hostname === "localhost." || hostname.endsWith(".localhost") || hostname.endsWith(".local") || isBlockedIpLiteral(hostname)) {
     throw new Error(`OpenAI outbound URL policy blocked: ${value}`);
   }
+  if (!isIpLiteral(hostname)) await resolvePublicHostname(hostname, fetcher);
   return url;
 }
 
 async function fetchCitedPage(url: string, fetcher: typeof fetch): Promise<Response> {
-  let current = assertSafeOutboundUrl(url);
+  let current = await assertSafeOutboundUrl(url, fetcher);
   for (let redirects = 0; redirects <= 3; redirects += 1) {
     const response = await fetcher(current, { headers: { accept: "text/html,application/xhtml+xml" }, redirect: "manual" });
     if (response.status < 300 || response.status >= 400) return response;
     const location = response.headers.get("location");
     if (!location) throw new Error(`OpenAI cited source could not be validated: ${current} redirected without Location`);
-    current = assertSafeOutboundUrl(new URL(location, current).href);
+    current = await assertSafeOutboundUrl(new URL(location, current).href, fetcher);
   }
   throw new Error(`OpenAI cited source could not be validated: ${url} exceeded redirect limit`);
 }
@@ -454,8 +472,9 @@ async function hydrateOpenAISources(
     return url && citation.title.trim() ? [[url, citation] as const] : [];
   }));
   const actionUrls = new Set(actionSources.flatMap((source) => typeof source.url === "string" ? [comparableUrl(source.url)] : []).filter((url): url is string => Boolean(url)));
-  const sourceUrls = referencedSourceIds(parsed.blocks).map((url) => assertSafeOutboundUrl(url));
-  const uniqueUrls = [...new Set(sourceUrls)].sort();
+  const sourceUrls = referencedSourceIds(parsed.blocks).map((url) => comparableUrl(url));
+  if (sourceUrls.some((url) => !url)) throw new Error("OpenAI cited source could not be validated: malformed cited URL");
+  const uniqueUrls = [...new Set(sourceUrls as string[])].sort();
 
   return Promise.all(uniqueUrls.map(async (url, index) => {
     const citation = citationsByUrl.get(url);
@@ -541,7 +560,7 @@ export async function generateOpenAIBriefSection({
   });
   const payload: unknown = await response.json();
   if (!response.ok) throw new Error(`OpenAI Responses API ${response.status}`);
-  const parsed = parseSection(openAIText(payload), key, "sourceUrls", true);
+  const parsed = parseSection(openAIText(payload), key, "sourceUrls");
   const sources = await hydrateOpenAISources(key, parsed, payload, fetcher);
   const sourceIdsByUrl = new Map(sources.flatMap((source) => {
     const url = comparableUrl(source.url);
