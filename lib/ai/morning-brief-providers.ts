@@ -676,15 +676,27 @@ function normalizeFinalSnapshotText(text: string, globalSnapshot: ReconciledGlob
     : sentence);
 }
 
-const EXPLICIT_RANKING_CLAIM = /排名|最强|第一|领涨|领先|领跑(?:市场)?|居前|靠前|最佳|涨幅最大|首位|居首|榜首|冠军|top\s*\d+/i;
+const RESERVED_RANKING_TOKEN = /主线|热点|龙头|ETF/i;
+const RANKING_SEMANTIC_PATTERNS = [
+  /(?:位列|位居|跻身|进入)\s*(?:前\s*(?:\d+|[一二三四五六七八九十百])|首位|第一)/,
+  /排名\s*(?:第\s*)?(?:\d+|[一二三四五六七八九十百]+)/,
+  /头部|领军/,
+  /领跑(?:市场)?|领涨|最强|最佳|涨幅最大|居前|靠前|首位|居首|榜首|冠军|top\s*\d+/i,
+  /第一(?!时间|季度|天|步|次)/,
+  /领先(?!技术|工艺|研发|能力|水平)/,
+];
+
+function hasRankingSemanticClaim(text: string): boolean {
+  return RANKING_SEMANTIC_PATTERNS.some((pattern) => pattern.test(text));
+}
 
 function normalizeReservedRankingSentences(text: string): string {
   return text
     .split(/(?<=[。！？；;\n])/)
     .flatMap((sentence) => {
-      if (!/主线|热点|龙头|ETF/i.test(sentence)) return [sentence];
-      if (EXPLICIT_RANKING_CLAIM.test(sentence)) return [];
-      return [sentence
+      if (hasRankingSemanticClaim(sentence)) return [];
+      if (!RESERVED_RANKING_TOKEN.test(sentence)) return [sentence];
+      const neutralized = sentence
         .replace(/热点板块/g, "相关板块")
         .replace(/热点/g, "相关")
         .replace(/主线方向/g, "相关方向")
@@ -693,7 +705,8 @@ function normalizeReservedRankingSentences(text: string): string {
         .replace(/龙头公司/g, "相关公司")
         .replace(/龙头股/g, "相关标的")
         .replace(/龙头/g, "相关企业")
-        .replace(/ETF/gi, "交易型指数产品")];
+        .replace(/ETF/gi, "交易型指数产品");
+      return hasRankingSemanticClaim(neutralized) ? [] : [neutralized];
     })
     .join("")
     .trim();
@@ -747,11 +760,10 @@ function modelAuthoredText(summary: string, tags: string[], blocks: BriefBlock[]
   return [summary, ...tags, ...blocks.flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : [])];
 }
 
-function assertNoModelRankingTokens(key: BriefSectionKey, textFields: string[]): void {
+function assertNoModelRankingClaims(key: BriefSectionKey, textFields: string[]): void {
   if (key !== "mapping" && key !== "risk") return;
-  const reserved = /主线|热点|龙头|ETF/i;
-  const offending = textFields.find((text) => reserved.test(text));
-  if (offending) throw new Error("模型正文包含排名保留词");
+  const offending = textFields.find((text) => RESERVED_RANKING_TOKEN.test(text) || hasRankingSemanticClaim(text));
+  if (offending) throw new Error("模型正文包含排名保留词或排序宣称");
 }
 
 type ContextProvenance = { marketTime: string; receivedAt: string; providers: string[] };
@@ -821,7 +833,7 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   const normalized = normalizeFinalAttempt ? normalizeFinalQwenSection(parsed, key, globalSnapshot) : parsed;
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, normalized.blocks) : normalized.blocks;
   const modelText = modelAuthoredText(normalized.summary, normalized.tags, modelBlocks);
-  assertNoModelRankingTokens(key, modelText);
+  assertNoModelRankingClaims(key, modelText);
   assertNarrativeSnapshotIntegrity(modelText, globalSnapshot);
   const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext), ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {

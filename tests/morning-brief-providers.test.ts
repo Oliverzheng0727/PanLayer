@@ -347,6 +347,28 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(tooShortAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/字数应为600至1600/);
   });
 
+  it("removes structured ranking semantics but retains non-ranking temporal and technical language", async () => {
+    const provider = (section: ReturnType<typeof modelSection>): typeof fetch => async () => new Response(JSON.stringify({
+      output: { choices: [{ message: { content: JSON.stringify(section) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/structured-ranking" }] } },
+    }));
+    const claims = [
+      "相关板块位列前三。", "相关板块位居前十。", "相关板块跻身首位。", "相关板块进入第一。", "相关板块排名第3。",
+      "头部企业发布新公告。", "领军公司披露新计划。", "相关板块领先市场。", "相关板块领跑市场。", "相关板块领涨市场。",
+      "相关板块最强。", "相关板块最佳。", "相关板块涨幅最大。", "相关板块居前。", "相关板块靠前。",
+    ];
+    for (const claim of claims) {
+      const section = modelSection("risk");
+      section.blocks[1].text += claim;
+      const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(section), globalSnapshot: [], attempt: 3 });
+      expect(JSON.stringify(result.section.blocks)).not.toContain(claim);
+    }
+
+    const factual = modelSection("risk");
+    factual.blocks[1].text += "前日公开信息显示，此前披露的领先技术仍需结合事实核验。";
+    const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider(factual), globalSnapshot: [], attempt: 3 });
+    expect(JSON.stringify(result.section.blocks)).toContain("前日公开信息显示，此前披露的领先技术");
+  });
+
   it("accepts matching snapshot prose while ignoring nearby dates, times, and counts", async () => {
     const good = modelSection("global-markets");
     good.blocks[1].text += " 标普500报630.20点；7月23日07:15统计涨停80家。";
