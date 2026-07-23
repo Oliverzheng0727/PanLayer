@@ -45,6 +45,27 @@ describe("V2 morning brief contract", () => {
     expect(validateMorningBrief(brief).ok).toBe(true);
   });
 
+  it("excludes server snapshot blocks from section and full narrative limits while retaining them for coverage", () => {
+    const withSnapshots = structuredClone(brief);
+    const before = briefTextLength(withSnapshots.sections[0]);
+    withSnapshots.sections[0].blocks.push({
+      type: "table",
+      columns: ["ETF", "映射"],
+      rows: Array.from({ length: 120 }, (_, index) => [`ETF${index}`, "服务端映射".repeat(20)]),
+      sourceIds: [],
+      provenance: { kind: "snapshot", label: "服务端ETF映射", marketTime: "2026-07-22T00:00:00+08:00", providers: ["服务端ETF快照"], receivedAt: "2026-07-22T07:00:00Z" },
+    });
+    withSnapshots.sections[0].blocks.push({
+      type: "callout",
+      tone: "missing",
+      text: "服务端市场快照时间暂缺。".repeat(120),
+      sourceIds: [],
+      provenance: { kind: "unavailable", label: "服务端市场快照" },
+    });
+    expect(briefTextLength(withSnapshots.sections[0])).toBe(before);
+    expect(validateMorningBrief(withSnapshots).ok).toBe(true);
+  });
+
   it("rejects missing coverage, missing sources and recommendation language", () => {
     const invalid = structuredClone(brief);
     invalid.sections[1].blocks = [{ type: "paragraph", text: "建议买入并加仓", sourceIds: [] }];

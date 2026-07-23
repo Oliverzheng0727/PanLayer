@@ -33,7 +33,9 @@ export type BriefBlock =
     tone: "insight" | "risk" | "missing";
     text: string;
     sourceIds: string[];
-    provenance?: { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string };
+    provenance?:
+      | { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string }
+      | { kind: "unavailable"; label: string };
   };
 
 export interface BriefSection {
@@ -106,7 +108,7 @@ function blockSourceIds(block: BriefBlock): string[] {
     case "paragraph":
       return block.sourceIds;
     case "callout":
-      return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
+      return block.provenance?.kind === "snapshot" || block.provenance?.kind === "unavailable" ? [] : block.sourceIds;
     case "table":
       return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
     case "bullets":
@@ -117,7 +119,7 @@ function blockSourceIds(block: BriefBlock): string[] {
 function requiresSources(block: BriefBlock, sectionStatus: BriefStatus): boolean {
   return block.type !== "heading"
     && !(block.type === "callout" && block.tone === "missing" && sectionStatus !== "complete")
-    && !((block.type === "table" || block.type === "callout") && block.provenance?.kind === "snapshot");
+    && !((block.type === "table" || block.type === "callout") && (block.provenance?.kind === "snapshot" || block.provenance?.kind === "unavailable"));
 }
 
 function isExplicitFailedSectionCallout(block: BriefBlock): boolean {
@@ -193,6 +195,10 @@ function validateTableProvenance(errors: string[], sectionTitle: string, index: 
 function validateSnapshotCalloutProvenance(errors: string[], sectionTitle: string, index: number, block: Extract<BriefBlock, { type: "callout" }>): void {
   if (!block.provenance) return;
   const provenance = block.provenance;
+  if (provenance.kind === "unavailable") {
+    if (!isNonBlankString(provenance.label)) errors.push(`${sectionTitle}第${index + 1}个服务端提示缺少不可用来源标签`);
+    return;
+  }
   if (!isNonBlankString(provenance.label)
     || !isBeijingTimestamp(provenance.marketTime)
     || !Array.isArray(provenance.providers)
@@ -204,7 +210,10 @@ function validateSnapshotCalloutProvenance(errors: string[], sectionTitle: strin
 }
 
 export function briefTextLength(section: BriefSection): number {
-  return section.blocks.flatMap(blockText).join("").length;
+  return section.blocks
+    .filter((block) => !("provenance" in block && (block.provenance?.kind === "snapshot" || block.provenance?.kind === "unavailable")))
+    .flatMap(blockText)
+    .join("").length;
 }
 
 export function resolveBlockSources(brief: Pick<MorningBrief, "sources">, block: BriefBlock): BriefSource[] {

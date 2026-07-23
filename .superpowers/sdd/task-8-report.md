@@ -67,3 +67,12 @@ Latest verification: focused provider tests passed (18 tests); `npm test` passed
 - Defined the leader ranking order once alongside `rankLeaders`—连板高度、涨停状态、首次封板时间、成交额—and reused it in the server table. The compact market context now carries the derived limit-up status so each displayed factor corresponds to the actual comparator.
 
 Latest verification: focused provider/metrics tests passed (25 tests); `npm test` passed (37 files, 173 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.
+
+## Source-readiness closure
+
+- Narrative-length validation now excludes every server-authored snapshot or unavailable-context block, while required-term and render validation continue to include those blocks. A 120-row snapshot regression proves that context cannot inflate the model’s 1,000–1,600 section or 5,000–8,000 full-brief narrative budget.
+- Server display context is bounded to five sectors, five leaders, and at most 18 ETFs with one representative per category; a 20-sector, 20-leader, 120-ETF mapping/risk regression covers the cap.
+- Numeric snapshot integrity now scans all model-authored surfaces—summary, tags, headings, paragraphs, bullets, and callouts—while excluding server context tables. A false snapshot number in a heading, summary, or tag rejects; the accurate value passes.
+- Persisted review and ETF context now carry separate source provenance. Their market date and received time are loaded from `daily_reviews` and `etf_snapshots`, normalized only when valid, and rendered independently. Missing timing produces an unavailable-context callout instead of a fabricated generation time.
+
+Latest verification: focused morning-brief suite passed (3 files, 53 tests); `npm test` passed (37 files, 177 passed, 1 skipped); lint, build, render tests (7), and `git diff --check` passed.

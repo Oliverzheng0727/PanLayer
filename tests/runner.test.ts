@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, persistGlobalPoints, persistSourceAudits, releaseJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -121,6 +121,31 @@ function qwenResponse(key: BriefSectionKey, status = 200) {
 }
 
 describe("close review aggregation", () => {
+  it("loads prior review and ETF snapshot provenance from persisted dates and update times", async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() { return this; },
+          async first() {
+            return sql.includes("daily_reviews") ? {
+              trade_date: "2026-07-22",
+              updated_at: "2026-07-22T16:10:00+08:00",
+              status: "complete",
+              payload: JSON.stringify({ date: "2026-07-22", status: "complete", breadth: [], metrics: { limitUp: 1, limitDown: 0, consecutive: 0, largeRise: 0, high120: null, allTimeHigh: null, marginBalance: null }, ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] }, sectors: [], leaders: [] }),
+            } : null;
+          },
+          async all() {
+            return { results: [{ category: "人工智能", name: "AI ETF", symbol: "159819", trade_date: "2026-07-21", updated_at: "2026-07-21T16:05:00+08:00" }] };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    const context = await loadMorningBriefMarketContext(db, "2026-07-23");
+    expect(context.review).toMatchObject({ marketTime: "2026-07-22T00:00:00+08:00", receivedAt: "2026-07-22T08:10:00.000Z" });
+    expect(context.etfSnapshot).toEqual({ marketTime: "2026-07-21T00:00:00+08:00", receivedAt: "2026-07-21T08:05:00.000Z" });
+  });
+
   it("fences a stale orchestrated run before its delayed global snapshot can write", async () => {
     vi.useFakeTimers();
     try {

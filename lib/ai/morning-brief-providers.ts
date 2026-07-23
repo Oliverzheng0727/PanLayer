@@ -17,6 +17,8 @@ export interface GeneratedBriefSection {
 export interface MorningBriefMarketContext {
   review: null | {
     date: string;
+    marketTime: string | null;
+    receivedAt: string | null;
     status: "complete" | "partial" | "failed" | "demo";
     closeBreadth: { rising: number; falling: number; flat: number } | null;
     metrics: { limitUp: number; limitDown: number; consecutive: number; largeRise: number; high120: number | null; allTimeHigh: number | null; marginBalance: number | null };
@@ -25,6 +27,7 @@ export interface MorningBriefMarketContext {
     leaders: Array<{ name: string; symbol: string; factors: { pctChange: number; amount: number; limitStreak: number; isLimitUp: boolean; firstLimitTime: string | null; sector: string } }>;
   };
   etfs: Array<{ category: string; name: string; code: string }>;
+  etfSnapshot: null | { marketTime: string | null; receivedAt: string | null };
 }
 
 export type BriefSectionGenerator = (input: {
@@ -332,10 +335,8 @@ function shownDecimalTolerance(value: string): number {
   return 0.5 * 10 ** -fraction.length + 1e-9;
 }
 
-function narrativeSegments(blocks: BriefBlock[]): string[] {
-  return blocks
-    .filter((block) => block.type !== "heading" && block.type !== "table")
-    .flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : [])
+function textSegments(texts: string[]): string[] {
+  return texts
     .flatMap((text) => text.split(/[。！？；;\n]+/))
     .map((segment) => segment.trim())
     .filter(Boolean);
@@ -356,8 +357,8 @@ function snapshotNumbersInClause(clause: string, labels: string[]): Array<{ text
     }));
 }
 
-function snapshotClauses(blocks: BriefBlock[], labels: string[]): string[] {
-  return narrativeSegments(blocks).flatMap((sentence) => {
+function snapshotClauses(texts: string[], labels: string[]): string[] {
+  return textSegments(texts).flatMap((sentence) => {
     const clauses: string[] = [];
     let start = 0;
     for (let index = 0; index < sentence.length; index += 1) {
@@ -379,10 +380,10 @@ function snapshotClauses(blocks: BriefBlock[], labels: string[]): string[] {
   });
 }
 
-function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: ReconciledGlobalPoint[]): void {
+function assertNarrativeSnapshotIntegrity(texts: string[], globalSnapshot: ReconciledGlobalPoint[]): void {
   const points = globalSnapshot.filter((point) => point.label);
   const labels = points.map((point) => point.label).sort((left, right) => right.length - left.length);
-  for (const clause of snapshotClauses(blocks, labels)) {
+  for (const clause of snapshotClauses(texts, labels)) {
     const mentioned = points.filter((point) => clause.includes(point.label));
     if (mentioned.length === 0) continue;
     const tokens = snapshotNumbersInClause(clause, labels);
@@ -402,15 +403,20 @@ function assertNarrativeSnapshotIntegrity(blocks: BriefBlock[], globalSnapshot: 
   }
 }
 
-function assertNoModelRankingTokens(key: BriefSectionKey, summary: string, tags: string[], blocks: BriefBlock[]): void {
+function modelAuthoredText(summary: string, tags: string[], blocks: BriefBlock[]): string[] {
+  return [summary, ...tags, ...blocks.flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : [])];
+}
+
+function assertNoModelRankingTokens(key: BriefSectionKey, textFields: string[]): void {
   if (key !== "mapping" && key !== "risk") return;
   const reserved = /主线|热点|龙头|ETF/i;
-  const textFields = blocks.flatMap((block) => block.type === "bullets" ? block.items.map((item) => item.text) : "text" in block ? [block.text] : []);
-  const offending = [summary, ...tags, ...textFields].find((text) => reserved.test(text));
+  const offending = textFields.find((text) => reserved.test(text));
   if (offending) throw new Error(`模型正文包含排名保留词：${offending}`);
 }
 
-function contextSnapshotTable(label: string, columns: string[], rows: string[][], generatedAt: string): BriefBlock {
+type ContextProvenance = { marketTime: string; receivedAt: string; providers: string[] };
+
+function contextSnapshotTable(label: string, columns: string[], rows: string[][], provenance: ContextProvenance): BriefBlock {
   return {
     type: "table",
     columns,
@@ -419,47 +425,51 @@ function contextSnapshotTable(label: string, columns: string[], rows: string[][]
     provenance: {
       kind: "snapshot",
       label,
-      marketTime: generatedAt,
-      providers: ["服务端 marketContext"],
-      receivedAt: generatedAt,
+      marketTime: provenance.marketTime,
+      providers: provenance.providers,
+      receivedAt: provenance.receivedAt,
     },
   };
 }
 
-function contextUnavailableCallout(label: string, text: string, generatedAt: string): BriefBlock {
+function contextUnavailableCallout(label: string, text: string): BriefBlock {
   return {
     type: "callout",
     tone: "missing",
     text,
     sourceIds: [],
     provenance: {
-      kind: "snapshot",
+      kind: "unavailable",
       label,
-      marketTime: generatedAt,
-      providers: ["服务端 marketContext"],
-      receivedAt: generatedAt,
     },
   };
 }
 
-function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMarketContext | undefined, generatedAt: string): BriefBlock[] {
+function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMarketContext | undefined): BriefBlock[] {
   if (key !== "mapping" && key !== "risk") return [];
   const review = marketContext?.review;
   const blocks: BriefBlock[] = [];
-  if (review?.sectors.length) {
-    blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct}%；最高连板${sector.factors.maxStreak}`]), generatedAt));
+  const reviewProvenance = review && review.marketTime && review.receivedAt && asBeijingMarketTime(review.marketTime) && validIsoTimestamp(review.receivedAt)
+    ? { marketTime: asBeijingMarketTime(review.marketTime)!, receivedAt: review.receivedAt, providers: ["服务端日度复盘"] }
+    : null;
+  const etfProvenance = marketContext?.etfSnapshot?.marketTime && marketContext.etfSnapshot.receivedAt && asBeijingMarketTime(marketContext.etfSnapshot.marketTime) && validIsoTimestamp(marketContext.etfSnapshot.receivedAt)
+    ? { marketTime: asBeijingMarketTime(marketContext.etfSnapshot.marketTime)!, receivedAt: marketContext.etfSnapshot.receivedAt, providers: ["服务端ETF快照"] }
+    : null;
+  if (review?.sectors.length && reviewProvenance) {
+    blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.slice(0, 5).map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct}%；最高连板${sector.factors.maxStreak}`]), reviewProvenance));
   } else {
-    blocks.push(contextUnavailableCallout("服务端主线热点复盘", "服务端复盘上下文不可用：主线与热点排名暂缺。", generatedAt));
+    blocks.push(contextUnavailableCallout("服务端主线热点复盘", "服务端复盘上下文不可用：主线与热点排名或快照时间暂缺。"));
   }
-  if (review?.leaders.length) {
-    blocks.push(contextSnapshotTable("服务端龙头复盘", ["龙头", "代码", "排名依据", "因素"], review.leaders.map((leader) => [leader.name, leader.symbol, LEADER_RANKING_BASIS.join("、"), `涨停状态:${leader.factors.isLimitUp ? "涨停" : "非涨停"}；连板高度${leader.factors.limitStreak}；首次封板${leader.factors.firstLimitTime ?? "暂缺"}；成交额${leader.factors.amount}`]), generatedAt));
+  if (review?.leaders.length && reviewProvenance) {
+    blocks.push(contextSnapshotTable("服务端龙头复盘", ["龙头", "代码", "排名依据", "因素"], review.leaders.slice(0, 5).map((leader) => [leader.name, leader.symbol, LEADER_RANKING_BASIS.join("、"), `涨停状态:${leader.factors.isLimitUp ? "涨停" : "非涨停"}；连板高度${leader.factors.limitStreak}；首次封板${leader.factors.firstLimitTime ?? "暂缺"}；成交额${leader.factors.amount}`]), reviewProvenance));
   } else {
-    blocks.push(contextUnavailableCallout("服务端龙头复盘", "服务端复盘上下文不可用：龙头排名暂缺。", generatedAt));
+    blocks.push(contextUnavailableCallout("服务端龙头复盘", "服务端复盘上下文不可用：龙头排名或快照时间暂缺。"));
   }
-  if (marketContext?.etfs.length) {
-    blocks.push(contextSnapshotTable("服务端ETF映射", ["ETF分类", "ETF名称", "代码", "映射依据"], marketContext.etfs.map((etf) => [etf.category, etf.name, etf.code, "服务端 ETF 分类映射"]), generatedAt));
+  const displayedEtfs = marketContext?.etfs.reduce<Array<{ category: string; name: string; code: string }>>((result, etf) => result.length >= 18 || result.some((item) => item.category === etf.category) ? result : [...result, etf], []) ?? [];
+  if (displayedEtfs.length && etfProvenance) {
+    blocks.push(contextSnapshotTable("服务端ETF映射", ["ETF分类", "ETF名称", "代码", "映射依据"], displayedEtfs.map((etf) => [etf.category, etf.name, etf.code, "服务端 ETF 分类映射"]), etfProvenance));
   } else {
-    blocks.push(contextUnavailableCallout("服务端ETF映射", "服务端 ETF 映射上下文不可用。", generatedAt));
+    blocks.push(contextUnavailableCallout("服务端ETF映射", "服务端 ETF 映射上下文不可用：映射或快照时间暂缺。"));
   }
   return blocks;
 }
@@ -469,9 +479,10 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: generatedAt }));
   validateGeneratedSources(sources);
   const modelBlocks = namespaceReferences ? namespaceBlocks(key, parsed.blocks) : parsed.blocks;
-  assertNoModelRankingTokens(key, parsed.summary, parsed.tags, modelBlocks);
-  assertNarrativeSnapshotIntegrity(modelBlocks, globalSnapshot);
-  const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext, generatedAt), ...snapshotBlocks(key, globalSnapshot)];
+  const modelText = modelAuthoredText(parsed.summary, parsed.tags, modelBlocks);
+  assertNoModelRankingTokens(key, modelText);
+  assertNarrativeSnapshotIntegrity(modelText, globalSnapshot);
+  const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext), ...snapshotBlocks(key, globalSnapshot)];
   const section: BriefSection = {
     ...parsed,
     blocks,

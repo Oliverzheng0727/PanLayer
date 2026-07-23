@@ -106,18 +106,28 @@ function isGeneratedSection(result: SectionRunResult): result is GeneratedBriefS
   return "section" in result;
 }
 
+function marketContextTime(value: string): string | null {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00+08:00` : null;
+}
+
+function receivedContextTime(value: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 export async function loadMorningBriefMarketContext(db: D1Database, date: string): Promise<MorningBriefMarketContext> {
-  const fallback: MorningBriefMarketContext = { review: null, etfs: [] };
+  const fallback: MorningBriefMarketContext = { review: null, etfs: [], etfSnapshot: null };
   try {
-    const reviewRow = await db.prepare("SELECT trade_date, payload, status FROM daily_reviews WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1").bind(date).first<{ trade_date: string; payload: string; status: DailyReview["status"] }>().catch(() => null);
-    const etfResult = await db.prepare("SELECT category, name, symbol FROM etf_snapshots WHERE trade_date = (SELECT MAX(trade_date) FROM etf_snapshots WHERE trade_date < ?) ORDER BY category, symbol LIMIT 120").bind(date).all<{ category: string; name: string; symbol: string }>().catch(() => ({ results: [] }));
+    const reviewRow = await db.prepare("SELECT trade_date, payload, status, updated_at FROM daily_reviews WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1").bind(date).first<{ trade_date: string; payload: string; status: DailyReview["status"]; updated_at: string }>().catch(() => null);
+    const etfResult = await db.prepare("SELECT category, name, symbol, trade_date, updated_at FROM etf_snapshots WHERE trade_date = (SELECT MAX(trade_date) FROM etf_snapshots WHERE trade_date < ?) ORDER BY category, symbol LIMIT 120").bind(date).all<{ category: string; name: string; symbol: string; trade_date: string; updated_at: string }>().catch(() => ({ results: [] }));
     let review: MorningBriefMarketContext["review"] = null;
     if (reviewRow?.payload) {
       const parsed = JSON.parse(reviewRow.payload) as DailyReview;
       const closeBreadth = parsed.breadth?.at(-1);
       if (parsed && typeof parsed.date === "string" && Array.isArray(parsed.sectors) && Array.isArray(parsed.leaders) && parsed.metrics && parsed.ladder) {
         review = {
-          date: parsed.date, status: parsed.status, closeBreadth: closeBreadth ? { rising: closeBreadth.rising, falling: closeBreadth.falling, flat: closeBreadth.flat } : null,
+          date: parsed.date, marketTime: marketContextTime(reviewRow.trade_date), receivedAt: receivedContextTime(reviewRow.updated_at), status: parsed.status, closeBreadth: closeBreadth ? { rising: closeBreadth.rising, falling: closeBreadth.falling, flat: closeBreadth.flat } : null,
           metrics: { ...parsed.metrics },
           ladder: { first: parsed.ladder.first.length, second: parsed.ladder.second.length, third: parsed.ladder.third.length, fourth: parsed.ladder.fourth.length, fivePlus: parsed.ladder.fivePlus.length },
           sectors: parsed.sectors.slice(0, 20).map((item) => ({ name: item.name, factors: { limitUpCount: item.limitUpCount, averagePct: item.averagePct, amountGrowthPct: item.amountGrowthPct, maxStreak: item.maxStreak } })),
@@ -125,7 +135,11 @@ export async function loadMorningBriefMarketContext(db: D1Database, date: string
         };
       }
     }
-    return { review, etfs: (etfResult.results ?? []).flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []) };
+    const etfRows = etfResult.results ?? [];
+    const etfSnapshot = etfRows[0]
+      ? { marketTime: marketContextTime(etfRows[0].trade_date), receivedAt: etfRows.map((item) => receivedContextTime(item.updated_at)).filter((value): value is string => value !== null).sort().at(-1) ?? null }
+      : null;
+    return { review, etfs: etfRows.flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []), etfSnapshot };
   } catch { return fallback; }
 }
 
