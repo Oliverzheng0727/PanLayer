@@ -116,7 +116,7 @@ async function loadBreadth(db: D1Database, date: string) {
   return (result.results ?? []).map((row) => ({ time: String(row.snapshot_time), rising: Number(row.rising), falling: Number(row.falling), flat: Number(row.flat) }));
 }
 
-async function loadExpectedSymbols(db: D1Database): Promise<string[]> {
+export async function loadExpectedSymbols(db: D1Database): Promise<string[]> {
   try {
     const result = await db.prepare("SELECT symbol FROM stocks ORDER BY symbol").all<{ symbol: string }>();
     return (result.results ?? []).map((row) => row.symbol);
@@ -156,6 +156,7 @@ export async function runPanLayerJob(
         secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
+        secondarySampleSize: 240,
       });
       await persistSourceAudits(db, date, job.time, market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -172,6 +173,7 @@ export async function runPanLayerJob(
         secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
+        secondarySampleSize: 240,
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");

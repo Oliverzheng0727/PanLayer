@@ -24,6 +24,13 @@ describe("domestic source quality", () => {
     expect(result.summary.secondaryCoveragePct).toBe(80);
   });
 
+  it("compares breadth only across symbols present in both source snapshots", () => {
+    const primary = Array.from({ length: 100 }, (_, index) => quote(index, index < 50 ? 1 : -1));
+    const secondary = primary.filter((_, index) => index % 5 === 0);
+    const result = compareDomesticSnapshots(primary, secondary, 100, new Date());
+    expect(result.summary.breadthDifference).toBe(0);
+  });
+
   it("marks empty sources failed", () => {
     expect(compareDomesticSnapshots([], [], 100, new Date()).summary.status).toBe("failed");
   });

@@ -46,18 +46,19 @@ export function createLiveMarketCache<T>(ttlMs: number) {
 export function createLiveMarketLoader(fetcher: typeof fetch = fetch) {
   const cache = createLiveMarketCache<Omit<LiveMarketSnapshot, "isStale">>(SERVER_LIVE_CACHE_MS);
 
-  return async (now = new Date()): Promise<LiveMarketSnapshot> => {
+  return async (now = new Date(), expectedSymbols: string[] = []): Promise<LiveMarketSnapshot> => {
     const cached = await cache.get(async () => {
       const { date, time } = beijingDateParts(now);
       const provider = createEastmoneyProvider(fetcher);
       const market = await runDomesticPipeline({
         at: time,
-        expectedSymbols: [],
+        expectedSymbols,
         primary: provider,
         secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
         retryDelayMs: 200,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
+        secondarySampleSize: 240,
       });
       if (market.status === "failed" || market.quotes.length === 0) {
         throw new Error(market.message || "实时行情源返回空数据");
@@ -81,6 +82,6 @@ export function createLiveMarketLoader(fetcher: typeof fetch = fetch) {
 
 const liveMarketLoader = createLiveMarketLoader();
 
-export function loadLiveMarketSnapshot(now = new Date()): Promise<LiveMarketSnapshot> {
-  return liveMarketLoader(now);
+export function loadLiveMarketSnapshot(now = new Date(), expectedSymbols: string[] = []): Promise<LiveMarketSnapshot> {
+  return liveMarketLoader(now, expectedSymbols);
 }

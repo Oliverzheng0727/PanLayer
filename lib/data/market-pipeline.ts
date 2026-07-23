@@ -28,6 +28,7 @@ export async function runDomesticPipeline({
   now,
   retryDelayMs = 1_000,
   minimumExpectedCount = 0,
+  secondarySampleSize = Number.POSITIVE_INFINITY,
 }: {
   at: string;
   expectedSymbols: string[];
@@ -36,6 +37,7 @@ export async function runDomesticPipeline({
   now: Date;
   retryDelayMs?: number;
   minimumExpectedCount?: number;
+  secondarySampleSize?: number;
 }): Promise<MarketPipelineResult> {
   let primaryQuotes: Quote[] = [];
   let secondaryQuotes: Quote[] = [];
@@ -49,7 +51,13 @@ export async function runDomesticPipeline({
   const symbols = expectedSymbols.length > 0 ? expectedSymbols : primaryQuotes.map((quote) => quote.symbol);
   if (symbols.length > 0) {
     try {
-      secondaryQuotes = await withRetry(() => secondary.getQuotes(symbols), { retries: 2, delayMs: retryDelayMs });
+      const sampleSize = primaryQuotes.length > 0
+        ? Math.min(symbols.length, Math.max(1, Math.floor(secondarySampleSize)))
+        : symbols.length;
+      const secondarySymbols = sampleSize >= symbols.length
+        ? symbols
+        : Array.from({ length: sampleSize }, (_, index) => symbols[Math.floor(index * symbols.length / sampleSize)]);
+      secondaryQuotes = await withRetry(() => secondary.getQuotes(secondarySymbols), { retries: 2, delayMs: retryDelayMs });
     } catch (error) {
       secondaryError = error instanceof Error ? error.message : "secondary failed";
     }

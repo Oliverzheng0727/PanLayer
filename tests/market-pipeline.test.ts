@@ -37,6 +37,27 @@ describe("domestic market pipeline", () => {
     expect(result.audits[0].coveragePct).toBeCloseTo(3.33, 2);
   });
 
+  it("cross-checks a bounded Tencent sample when the primary universe is available", async () => {
+    const quotes = Array.from({ length: 100 }, (_, index) => quote(index));
+    let requestedSymbols: string[] = [];
+    const result = await runDomesticPipeline({
+      at: "11:00",
+      expectedSymbols: [],
+      minimumExpectedCount: 100,
+      secondarySampleSize: 20,
+      now: new Date(),
+      retryDelayMs: 0,
+      primary: { name: "东方财富", getQuotes: async () => quotes },
+      secondary: { name: "腾讯", getQuotes: async (symbols) => {
+        requestedSymbols = symbols;
+        return quotes.filter((item) => symbols.includes(item.symbol));
+      } },
+    });
+
+    expect(requestedSymbols).toHaveLength(20);
+    expect(result.quotes).toHaveLength(100);
+  });
+
   it("falls back to Tencent with a partial status when primary fails", async () => {
     const quotes = Array.from({ length: 100 }, (_, index) => quote(index));
     const result = await runDomesticPipeline({

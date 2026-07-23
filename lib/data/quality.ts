@@ -59,18 +59,22 @@ export function compareDomesticSnapshots(
   let common = 0;
   let directionsAgree = 0;
   let pricesAgree = 0;
+  const commonPrimary: Quote[] = [];
+  const commonSecondary: Quote[] = [];
   for (const quote of primary) {
     const other = secondaryBySymbol.get(quote.symbol);
     if (!other) continue;
     common += 1;
+    commonPrimary.push(quote);
+    commonSecondary.push(other);
     if (direction(quote) === direction(other)) directionsAgree += 1;
     const threshold = Math.max(0.01, quote.previousClose * 0.0015);
     if (Math.abs(quote.price - other.price) <= threshold) pricesAgree += 1;
   }
   const directionAgreementPct = percentage(directionsAgree, common);
   const priceAgreementPct = percentage(pricesAgree, common);
-  const primaryBreadth = calculateBreadth(primary);
-  const secondaryBreadth = calculateBreadth(secondary);
+  const primaryBreadth = calculateBreadth(commonPrimary);
+  const secondaryBreadth = calculateBreadth(commonSecondary);
   const breadthDifference = Math.max(
     Math.abs(primaryBreadth.rising - secondaryBreadth.rising),
     Math.abs(primaryBreadth.falling - secondaryBreadth.falling),

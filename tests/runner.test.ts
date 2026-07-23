@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildDailyReview, persistGlobalPoints, persistSourceAudits, resolveMorningBriefProvider, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import * as runnerModule from "../lib/jobs/runner";
 import type { Quote } from "../lib/domain/types";
 import type { SourceAudit } from "../lib/data/quality";
 
@@ -12,6 +13,19 @@ const q = (symbol: string, pctChange: number, streak = 0): Quote => ({
 });
 
 describe("close review aggregation", () => {
+  it("loads the persisted security universe for provider fallback", async () => {
+    const loadExpectedSymbols = (runnerModule as unknown as {
+      loadExpectedSymbols?: (db: D1Database) => Promise<string[]>;
+    }).loadExpectedSymbols;
+    expect(loadExpectedSymbols).toBeTypeOf("function");
+    const db = {
+      prepare() {
+        return { all: async () => ({ results: [{ symbol: "600000.SH" }, { symbol: "000001.SZ" }] }) };
+      },
+    } as unknown as D1Database;
+    await expect(loadExpectedSymbols?.(db)).resolves.toEqual(["600000.SH", "000001.SZ"]);
+  });
+
   it("does not bill the AI provider twice for a completed date unless force is explicit", () => {
     expect(shouldSkipMorningBrief("complete", false)).toBe(true);
     expect(shouldSkipMorningBrief("complete", true)).toBe(false);

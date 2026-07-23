@@ -39,13 +39,27 @@ interface EtfRow {
   f8?: number | string;
 }
 
+interface SinaQuoteRow {
+  symbol?: string;
+  code?: string;
+  name?: string;
+  trade?: number | string;
+  changepercent?: number | string;
+  settlement?: number | string;
+  open?: number | string;
+  high?: number | string;
+  low?: number | string;
+  amount?: number | string;
+  turnoverratio?: number | string;
+}
+
 const numberValue = (value: number | string | undefined): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
 function securityMeta(code: string): { exchange: Exchange; board: Board; limitRate: number } {
-  if (/^(8|4)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
+  if (/^(9|8|4)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
   if (/^688/.test(code)) return { exchange: "SH", board: "STAR", limitRate: 0.2 };
   if (/^(300|301)/.test(code)) return { exchange: "SZ", board: "CHINEXT", limitRate: 0.2 };
   if (/^6/.test(code)) return { exchange: "SH", board: "MAIN", limitRate: 0.1 };
@@ -80,13 +94,41 @@ export function mapEastmoneyQuote(row: EastmoneyQuoteRow): Quote {
 }
 
 const QUOTE_PAGE_SIZE = 100;
+const QUOTE_ORIGINS = [
+  "https://82.push2.eastmoney.com",
+  "https://push2.eastmoney.com",
+  "https://48.push2.eastmoney.com",
+  "http://40.push2.eastmoney.com",
+];
 
-function quotePageUrl(page: number) {
-  return `https://82.push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=${QUOTE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f100`;
+function quotePageUrl(page: number, origin = QUOTE_ORIGINS[0]) {
+  return `${origin}/api/qt/clist/get?pn=${page}&pz=${QUOTE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f100`;
 }
 
 function limitPoolUrl(date: string) {
   return `https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&d=${date.replaceAll("-", "")}`;
+}
+
+const SINA_COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount?node=hs_a";
+
+function sinaPageUrl(page: number) {
+  return `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData?page=${page}&num=${QUOTE_PAGE_SIZE}&sort=symbol&asc=1&node=hs_a&symbol=&_s_r_a=page`;
+}
+
+function mapSinaQuote(row: SinaQuoteRow): Quote {
+  return mapEastmoneyQuote({
+    f12: String(row.code ?? String(row.symbol ?? "").replace(/^[a-z]+/i, "")),
+    f14: String(row.name ?? row.code ?? ""),
+    f2: numberValue(row.trade),
+    f3: numberValue(row.changepercent),
+    f6: numberValue(row.amount),
+    f8: numberValue(row.turnoverratio),
+    f15: numberValue(row.high),
+    f16: numberValue(row.low),
+    f17: numberValue(row.open),
+    f18: numberValue(row.settlement),
+    f100: "未分类",
+  });
 }
 
 function timeFromNumber(value: number | string | undefined): string | null {
@@ -102,26 +144,84 @@ async function fetchJson<T>(fetcher: typeof fetch, url: string): Promise<T> {
 }
 
 export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDataProvider {
-  const getQuotes = async (): Promise<Quote[]> => {
-    const firstPayload = await fetchJson<{ data?: { total?: number; diff?: EastmoneyQuoteRow[] } }>(fetcher, quotePageUrl(1));
+  const getEastmoneyQuotes = async (): Promise<Quote[]> => {
+    let preferredOrigin = QUOTE_ORIGINS[0];
+    const loadPage = async (page: number) => {
+      let lastError: unknown;
+      const origins = [preferredOrigin, ...QUOTE_ORIGINS.filter((origin) => origin !== preferredOrigin)];
+      for (const [index, origin] of origins.entries()) {
+        try {
+          const payload = await fetchJson<{ data?: { total?: number; diff?: EastmoneyQuoteRow[] } }>(
+            fetcher,
+            quotePageUrl(page, origin),
+          );
+          preferredOrigin = origin;
+          return payload;
+        } catch (error) {
+          lastError = error;
+          if (index < origins.length - 1) await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error("Eastmoney 行情页获取失败");
+    };
+    const firstPayload = await loadPage(1);
     const firstRows = Array.isArray(firstPayload?.data?.diff) ? firstPayload.data.diff : [];
     const total = Math.max(firstRows.length, numberValue(firstPayload?.data?.total));
     const effectivePageSize = Math.max(1, firstRows.length);
     const pageCount = Math.min(80, Math.max(1, Math.ceil(total / effectivePageSize)));
     const rows = [...firstRows];
-    for (let start = 2; start <= pageCount; start += 6) {
-      const pages = Array.from({ length: Math.min(6, pageCount - start + 1) }, (_, index) => start + index);
-      const payloads = await Promise.all(pages.map((page) => fetchJson<{ data?: { diff?: EastmoneyQuoteRow[] } }>(fetcher, quotePageUrl(page))));
+    for (let start = 2; start <= pageCount; start += 2) {
+      const pages = Array.from({ length: Math.min(2, pageCount - start + 1) }, (_, index) => start + index);
+      const payloads = await Promise.all(pages.map((page) => loadPage(page).catch(() => null)));
       payloads.forEach((payload) => {
         if (Array.isArray(payload?.data?.diff)) rows.push(...payload.data.diff);
       });
     }
     const uniqueRows = [...new Map(rows.map((row) => [String(row.f12 ?? ""), row])).values()];
+    if (total > 0 && uniqueRows.length / total < 0.95) {
+      throw new Error(`Eastmoney 行情覆盖不足 ${uniqueRows.length}/${total}`);
+    }
     return uniqueRows.map(mapEastmoneyQuote).filter((item: Quote) => !item.isST && item.price > 0);
   };
 
+  const getSinaQuotes = async (): Promise<Quote[]> => {
+    const totalPayload = await fetchJson<number | string>(fetcher, SINA_COUNT_URL);
+    const total = Math.max(0, numberValue(totalPayload));
+    if (total === 0) throw new Error("Sina 证券池为空");
+    const pageCount = Math.min(80, Math.max(1, Math.ceil(total / QUOTE_PAGE_SIZE)));
+    const rows: SinaQuoteRow[] = [];
+    for (let start = 1; start <= pageCount; start += 2) {
+      const pages = Array.from({ length: Math.min(2, pageCount - start + 1) }, (_, index) => start + index);
+      const payloads = await Promise.all(pages.map((page) => (
+        fetchJson<SinaQuoteRow[]>(fetcher, sinaPageUrl(page)).catch(() => null)
+      )));
+      payloads.forEach((payload) => {
+        if (Array.isArray(payload)) rows.push(...payload);
+      });
+    }
+    const uniqueRows = [...new Map(rows.map((row) => [String(row.code ?? row.symbol ?? ""), row])).values()];
+    if (uniqueRows.length / total < 0.95) {
+      throw new Error(`Sina 行情覆盖不足 ${uniqueRows.length}/${total}`);
+    }
+    return uniqueRows.map(mapSinaQuote).filter((item) => !item.isST && item.price > 0);
+  };
+
+  const getQuotes = async (): Promise<Quote[]> => {
+    try {
+      return await getEastmoneyQuotes();
+    } catch (eastmoneyError) {
+      try {
+        return await getSinaQuotes();
+      } catch (sinaError) {
+        const primaryMessage = eastmoneyError instanceof Error ? eastmoneyError.message : "Eastmoney failed";
+        const fallbackMessage = sinaError instanceof Error ? sinaError.message : "Sina failed";
+        throw new Error(`${primaryMessage}；${fallbackMessage}`);
+      }
+    }
+  };
+
   return {
-    name: "东方财富",
+    name: "东方财富 / 新浪备用",
     getUniverse: getQuotes,
     getQuotes,
     async getLimitPool(date) {

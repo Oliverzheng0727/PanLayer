@@ -3,7 +3,7 @@ import type { Board, Exchange, Quote } from "../domain/types";
 const TENCENT_URL = "https://qt.gtimg.cn/q=";
 
 function securityMeta(code: string, prefix?: string): { exchange: Exchange; board: Board; limitRate: number } {
-  if (prefix === "bj" || /^(4|8)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
+  if (prefix === "bj" || /^(4|8|9)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
   if (prefix === "sh" || /^6/.test(code)) {
     return /^688/.test(code)
       ? { exchange: "SH", board: "STAR", limitRate: 0.2 }
