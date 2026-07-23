@@ -24,7 +24,7 @@ describe("live refresh UI contract", () => {
     expect(dashboard).toMatch(/formatBreadthRatio/);
     expect(dashboard).toMatch(/isLiveBreadthUsable/);
     expect(dashboard).toMatch(/liveMarket\.universeSize >= 5_000/);
-    expect(dashboard).toMatch(/marginBalance === null \? "暂缺"/);
+    expect(dashboard).toMatch(/overviewMarginBalance === null\s*\?\s*"暂缺"/);
     expect(dashboard).toMatch(/review\.breadth\.at\(-1\) \?\? null/);
     expect(dashboard).not.toMatch(/rising:\s*0,\s*falling:\s*0,\s*flat:\s*0/);
     expect(dashboard).toMatch(/review\.metrics\.largeRise === null \? "暂缺"/);

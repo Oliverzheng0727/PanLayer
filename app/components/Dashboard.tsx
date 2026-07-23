@@ -9,6 +9,7 @@ import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
+import { historyRowToOverview } from "../../lib/history/overview";
 import type { HistoryRow } from "../../lib/history/query";
 import { shouldPoll } from "../../lib/live/polling";
 import { formatBeijingDateTime } from "../../lib/live/market-clock";
@@ -69,6 +70,9 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
   const [refreshError, setRefreshError] = useState("");
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState(
+    () => history.find((row) => row.date === review.date)?.date ?? history[0]?.date ?? review.date,
+  );
   const liveRequestInFlight = useRef(false);
   const closeBriefDrawer = useCallback(() => setBriefSectionIndex(null), []);
   const effectiveStatus: DailyReview["status"] = refreshError
@@ -78,7 +82,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
       : review.status !== "complete"
         ? review.status
         : liveMarket?.status ?? "complete";
-  const statusView = statusViews[effectiveStatus];
+  const currentStatusView = statusViews[effectiveStatus];
   const persistedTotal = useMemo(() => review.breadth.at(-1) ?? null, [review]);
   const isLiveBreadthUsable = liveMarket !== null
     && !liveMarket.isStale
@@ -92,12 +96,37 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
   const ladderHeight = Math.max(0, ...Object.values(review.ladder).flat().map((item) => item.limitStreak));
-  const ladderNote = review.metrics.consecutive === null
-    ? "连板数据暂缺"
-    : ladderHeight >= 2 ? `最高 ${ladderHeight}板` : "暂无连板";
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
-  const marginBalanceValue = review.metrics.marginBalance === null ? "暂缺" : `${review.metrics.marginBalance.toLocaleString("zh-CN")}亿`;
+  const selectedHistoryRow = history.find((row) => row.date === selectedHistoryDate)
+    ?? history.find((row) => row.date === review.date)
+    ?? history[0]
+    ?? null;
+  const selectedHistoricalOverview = selectedHistoryRow ? historyRowToOverview(selectedHistoryRow) : null;
+  const isViewingCurrentReview = selectedHistoricalOverview === null || selectedHistoricalOverview.date === review.date;
+  const overviewDate = isViewingCurrentReview ? review.date : selectedHistoricalOverview.date;
+  const overviewStatus = isViewingCurrentReview ? effectiveStatus : selectedHistoricalOverview.status;
+  const overviewStatusView = statusViews[overviewStatus];
+  const overviewSource = isViewingCurrentReview ? activeSource : selectedHistoricalOverview.source;
+  const overviewUpdatedAt = isViewingCurrentReview ? activeReceivedAt : selectedHistoricalOverview.updatedAt;
+  const overviewRising = isViewingCurrentReview ? total?.rising ?? null : selectedHistoricalOverview.rising;
+  const overviewFalling = isViewingCurrentReview ? total?.falling ?? null : selectedHistoricalOverview.falling;
+  const overviewLimitUp = isViewingCurrentReview ? review.metrics.limitUp : selectedHistoricalOverview.limitUp;
+  const overviewLimitDown = isViewingCurrentReview ? review.metrics.limitDown : selectedHistoricalOverview.limitDown;
+  const overviewConsecutive = isViewingCurrentReview ? review.metrics.consecutive : selectedHistoricalOverview.consecutive;
+  const overviewMaxStreak = isViewingCurrentReview ? ladderHeight : selectedHistoricalOverview.maxStreak;
+  const overviewAllTimeHigh = isViewingCurrentReview ? review.metrics.allTimeHigh : selectedHistoricalOverview.allTimeHigh;
+  const overviewHigh120 = isViewingCurrentReview ? review.metrics.high120 : selectedHistoricalOverview.high120;
+  const overviewClosePremium = isViewingCurrentReview ? review.premium.closePct : selectedHistoricalOverview.closePremium;
+  const overviewOpenPremium = isViewingCurrentReview ? review.premium.openPct : selectedHistoricalOverview.openPremium;
+  const overviewMarginBalance = isViewingCurrentReview ? review.metrics.marginBalance : selectedHistoricalOverview.marginBalance;
+  const overviewLadderNote = overviewConsecutive === null
+    ? "连板数据暂缺"
+    : overviewMaxStreak >= 2 ? `最高 ${overviewMaxStreak}板` : "暂无连板";
+  const overviewMarginBalanceValue = overviewMarginBalance === null
+    ? "暂缺"
+    : `${overviewMarginBalance.toLocaleString("zh-CN")}亿`;
+  const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
 
   const refreshLiveBreadth = useCallback(async () => {
     if (liveRequestInFlight.current) return;
@@ -159,7 +188,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
         <div className="mt-auto px-4 pb-5">
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.035] p-4">
             <div className="mb-2 flex items-center gap-2 text-xs text-white/45"><Database size={14} /> 数据状态</div>
-            <div className="flex items-center gap-2 text-xs"><span className={`size-1.5 rounded-full ${statusView.dot}`} /><span>{statusView.label}</span></div>
+            <div className="flex items-center gap-2 text-xs"><span className={`size-1.5 rounded-full ${currentStatusView.dot}`} /><span>{currentStatusView.label}</span></div>
             <p className="mt-2 text-[10px] leading-5 text-white/35">数据来源：{activeSource}</p>
             <p className="text-[10px] leading-5 text-white/25">更新时间：{formatBeijingDateTime(activeReceivedAt)}</p>
           </div>
@@ -170,7 +199,7 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
       <main className="dashboard-main">
         <header className="dashboard-topbar">
           <button className="grid size-9 place-items-center rounded-full border border-white/10 lg:hidden" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={18} /></button>
-          <div className="hidden items-center gap-2 text-sm text-white/40 sm:flex"><CalendarDays size={16} /><span>{review.date}</span><span className="mx-2 text-white/10">/</span><span>收盘复盘</span></div>
+          <div className="hidden items-center gap-2 text-sm text-white/40 sm:flex"><CalendarDays size={16} /><span>{overviewDate}</span><span className="mx-2 text-white/10">/</span><span>收盘复盘</span></div>
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden xl:block"><LiveDataStatus label="市场" source={liveMarket?.source ?? review.source} status={refreshError ? "failed" : liveMarket?.status ?? review.status} marketTime={liveMarket?.marketTime ?? null} receivedAt={liveMarket?.receivedAt ?? review.updatedAt} isStale={Boolean(refreshError) || (liveMarket?.isStale ?? review.status === "demo")} error={refreshError} /></div>
             <label className="hidden items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.035] px-4 py-2 text-xs text-white/35 md:flex"><Search size={14} /><input className="w-32 bg-transparent outline-none placeholder:text-white/25" placeholder="搜索指标或板块" /></label>
@@ -188,17 +217,22 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
         <div className="dashboard-content">
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">今日市场，层层拆开。</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {review.date} · {liveMarket ? `实时接收 ${formatBeijingDateTime(liveMarket.receivedAt)}` : `复盘更新 ${formatBeijingDateTime(review.updatedAt)}`} · 数据来源 {activeSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{liveMarket ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""} · 状态口径：完整 / 部分 / 失败 / 演示{refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
-              <div className={`rounded-full border px-4 py-2 text-xs ${statusView.pill}`}>{statusView.label} · {statusView.detail}</div>
+              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">{isViewingCurrentReview ? "今日市场，层层拆开。" : `${overviewDate} 市场复盘`}</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {overviewDate} · {isViewingCurrentReview && liveMarket ? `实时接收 ${formatBeijingDateTime(overviewUpdatedAt)}` : `复盘更新 ${formatBeijingDateTime(overviewUpdatedAt)}`} · 数据来源 {overviewSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{isViewingCurrentReview && liveMarket ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""} · 状态口径：完整 / 部分 / 失败 / 演示{isViewingCurrentReview && refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
+              <div className={`rounded-full border px-4 py-2 text-xs ${overviewStatusView.pill}`}>{overviewStatusView.label} · {overviewStatusView.detail}</div>
             </div>
 
             <div className="metric-grid">
-              <Metric label="上涨家数" value={total === null ? "暂缺" : String(total.rising)} note={total === null ? "涨跌家数数据暂缺" : `下跌 ${total.falling}`} />
-              <Metric label="涨停数量" value={review.metrics.limitUp === null ? "暂缺" : String(review.metrics.limitUp)} note={review.metrics.limitDown === null ? "跌停数据暂缺" : `跌停 ${review.metrics.limitDown}`} />
-              <Metric label="连板家数" value={review.metrics.consecutive === null ? "暂缺" : String(review.metrics.consecutive)} note={ladderNote} />
-              <Metric label="历史新高" value={review.metrics.allTimeHigh === null ? "暂缺" : String(review.metrics.allTimeHigh)} note={review.metrics.high120 === null ? "120日新高 数据暂缺" : `120日新高 ${review.metrics.high120}`} />
-              <Metric label="连板收盘溢价" value={pct(review.premium.closePct)} note={`开盘 ${pct(review.premium.openPct)}`} accent />
-              <Metric label="两融余额" value={marginBalanceValue} note="沪深京融资余额" />
+              <Metric label="上涨家数" value={overviewRising === null ? "暂缺" : String(overviewRising)} note={overviewFalling === null ? "涨跌家数数据暂缺" : `下跌 ${overviewFalling}`} />
+              <Metric label="涨停数量" value={overviewLimitUp === null ? "暂缺" : String(overviewLimitUp)} note={overviewLimitDown === null ? "跌停数据暂缺" : `跌停 ${overviewLimitDown}`} />
+              <Metric label="连板家数" value={overviewConsecutive === null ? "暂缺" : String(overviewConsecutive)} note={overviewLadderNote} />
+              <Metric label="历史新高" value={overviewAllTimeHigh === null ? "暂缺" : String(overviewAllTimeHigh)} note={overviewHigh120 === null ? "120日新高 数据暂缺" : `120日新高 ${overviewHigh120}`} />
+              <Metric label="连板收盘溢价" value={pct(overviewClosePremium)} note={`开盘 ${pct(overviewOpenPremium)}`} accent />
+              <Metric label="两融余额" value={overviewMarginBalanceValue} note="沪深京融资余额" />
+            </div>
+
+            <div id="history" className="integrated-history scroll-mt-24">
+              <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="选择任一交易日，上方概览同步切换；表格可上下与横向滚动比较。" />
+              <HistoryWorkspace initialRows={history} canManageHistory={canManageBrief} onSelectedRowChange={selectHistoryRow} />
             </div>
           </section>
 
@@ -236,11 +270,6 @@ export function Dashboard({ review, brief, etfs, history, userName, canManageBri
           <section id="etfs" className="dashboard-section scroll-mt-24">
             <SectionHeading eyebrow="ETF TERMINAL" title="ETF 专业工作台" description="输入六位代码加入个人自选，支持分类、排序和四周期 K 线。" />
             <EtfWorkspace initialEtfs={etfs} />
-          </section>
-
-          <section id="history" className="dashboard-section scroll-mt-24 pb-10">
-            <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="横向比较每日复盘指标，纵向滚动查看真实历史记录。" />
-            <HistoryWorkspace initialRows={history} canManageHistory={canManageBrief} />
           </section>
 
           <footer className="flex flex-col justify-between gap-3 border-t border-white/[0.06] py-6 text-[11px] text-white/25 sm:flex-row"><span>PanLayer · 盘层 © 2026</span><span>仅供市场复盘，不构成投资建议。</span></footer>

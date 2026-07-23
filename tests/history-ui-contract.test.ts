@@ -2,6 +2,19 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("PanLayer history comparison workspace UI contract", () => {
+  it("integrates history selection with the overview instead of rendering a duplicate archive", async () => {
+    const [dashboard, workspace] = await Promise.all([
+      readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8"),
+    ]);
+
+    expect(dashboard).toContain("selectedHistoryRow");
+    expect(dashboard).toContain("onSelectedRowChange={selectHistoryRow}");
+    expect(dashboard).toContain('id="history" className="integrated-history');
+    expect(dashboard.match(/<HistoryWorkspace/g)).toHaveLength(1);
+    expect(workspace).toContain("onSelectedRowChange?.(row)");
+  });
+
   it("contains the supplied review metrics in the same comparison order", async () => {
     const table = await readFile(new URL("../app/components/history/HistoryTable.tsx", import.meta.url), "utf8");
     const labels = [

@@ -198,6 +198,7 @@ button, input { font: inherit; }
 .calendar-day.has-data:not(.selected)::after { position:absolute; bottom:3px; left:50%; width:3px; height:3px; border-radius:50%; background:#e8702a; content:""; transform:translateX(-50%); }
 
 .history-workspace { overflow:hidden; }
+.integrated-history { margin-top:34px; border-top:1px solid rgba(255,255,255,.06); padding-top:30px; }
 .history-toolbar { display:flex; min-height:64px; align-items:center; gap:16px; border-bottom:1px solid rgba(255,255,255,.06); padding:12px 16px; }
 .history-toolbar > div { display:flex; flex-direction:column; gap:3px; }
 .history-toolbar strong { font-size:13px; font-weight:600; }

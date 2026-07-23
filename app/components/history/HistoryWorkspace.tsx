@@ -20,7 +20,13 @@ interface StoredHistoryView {
   scrollLeft?: number;
 }
 
-export function HistoryWorkspace({ initialRows = [], canManageHistory = false }: { initialRows?: HistoryRow[]; canManageHistory?: boolean }) {
+interface HistoryWorkspaceProps {
+  initialRows?: HistoryRow[];
+  canManageHistory?: boolean;
+  onSelectedRowChange?: (row: HistoryRow) => void;
+}
+
+export function HistoryWorkspace({ initialRows = [], canManageHistory = false, onSelectedRowChange }: HistoryWorkspaceProps) {
   const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
@@ -81,6 +87,11 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false }:
     } satisfies StoredHistoryView));
   }, [order, restored, sector, selected, sort, visibleCount]);
 
+  useEffect(() => {
+    const row = initialRows.find((item) => item.date === selected);
+    if (row) onSelectedRowChange?.(row);
+  }, [initialRows, onSelectedRowChange, selected]);
+
   const cycleSort = (field: HistorySortField) => {
     setVisibleCount(12);
     if (sort !== field) { setSort(field); setOrder("desc"); return; }
@@ -133,7 +144,7 @@ export function HistoryWorkspace({ initialRows = [], canManageHistory = false }:
   return (
     <div className="history-workspace panel">
       <div className="history-toolbar">
-        <div><strong>历史数据表</strong><span>固定表头与日期列 · 默认显示 12 个交易日</span></div>
+        <div><strong>历史数据表</strong><span>当前查看 {selected || "暂无记录"} · 固定表头与日期列</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
         {canManageHistory && <button type="button" className={`history-backfill ${backfillState}`} onClick={backfillHistory} disabled={backfillState === "running"} title={backfillState === "failed" ? backfillLabel : undefined}>{backfillState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{backfillLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
