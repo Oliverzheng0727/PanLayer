@@ -78,6 +78,27 @@ describe("Firecrawl morning brief fallback", () => {
     expect(requestUrl).toBe("https://firecrawl.example/v2/search");
   });
 
+  it("accepts a bounded fixed query for tier-2 gap filling", async () => {
+    let body: Record<string, unknown> = {};
+    const fetcher: typeof fetch = async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ success: true, data: { news: [], web: [] } });
+    };
+
+    await searchFirecrawlBriefSources({
+      date: "2026-07-23",
+      key: "global-markets",
+      query: "美债 10年期 收益率".repeat(100),
+      limit: 3,
+      apiKey: "secret",
+      fetcher,
+      deadlineAt: Date.now() + 40_000,
+    });
+
+    expect(String(body.query).length).toBeLessThanOrEqual(500);
+    expect(body.limit).toBe(3);
+  });
+
   it("deduplicates, quality-orders, and rejects unsafe or empty pages", async () => {
     const fetcher: typeof fetch = async () => Response.json({
       success: true,

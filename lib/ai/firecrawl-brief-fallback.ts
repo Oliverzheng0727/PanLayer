@@ -61,6 +61,8 @@ export interface SearchFirecrawlBriefSourcesInput {
   date: string;
   key: BriefSectionKey;
   apiKey: string;
+  query?: string;
+  limit?: number;
   fetcher?: typeof fetch;
   endpoint?: string;
   deadlineAt?: number;
@@ -201,9 +203,9 @@ export async function searchFirecrawlBriefSources(
         Authorization: `Bearer ${input.apiKey}`,
       },
       body: JSON.stringify({
-        query: buildFirecrawlBriefQuery(input.date, input.key),
+        query: (input.query?.trim() || buildFirecrawlBriefQuery(input.date, input.key)).slice(0, 500),
         sources: [{ type: "news" }, { type: "web" }],
-        limit: 5,
+        limit: Math.max(1, Math.min(input.limit ?? 5, 10)),
         tbs: "qdr:w",
         country: "CN",
         ignoreInvalidURLs: true,
