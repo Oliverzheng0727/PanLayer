@@ -1,0 +1,22 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "panlayer-background-scheduler",
+  "main": "./index.js",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": false,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "PANLAYER_TARGET_URL": "https://panlayer-market-review.lihaozheng567.chatgpt.site/api/v1/internal/scheduler/tick"
+  },
+  "triggers": {
+    "crons": [
+      "17 * * * *",
+      "52,57 22 * * SUN-THU",
+      "27 1 * * MON-FRI",
+      "2 2,3,5,6,7 * * MON-FRI",
+      "32 7 * * MON-FRI"
+    ]
+  }
+}
