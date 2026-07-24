@@ -79,15 +79,17 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(workspace).toContain("/api/v1/new-high/progress");
     expect(progress).toContain("历史行情初始化");
     expect(workspace).toContain("初始化新高");
+    expect(workspace).toContain("后台每小时自动继续");
   });
 
-  it("schedules resumable initialization every thirty minutes during the evening window", async () => {
+  it("schedules resumable initialization hourly across weekdays and weekends", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-    expect(config).toContain('"0,30 10-15 * * 1-5"');
+    expect(config).toContain('"2 * * * *"');
+    expect(config).not.toContain('"0,30 10-15 * * 1-5"');
     expect(config).not.toContain('"*/5 18-21 * * 0-4"');
     expect(config).not.toContain('"0-45/5 22 * * 0-4"');
-    expect(config).toContain('"50 22 * * 0-4"');
-    expect(config).toContain('"55 22 * * 0-4"');
+    expect(config).toContain('"52 22 * * 0-4"');
+    expect(config).toContain('"57 22 * * 0-4"');
   });
 
   it("keeps the header and date column frozen inside a two-axis scroll area", async () => {

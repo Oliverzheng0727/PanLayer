@@ -206,7 +206,7 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
         <span className={`new-high-progress ${newHighProgress.ready ? "ready" : ""}`}>{formatNewHighProgress(newHighProgress)}</span>
         {canManageHistory && <button type="button" className={`history-backfill ${backfillState}`} onClick={backfillHistory} disabled={backfillState === "running"} title={backfillState === "failed" ? backfillLabel : undefined}>{backfillState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{backfillLabel}</button>}
-        {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running" || newHighProgress.complete} title={newHighState === "failed" ? newHighLabel : "每批初始化150只；后台每5分钟自动继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
+        {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running" || newHighProgress.complete} title={newHighState === "failed" ? newHighLabel : "每批最多初始化40只；后台每小时自动继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
       <div className="history-layout">
