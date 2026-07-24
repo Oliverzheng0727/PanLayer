@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -128,6 +128,12 @@ function qwenResponse(key: BriefSectionKey, status = 200) {
 }
 
 describe("close review aggregation", () => {
+  it("assigns every scheduled job a stable lease label", () => {
+    expect(leaseLabelForJob({ type: "breadth", time: "10:00" })).toBe("breadth-10:00");
+    expect(leaseLabelForJob({ type: "close-review" })).toBe("close-review");
+    expect(leaseLabelForJob({ type: "history-backfill", days: 20 })).toBe("history-backfill");
+  });
+
   it("runs one resumable history-backfill batch and reports progress", async () => {
     const jobUpdates: string[] = [];
     const db = {
@@ -135,7 +141,10 @@ describe("close review aggregation", () => {
         let values: unknown[] = [];
         return {
           bind(...bound: unknown[]) { values = bound; return this; },
-          async first() { return sql.startsWith("INSERT INTO job_runs") ? { id: 1 } : null; },
+          async first() {
+            if (sql.startsWith("INSERT INTO job_leases")) return { token: String(values[2]) };
+            return sql.startsWith("INSERT INTO job_runs") ? { id: 1 } : null;
+          },
           async run() {
             if (sql.startsWith("UPDATE job_runs")) jobUpdates.push(String(values[0] ?? ""));
             return {};
@@ -581,12 +590,18 @@ describe("close review aggregation", () => {
     expect(review.metrics.allTimeHigh).toBeNull();
   });
 
-  it("derives a 15:00 breadth snapshot when close review has no intraday rows", () => {
+  it("does not fabricate a 15:00 breadth snapshot when the scheduled row is missing", () => {
     const review = buildDailyReview({
       date: "2026-07-23", quotes: [q("A", 1), q("B", -1), q("C", 0)], limitPool: [], breadth: [],
       marginBalance: null, high120: null, allTimeHigh: null, source: "东方财富",
     });
-    expect(review.breadth).toEqual([{ time: "15:00", rising: 1, falling: 1, flat: 1 }]);
+    expect(review.breadth).toEqual([]);
+    expect(review.breadthMeta).toEqual({
+      expected: 6,
+      captured: 0,
+      missing: ["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"],
+      status: "partial",
+    });
   });
 
   it("persists a partial morning job run and names its failed module", async () => {

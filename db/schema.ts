@@ -100,6 +100,24 @@ export const jobRuns = sqliteTable("job_runs", {
   finishedAt: text("finished_at"),
 }, (table) => [index("job_runs_date_idx").on(table.tradeDate, table.job)]);
 
+export const jobCheckpoints = sqliteTable("job_checkpoints", {
+  tradeDate: text("trade_date").notNull(),
+  jobKey: text("job_key").notNull(),
+  stage: text("stage").notNull().default("main"),
+  status: text("status").notNull(),
+  attempt: integer("attempt").notNull().default(0),
+  expectedAt: text("expected_at").notNull(),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  nextRetryAt: text("next_retry_at"),
+  message: text("message").notNull().default(""),
+  resultJson: text("result_json").notNull().default("{}"),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.tradeDate, table.jobKey, table.stage] }),
+  index("job_checkpoints_due_idx").on(table.tradeDate, table.status, table.nextRetryAt),
+]);
+
 export const bootstrapState = sqliteTable("bootstrap_state", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -136,6 +154,16 @@ export const newHighStates = sqliteTable("new_high_states", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
   index("new_high_states_progress_idx").on(table.status, table.initializedThrough),
+]);
+
+export const newHighBootstrapFailures = sqliteTable("new_high_bootstrap_failures", {
+  symbol: text("symbol").primaryKey(),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error").notNull(),
+  nextRetryAt: text("next_retry_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("new_high_bootstrap_retry_idx").on(table.nextRetryAt, table.attempts),
 ]);
 
 export const marketSourceAudits = sqliteTable("market_source_audits", {

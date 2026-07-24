@@ -5,6 +5,7 @@ export type ScheduledJob =
   | { type: "breadth"; time: string }
   | { type: "close-review" }
   | { type: "new-high-bootstrap" }
+  | { type: "etf-metrics-refresh" }
   | { type: "history-backfill"; days: number };
 
 const BREADTH_TIMES = new Set(["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"]);
@@ -28,6 +29,7 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
     return { type: "new-high-bootstrap" };
   }
   if (BREADTH_TIMES.has(time)) return { type: "breadth", time };
+  if (time === "15:30") return { type: "etf-metrics-refresh" };
   if (time === "16:10") return { type: "close-review" };
   return null;
 }

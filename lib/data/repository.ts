@@ -11,6 +11,12 @@ import {
 } from "../history/new-high-progress";
 import { reconcileGlobalPoints } from "./global/reconcile";
 import type { GlobalPoint } from "./global/types";
+import {
+  expectedDailyJobs,
+  readDailyJobCheckpoints,
+  type JobCheckpoint,
+} from "../jobs/checkpoints";
+import { beijingDateParts } from "../jobs/schedule";
 
 interface HealthJob { job: string; trade_date: string; status: string; message: string; started_at: string; finished_at: string | null }
 interface HealthSource { source?: string; provider?: string; status: string; received_at: string; message: string }
@@ -30,6 +36,130 @@ interface HealthNewsRun {
 }
 
 const healthSection = (status: string, message: string, updatedAt: string | null) => ({ status, message, updatedAt });
+
+export interface DailyJobHealth {
+  tradeDate: string;
+  generatedAt: string;
+  jobs: Record<string, {
+    status: "pending" | "running" | "partial" | "complete" | "failed";
+    expectedAt: string;
+    finishedAt: string | null;
+    nextRetryAt: string | null;
+    message: string;
+    attempt: number;
+    overdue: boolean;
+  }>;
+  stages?: Record<string, {
+    status: string;
+    finishedAt: string | null;
+    nextRetryAt: string | null;
+    message: string;
+  }>;
+  fields?: Record<string, DailyFieldHealth>;
+}
+
+export interface DailyFieldHealth {
+  status: "complete" | "partial" | "missing" | "initializing";
+  source: string;
+  marketTime: string | null;
+  receivedAt: string | null;
+  message: string;
+}
+
+export function buildDailyFieldHealth(
+  review: DailyReview | null,
+  progress: NewHighProgress,
+): Record<string, DailyFieldHealth> {
+  const field = (
+    status: DailyFieldHealth["status"],
+    message: string,
+    source = review?.source ?? "",
+    marketTime: string | null = null,
+    receivedAt: string | null = review?.updatedAt ?? null,
+  ): DailyFieldHealth => ({ status, source, marketTime, receivedAt, message });
+  if (!review) {
+    return {
+      closeReview: field("missing", "尚无收盘复盘"),
+      high20: field(progress.ready ? "missing" : "initializing", `${progress.completed}/${progress.target}`),
+      high120: field(progress.ready ? "missing" : "initializing", `${progress.completed}/${progress.target}`),
+      allTimeHigh: field(progress.ready ? "missing" : "initializing", `${progress.completed}/${progress.target}`),
+    };
+  }
+  const highStatus = (value: number | null | undefined): DailyFieldHealth["status"] =>
+    value !== null && value !== undefined ? "complete" : progress.ready ? "missing" : "initializing";
+  const evidence = review.comparison?.evidence ?? {};
+  const evidenceField = (key: string, available: boolean, missingMessage: string) => {
+    const item = evidence[key];
+    return field(
+      available ? item?.status === "partial" ? "partial" : "complete" : "missing",
+      item?.message || missingMessage,
+      item?.source || review.source,
+      item?.marketTime ?? null,
+      item?.receivedAt ?? review.updatedAt,
+    );
+  };
+  return {
+    breadth: field(
+      review.breadthMeta?.status === "complete" ? "complete" : "partial",
+      review.breadthMeta
+        ? `已采集 ${review.breadthMeta.captured}/${review.breadthMeta.expected}`
+        : `已采集 ${review.breadth.length}/6`,
+    ),
+    high20: field(highStatus(review.metrics.high20), review.metrics.high20 === null ? `${progress.completed}/${progress.target}` : "已核验"),
+    high120: field(highStatus(review.metrics.high120), review.metrics.high120 === null ? `${progress.completed}/${progress.target}` : "已核验"),
+    allTimeHigh: field(highStatus(review.metrics.allTimeHigh), review.metrics.allTimeHigh === null ? `${progress.completed}/${progress.target}` : "已核验"),
+    marketAmount: evidenceField("marketAmount", review.comparison?.marketAmount !== null && review.comparison?.marketAmount !== undefined, "全市场成交额暂缺"),
+    largeDownCount: evidenceField("largeDownCount", review.comparison?.largeDownCount !== null && review.comparison?.largeDownCount !== undefined, "大跌家数暂缺"),
+    indices: evidenceField("indices", Boolean(review.comparison?.indices.length), "指数数据暂缺"),
+    structure: field(
+      review.structure?.status === "complete" ? "complete" : review.structure?.status === "partial" ? "partial" : "missing",
+      review.structure?.message ?? "涨跌停结构暂缺",
+      review.structure?.source ?? review.source,
+      null,
+      review.structure?.receivedAt ?? review.updatedAt,
+    ),
+    closePremium: field(review.premium.closePct === null ? "missing" : "complete", review.premium.closePct === null ? "连板溢价样本暂缺" : `样本 ${review.premium.sampleSize}`),
+  };
+}
+
+export function buildDailyJobHealth({
+  tradeDate,
+  now,
+  checkpoints,
+}: {
+  tradeDate: string;
+  now: Date;
+  checkpoints: JobCheckpoint[];
+}): DailyJobHealth {
+  const checkpointByKey = new Map(
+    checkpoints
+      .filter((checkpoint) => checkpoint.stage === "main")
+      .map((checkpoint) => [checkpoint.key, checkpoint]),
+  );
+  const jobs = Object.fromEntries(expectedDailyJobs(tradeDate).map((expected) => {
+    const checkpoint = checkpointByKey.get(expected.key);
+    const overdue = now.getTime() > new Date(expected.expectedAt).getTime() + 5 * 60_000
+      && checkpoint?.status !== "complete";
+    return [expected.key, {
+      status: checkpoint?.status ?? "pending",
+      expectedAt: expected.expectedAt,
+      finishedAt: checkpoint?.finishedAt ?? null,
+      nextRetryAt: checkpoint?.nextRetryAt ?? null,
+      message: checkpoint?.message ?? (overdue ? "计划时间已过，等待自动补跑" : "等待计划时间"),
+      attempt: checkpoint?.attempt ?? 0,
+      overdue,
+    }];
+  }));
+  const stages = Object.fromEntries(checkpoints
+    .filter((checkpoint) => checkpoint.stage !== "main")
+    .map((checkpoint) => [`${checkpoint.key}:${checkpoint.stage}`, {
+      status: checkpoint.status,
+      finishedAt: checkpoint.finishedAt,
+      nextRetryAt: checkpoint.nextRetryAt,
+      message: checkpoint.message,
+    }]));
+  return { tradeDate, generatedAt: now.toISOString(), jobs, stages };
+}
 
 export function summarizeDataHealth({
   jobs,
@@ -228,8 +358,13 @@ export async function readGlobalSnapshot(date: string) {
 
 export async function readDataHealth() {
   const db = await getD1();
-  if (!db) return summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] });
-  const [jobResult, auditResult, globalResult, newsResult] = await Promise.all([
+  const now = new Date();
+  const tradeDate = beijingDateParts(now).date;
+  if (!db) return {
+    ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
+    daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
+  };
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -237,11 +372,26 @@ export async function readDataHealth() {
       kept_item_count, filtered_item_count, started_at, finished_at, error_summary_json
       FROM brief_fetch_runs ORDER BY fetch_date DESC, source_tier ASC, finished_at DESC LIMIT 20`)
       .all<HealthNewsRun>().catch(() => ({ results: [] })),
+    readDailyJobCheckpoints(db, tradeDate).catch(() => []),
+    db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1")
+      .bind(tradeDate).first<{ payload: string }>().catch(() => null),
   ]);
-  return summarizeDataHealth({
+  let latestReview: DailyReview | null = null;
+  try {
+    latestReview = latestReviewRow?.payload ? JSON.parse(latestReviewRow.payload) as DailyReview : null;
+  } catch {
+    latestReview = null;
+  }
+  const progress = await readNewHighProgress(latestReview?.date ?? tradeDate);
+  const daily = buildDailyJobHealth({ tradeDate, now, checkpoints });
+  daily.fields = buildDailyFieldHealth(latestReview, progress);
+  return {
+    ...summarizeDataHealth({
     jobs: jobResult.results ?? [],
     audits: auditResult.results ?? [],
     globalPoints: globalResult.results ?? [],
     newsRuns: newsResult.results ?? [],
-  });
+    }),
+    daily,
+  };
 }

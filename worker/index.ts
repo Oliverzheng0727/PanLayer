@@ -1,8 +1,10 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { isChinaTradingWeekday } from "../lib/jobs/schedule";
+import { beijingDateParts, isChinaTradingWeekday } from "../lib/jobs/schedule";
 import { runPanLayerJob, scheduledJobFromDate } from "../lib/jobs/runner";
+import { readDailyJobCheckpoints, scheduledJobKey } from "../lib/jobs/checkpoints";
+import { planCatchUpJobs } from "../lib/jobs/reconcile";
 
 interface Env {
   ASSETS: Fetcher;
@@ -51,8 +53,16 @@ const worker = {
   async scheduled(controller: { scheduledTime: number }, env: Env, ctx: ExecutionContext) {
     const now = new Date(controller.scheduledTime);
     if (!isChinaTradingWeekday(now)) return;
-    const job = scheduledJobFromDate(now);
-    if (job) ctx.waitUntil(runPanLayerJob(job, now, env));
+    const { date } = beijingDateParts(now);
+    const exactJob = scheduledJobFromDate(now);
+    const checkpoints = await readDailyJobCheckpoints(env.DB, date).catch(() => []);
+    const catchUpJobs = planCatchUpJobs({ tradeDate: date, now, checkpoints });
+    const jobs = [...(exactJob ? [exactJob] : []), ...catchUpJobs]
+      .filter((job, index, all) => all.findIndex((candidate) => scheduledJobKey(candidate) === scheduledJobKey(job)) === index)
+      .slice(0, 2);
+    if (jobs.length > 0) {
+      ctx.waitUntil(Promise.allSettled(jobs.map((job) => runPanLayerJob(job, now, env))));
+    }
   },
 };
 

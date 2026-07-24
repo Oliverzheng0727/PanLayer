@@ -17,6 +17,7 @@ describe("Beijing market schedule", () => {
     expect(jobForBeijingTime("07:00")).toBeNull();
     expect(jobForBeijingTime("09:25")).toEqual({ type: "breadth", time: "09:25" });
     expect(jobForBeijingTime("15:00")).toEqual({ type: "breadth", time: "15:00" });
+    expect(jobForBeijingTime("15:30")).toEqual({ type: "etf-metrics-refresh" });
     expect(jobForBeijingTime("16:10")).toEqual({ type: "close-review" });
     expect(jobForBeijingTime("12:12")).toBeNull();
   });

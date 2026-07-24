@@ -102,6 +102,12 @@ export interface DailyReview {
   updatedAt: string;
   unavailableReason?: string;
   breadth: Array<Breadth & { time: string }>;
+  breadthMeta?: {
+    expected: number;
+    captured: number;
+    missing: string[];
+    status: "complete" | "partial";
+  };
   metrics: {
     limitUp: number | null;
     limitDown: number | null;

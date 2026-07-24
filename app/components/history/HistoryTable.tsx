@@ -11,6 +11,12 @@ const count = (value: number | null) => value === null ? "暂缺" : value.toLoca
 const money = (value: number | null) => value === null ? "暂缺" : `${value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}亿`;
 const tone = (value: number | null) => value === null ? "" : value >= 0 ? "rise" : "fall";
 
+function historicalMissingReason(row: HistoryRow, value: unknown, availableTitle: string): string {
+  if (value !== null && value !== undefined && value !== "暂缺") return availableTitle;
+  if (row.backfilled) return "历史源不支持全市场回补，因此保持暂缺";
+  return "当日任务失败或覆盖率不足，等待自动补跑；不会沿用旧值";
+}
+
 const columns: Array<{ field?: HistorySortField; label: string; className?: string; width: number }> = [
   { field: "date", label: "日期", className: "history-date", width: 112 },
   { field: "limitUp", label: "涨停家数", width: 94 },
@@ -92,13 +98,13 @@ export function HistoryTable({
               <td className="history-date"><Link href={`/dashboard?date=${row.date}`} title={`查看 ${row.date} 完整复盘`}>{row.date}</Link></td>
               <td className="rise">{count(row.limitUp)}</td>
               <td className="fall">{count(row.limitDown)}</td>
-              <td><EvidenceButton disabled={row.brokenCount === null} label={count(row.brokenCount)} title="查看炸板数据口径" onClick={() => onOpenEvidence(row, "brokenCount")} /></td>
-              <td className="fall">{count(row.largeDownCount)}</td>
-              <td><EvidenceButton disabled={row.sealRate === null} label={pct(row.sealRate)} title="查看封板率口径" onClick={() => onOpenEvidence(row, "sealRate")} /></td>
-              <td><EvidenceButton disabled={row.yesterdaySuccessRate === null} label={pct(row.yesterdaySuccessRate)} title="查看昨日打板成功率口径" onClick={() => onOpenEvidence(row, "yesterdaySuccessRate")} /></td>
-              <td className={tone(row.continuationAveragePct)}><EvidenceButton disabled={row.continuationAveragePct === null} label={continuation} title="查看连板反馈样本" onClick={() => onOpenEvidence(row, "continuation")} /></td>
-              <td className="rise">{count(row.rising)}</td>
-              <td><EvidenceButton disabled={row.marketAmount === null} label={money(row.marketAmount)} title="查看全市场成交额覆盖率" onClick={() => onOpenEvidence(row, "marketAmount")} /></td>
+              <td><EvidenceButton disabled={false} label={count(row.brokenCount)} title={historicalMissingReason(row, row.brokenCount, "查看炸板数据口径")} onClick={() => onOpenEvidence(row, "brokenCount")} /></td>
+              <td className="fall" title={historicalMissingReason(row, row.largeDownCount, "收盘跌幅不高于-7%且未封跌停")}>{count(row.largeDownCount)}</td>
+              <td><EvidenceButton disabled={false} label={pct(row.sealRate)} title={historicalMissingReason(row, row.sealRate, "查看封板率口径")} onClick={() => onOpenEvidence(row, "sealRate")} /></td>
+              <td><EvidenceButton disabled={false} label={pct(row.yesterdaySuccessRate)} title={historicalMissingReason(row, row.yesterdaySuccessRate, "查看昨日打板成功率口径")} onClick={() => onOpenEvidence(row, "yesterdaySuccessRate")} /></td>
+              <td className={tone(row.continuationAveragePct)}><EvidenceButton disabled={false} label={continuation} title={historicalMissingReason(row, row.continuationAveragePct, "查看连板反馈样本")} onClick={() => onOpenEvidence(row, "continuation")} /></td>
+              <td className="rise" title={historicalMissingReason(row, row.rising, "收盘上涨家数")}>{count(row.rising)}</td>
+              <td><EvidenceButton disabled={false} label={money(row.marketAmount)} title={historicalMissingReason(row, row.marketAmount, "查看全市场成交额覆盖率")} onClick={() => onOpenEvidence(row, "marketAmount")} /></td>
               <td>{count(row.consecutive)}</td>
               <td><EvidenceButton disabled={row.comparison?.maxBoard === null || !row.comparison} label={maximum} title="查看最高板股票" onClick={() => onOpenEvidence(row, "maxBoard")} /></td>
               <td>{<EvidenceButton disabled={row.brokenBoardCount === null} label={count(row.brokenBoardCount)} title="查看断板股票" onClick={() => onOpenEvidence(row, "brokenBoard")} />}</td>

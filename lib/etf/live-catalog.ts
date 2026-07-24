@@ -8,6 +8,7 @@ import {
   saveEtfCatalogSnapshot,
   type PersistedEtfCatalogSnapshot,
 } from "./catalog-repository";
+import { mergeEtfDerivedMetrics } from "./derived-metrics";
 
 export interface EtfCatalogEnvelope {
   items: EtfSnapshot[];
@@ -47,7 +48,9 @@ export async function loadEtfCatalogWithFallback({
   const errors: string[] = [];
   for (const provider of providers) {
     try {
-      const items = requireCatalog(await provider.load(), provider.source);
+      const loaded = requireCatalog(await provider.load(), provider.source);
+      const previous = await store?.loadLatest(date).catch(() => null);
+      const items = previous ? mergeEtfDerivedMetrics(loaded, previous.items) : loaded;
       const snapshot: PersistedEtfCatalogSnapshot = {
         tradeDate: date,
         items,

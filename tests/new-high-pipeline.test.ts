@@ -49,6 +49,7 @@ class MemoryNewHighStore implements NewHighStateStore {
   readonly states = new Map<string, NewHighState>();
   readonly details = new Map<string, HighDetail>();
   rebuilds: string[] = [];
+  failures = new Map<string, number>();
 
   async listBootstrapCandidates(_targetDate: string, limit: number) {
     return this.candidates.filter((item) => !this.states.has(item.symbol)).slice(0, limit);
@@ -57,6 +58,12 @@ class MemoryNewHighStore implements NewHighStateStore {
   async saveInitialization(state: NewHighState, details: HighDetail[]) {
     this.states.set(state.symbol, state);
     details.forEach((item) => this.details.set(`${item.date}:${item.type}:${item.symbol}`, item));
+  }
+  async recordBootstrapFailure(symbol: string) {
+    this.failures.set(symbol, (this.failures.get(symbol) ?? 0) + 1);
+  }
+  async clearBootstrapFailure(symbol: string) {
+    this.failures.delete(symbol);
   }
   async progress() {
     return { completed: this.states.size, target: this.candidates.length };
@@ -108,10 +115,35 @@ describe("new-high bootstrap and daily pipeline", () => {
       target: 2,
       remaining: 1,
       failed: 0,
+      attempted: 1,
+      succeeded: 1,
       coveragePct: 50,
     });
     expect(store.states.get("600001.SH")?.closes).toHaveLength(119);
     expect([...store.details.values()].map((item) => item.type)).toEqual(["20d", "120d", "all-time"]);
+  });
+
+  it("persists a failed symbol without blocking successful candidates", async () => {
+    const store = new MemoryNewHighStore();
+    const mixedProvider = {
+      getAdjustedBars: async (symbol: string) => {
+        if (symbol === "600001.SH") throw new Error("permanent failure");
+        return bars;
+      },
+    } as unknown as MarketDataProvider;
+
+    const result = await runNewHighBootstrapBatch({
+      store,
+      provider: mixedProvider,
+      targetDate: bars.at(-1)!.date,
+      batchSize: 2,
+      concurrency: 2,
+      retryDelayMs: 0,
+    });
+
+    expect(result).toMatchObject({ attempted: 2, succeeded: 1, failed: 1, completed: 1 });
+    expect(store.failures.get("600001.SH")).toBe(1);
+    expect(store.states.has("600002.SH")).toBe(true);
   });
 
   it("retries an adjusted-history request twice before recording a failure", async () => {

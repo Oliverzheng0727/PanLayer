@@ -51,6 +51,9 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(drawer).toContain("计算口径");
     expect(drawer).toContain("有效样本");
     expect(drawer).toContain("仅供市场复盘，不构成投资建议");
+    const table = await readFile(new URL("../app/components/history/HistoryTable.tsx", import.meta.url), "utf8");
+    expect(table).toContain("historicalMissingReason");
+    expect(table).toContain("历史源不支持全市场回补");
   });
 
   it("opens verified 20d, 120d and all-time stock lists from the overview card", async () => {

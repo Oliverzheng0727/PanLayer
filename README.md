@@ -74,6 +74,9 @@ npm run test:render
 npm run build
 ```
 
+每日任务的验收时间、补跑规则和历史回补边界见
+[`docs/operations/daily-data-runbook.md`](docs/operations/daily-data-runbook.md)。
+
 ## OpenAI Sites
 
 `.openai/hosting.json` 只保存 Sites 项目标识和 D1/R2 绑定，不保存密钥。用户身份由 OpenAI 托管环境注入；任何已登录 ChatGPT 账号都能查看工作台，管理任务仅允许 `ADMIN_USER_EMAIL`（兼容旧配置 `ALLOWED_USER_EMAIL`）执行。

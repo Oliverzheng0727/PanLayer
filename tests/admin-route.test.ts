@@ -20,10 +20,10 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toContain('job === "tier2-news-prefetch"');
   });
 
-  it("seeds an empty stock universe and runs larger overnight bootstrap batches", async () => {
+  it("seeds an empty stock universe and runs bounded overnight bootstrap batches", async () => {
     const runner = await readFile(new URL("../lib/jobs/runner.ts", import.meta.url), "utf8");
     expect(runner).toContain("provider.getUniverse()");
-    expect(runner).toContain("batchSize: 150");
+    expect(runner).toContain("batchSize: 40");
     expect(runner).toContain("coverage ${progress.coveragePct}%");
     expect(runner).toContain('job.type === "new-high-bootstrap"');
     expect(runner).toContain("acquireJobLease(db, leaseJob, date)");

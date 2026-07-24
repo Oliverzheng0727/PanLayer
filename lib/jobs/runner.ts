@@ -1,5 +1,6 @@
 import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
+import { validateBriefPublication } from "../ai/morning-brief-validation";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
 import { collectTier1News } from "../ai/news-intake/collector";
@@ -31,6 +32,8 @@ import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { withRetry } from "../data/resilience";
 import { runHistoryBackfillBatch } from "../history/backfill";
+import { runEtfMetricsRefreshBatch } from "../etf/metrics-refresh";
+import { breadthCompleteness } from "../history/overview";
 import {
   createD1NewHighStateStore,
   newHighBootstrapTargetDate,
@@ -38,6 +41,13 @@ import {
 } from "../history/new-high-d1-store";
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
+import { mergeCloseReviewWithExisting, type CloseReviewStage } from "./close-review-stages";
+import {
+  expectedAtForJob,
+  recordJobCheckpoint,
+  retryAtForAttempt,
+  scheduledJobKey,
+} from "./checkpoints";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
 // The 110s batch deadline stays below the 180s stale lease window, so a live job cannot be reclaimed.
@@ -366,11 +376,22 @@ export async function generateFullMorningBrief(input: {
     if (persisted) return persisted;
     return { key, error: "模块尚未生成" };
   }), beijingTimestamp());
+  const publication = validateBriefPublication(assembled);
+  const publishable: MorningBrief = {
+    ...assembled,
+    status: publication.ok ? assembled.status : assembled.status === "failed" ? "failed" : "partial",
+    publication: {
+      expectedAt: publication.expectedAt,
+      completedAt: publication.completedAt,
+      timeliness: publication.timeliness,
+      issues: publication.issues,
+    },
+  };
   await assertMorningBriefLease(input.lease);
   await input.db.prepare(`INSERT INTO morning_briefs (trade_date, model, payload, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET model=excluded.model, payload=excluded.payload, status=excluded.status, updated_at=excluded.updated_at`)
-    .bind(input.date, input.model, JSON.stringify(assembled), assembled.status, new Date().toISOString())
+    .bind(input.date, input.model, JSON.stringify(publishable), publishable.status, new Date().toISOString())
     .run();
-  return assembled;
+  return publishable;
 }
 
 export async function persistSourceAudits(db: D1Database, date: string, snapshotTime: string, audits: SourceAudit[]) {
@@ -453,7 +474,7 @@ export function buildDailyReview({
   }));
   const quoteLimitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
   const limitUps = structure.status === "failed" ? [] : poolLimitUps;
-  const resolvedBreadth = breadth.length > 0 ? breadth : [{ time: "15:00", ...calculateBreadth(quotes) }];
+  const resolvedBreadth = breadth;
   const rankedSectorMetrics = rankSectors(sectorMetrics).slice(0, 20);
   const comparison = boardPools ? buildMarketComparison({
     date,
@@ -485,6 +506,7 @@ export function buildDailyReview({
     source,
     updatedAt: receivedAt,
     breadth: resolvedBreadth,
+    breadthMeta: breadthCompleteness(resolvedBreadth),
     metrics: {
       limitUp: boardPools ? boardPools.limitUp.length : quoteLimitUps.length,
       limitDown: boardPools ? boardPools.limitDown.length : merged.filter((item) => classifyLimitStatus(item) === "limit-down").length,
@@ -512,9 +534,13 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS morning_brief_sections (trade_date TEXT NOT NULL, section_key TEXT NOT NULL, model TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', generated_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (trade_date, section_key))`,
   `CREATE TABLE IF NOT EXISTS job_leases (job TEXT NOT NULL, trade_date TEXT NOT NULL, token TEXT NOT NULL, acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY (job, trade_date))`,
   `CREATE TABLE IF NOT EXISTS job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, trade_date TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', started_at TEXT NOT NULL, finished_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS job_checkpoints (trade_date TEXT NOT NULL, job_key TEXT NOT NULL, stage TEXT NOT NULL DEFAULT 'main', status TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, expected_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, next_retry_at TEXT, message TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, PRIMARY KEY (trade_date, job_key, stage))`,
+  `CREATE INDEX IF NOT EXISTS job_checkpoints_due_idx ON job_checkpoints(trade_date, status, next_retry_at)`,
   `CREATE TABLE IF NOT EXISTS new_high_details (trade_date TEXT NOT NULL, type TEXT NOT NULL, symbol TEXT NOT NULL, name TEXT NOT NULL, sector TEXT NOT NULL, pct_change REAL NOT NULL, close REAL NOT NULL, high_price REAL NOT NULL, amount REAL NOT NULL, interval_pct REAL NOT NULL, high_date TEXT NOT NULL, is_all_time INTEGER NOT NULL, PRIMARY KEY (trade_date, type, symbol))`,
   `CREATE TABLE IF NOT EXISTS new_high_states (symbol TEXT PRIMARY KEY, name TEXT NOT NULL, sector TEXT NOT NULL, last_date TEXT NOT NULL, last_close REAL NOT NULL, closes_json TEXT NOT NULL, all_time_high REAL NOT NULL, all_time_high_date TEXT NOT NULL, first_close REAL NOT NULL, initialized_through TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', updated_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS new_high_states_progress_idx ON new_high_states(status, initialized_through)`,
+  `CREATE TABLE IF NOT EXISTS new_high_bootstrap_failures (symbol TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL, next_retry_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS new_high_bootstrap_retry_idx ON new_high_bootstrap_failures(next_retry_at, attempts)`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
   ...NEWS_INTAKE_SCHEMA_STATEMENTS,
@@ -544,6 +570,10 @@ async function persistStockUniverse(db: D1Database, quotes: Quote[], updatedAt: 
   }
 }
 
+export function leaseLabelForJob(job: ScheduledJob): string {
+  return job.type === "breadth" ? `breadth-${job.time}` : job.type;
+}
+
 export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
@@ -554,20 +584,78 @@ export async function runPanLayerJob(
   const db = env.DB;
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
-  const leaseJob = job.type === "morning-brief"
-    || job.type === "new-high-bootstrap"
-    || job.type === "tier1-rss-prefetch"
-    || job.type === "tier2-news-prefetch"
-    ? job.type
-    : null;
-  const leaseToken = leaseJob ? await acquireJobLease(db, leaseJob, date) : null;
-  if (leaseJob && !leaseToken) return { ok: false, message: `${leaseJob} already running` };
+  const leaseJob = leaseLabelForJob(job);
+  const leaseToken = await acquireJobLease(db, leaseJob, date);
+  if (!leaseToken) return { ok: false, message: `${leaseJob} already running` };
   const morningBriefLease: MorningBriefLease | undefined = leaseJob === "morning-brief" && leaseToken
     ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) }
     : undefined;
   let run: { id: number } | null = null;
+  const checkpointKey = scheduledJobKey(job);
+  const checkpointExpectedAt = expectedAtForJob(date, checkpointKey);
+  let checkpointAttempt = 1;
+  let checkpointStartedAt: string | null = null;
+  const finishCheckpoint = async (
+    status: "partial" | "complete" | "failed",
+    message: string,
+    result: Record<string, unknown> = {},
+  ) => {
+    const finishedAt = new Date().toISOString();
+    await recordJobCheckpoint(db, {
+      tradeDate: date,
+      key: checkpointKey,
+      stage: "main",
+      status,
+      attempt: checkpointAttempt,
+      expectedAt: checkpointExpectedAt,
+      startedAt: checkpointStartedAt,
+      finishedAt,
+      nextRetryAt: status === "complete" ? null : retryAtForAttempt(new Date(), checkpointAttempt),
+      message,
+      resultJson: JSON.stringify(result),
+    });
+  };
+  const finishCloseStage = async (
+    stage: CloseReviewStage,
+    status: "partial" | "complete" | "failed",
+    message: string,
+    result: Record<string, unknown> = {},
+  ) => {
+    const finishedAt = new Date().toISOString();
+    await recordJobCheckpoint(db, {
+      tradeDate: date,
+      key: "close-review",
+      stage,
+      status,
+      attempt: checkpointAttempt,
+      expectedAt: checkpointExpectedAt,
+      startedAt: checkpointStartedAt,
+      finishedAt,
+      nextRetryAt: status === "complete" ? null : retryAtForAttempt(new Date(), checkpointAttempt),
+      message,
+      resultJson: JSON.stringify(result),
+    });
+  };
   try {
     const startedAt = new Date().toISOString();
+    checkpointStartedAt = startedAt;
+    const previousCheckpoint = await db.prepare(
+      "SELECT attempt FROM job_checkpoints WHERE trade_date = ? AND job_key = ? AND stage = 'main'",
+    ).bind(date, checkpointKey).first<{ attempt: number }>();
+    checkpointAttempt = Number(previousCheckpoint?.attempt ?? 0) + 1;
+    await recordJobCheckpoint(db, {
+      tradeDate: date,
+      key: checkpointKey,
+      stage: "main",
+      status: "running",
+      attempt: checkpointAttempt,
+      expectedAt: checkpointExpectedAt,
+      startedAt,
+      finishedAt: null,
+      nextRetryAt: null,
+      message: "",
+      resultJson: "{}",
+    });
     const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
     run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
     const fetcher = options.fetcher ?? fetch;
@@ -608,6 +696,7 @@ export async function runPanLayerJob(
       });
       const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
       if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
+      await finishCheckpoint(progress.remaining === 0 ? "complete" : "partial", message, progress);
       return { ok: true, message };
     } else if (job.type === "new-high-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
@@ -627,10 +716,10 @@ export async function runPanLayerJob(
         store,
         provider,
         targetDate,
-        batchSize: 150,
-        concurrency: 6,
+        batchSize: 40,
+        concurrency: 3,
       });
-      if (progress.remaining === 0 && progress.target > 0) {
+      if (progress.coveragePct >= 95 && progress.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
       const message =
@@ -643,6 +732,23 @@ export async function runPanLayerJob(
           "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
         ).bind(status, message, new Date().toISOString(), run.id).run();
       }
+      await finishCheckpoint(status, message, progress);
+      return { ok: true, message };
+    } else if (job.type === "etf-metrics-refresh") {
+      const progress = await runEtfMetricsRefreshBatch({
+        db,
+        date,
+        fetcher,
+        batchSize: 12,
+      });
+      const message = `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}`;
+      const status = progress.remaining === 0 ? "complete" : "partial";
+      if (run?.id) {
+        await db.prepare(
+          "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
+        ).bind(status, message, new Date().toISOString(), run.id).run();
+      }
+      await finishCheckpoint(status, message, progress);
       return { ok: true, message };
     } else if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
@@ -661,6 +767,8 @@ export async function runPanLayerJob(
       await persistStockUniverse(db, market.quotes, updatedAt);
       const metric = calculateBreadth(market.quotes);
       await db.prepare(`INSERT INTO breadth_snapshots (trade_date, snapshot_time, rising, falling, flat, source, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, snapshot_time) DO UPDATE SET rising=excluded.rising, falling=excluded.falling, flat=excluded.flat, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, job.time, metric.rising, metric.falling, metric.flat, market.source, market.status, updatedAt).run();
+      finalStatus = market.status;
+      finalMessage = `${market.quotes.length}只；${market.message}`;
     } else if (job.type === "close-review") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
@@ -675,12 +783,43 @@ export async function runPanLayerJob(
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
       await persistStockUniverse(db, market.quotes, new Date().toISOString());
+      await finishCloseStage(
+        "quotes",
+        market.status,
+        market.message,
+        { quoteCount: market.quotes.length, source: market.source },
+      );
       const [limitPool, marginBalance, boardPools, marketAggregate, indices] = await Promise.all([
         withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
         provider.getMarginBalance(date).catch(() => null),
         withRetry(() => provider.getBoardPools(date), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
+      ]);
+      await Promise.all([
+        finishCloseStage(
+          "board-pools",
+          boardPools ? "complete" : limitPool.length > 0 ? "partial" : "failed",
+          boardPools ? "四池数据完整" : limitPool.length > 0 ? "仅涨停池可用" : "涨跌停池不可用",
+          {
+            limitUp: boardPools?.limitUp.length ?? limitPool.length,
+            broken: boardPools?.broken.length ?? null,
+            limitDown: boardPools?.limitDown.length ?? null,
+            yesterdayLimitUp: boardPools?.yesterdayLimitUp.length ?? null,
+          },
+        ),
+        finishCloseStage(
+          "aggregate",
+          marketAggregate?.status ?? "failed",
+          marketAggregate?.message ?? "全市场汇总暂缺",
+          { coveragePct: marketAggregate?.coveragePct ?? null, amount: marketAggregate?.amount ?? null },
+        ),
+        finishCloseStage(
+          "indices",
+          indices.length >= 5 && indices.every((item) => item.status === "complete") ? "complete" : indices.length > 0 ? "partial" : "failed",
+          indices.length > 0 ? `指数 ${indices.length}/5` : "指数数据暂缺",
+          { count: indices.length },
+        ),
       ]);
       const highSnapshot = await updateDailyNewHighSnapshot({
         store: createD1NewHighStateStore(db),
@@ -693,8 +832,14 @@ export async function runPanLayerJob(
         coveragePct: 0,
         status: "partial" as const,
       }));
+      await finishCloseStage(
+        "new-highs",
+        highSnapshot.status,
+        highSnapshot.status === "complete" ? "新高数据完整" : `新高覆盖率 ${highSnapshot.coveragePct}%`,
+        highSnapshot,
+      );
       const breadth = await loadBreadth(db, date);
-      const review = buildDailyReview({
+      const nextReview = buildDailyReview({
         date,
         quotes: market.quotes,
         limitPool,
@@ -709,17 +854,37 @@ export async function runPanLayerJob(
         indices,
         receivedAt: new Date().toISOString(),
       });
-      await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), market.source, review.status, new Date().toISOString()).run();
+      const previousRow = await db.prepare(
+        "SELECT payload FROM daily_reviews WHERE trade_date = ?",
+      ).bind(date).first<{ payload: string }>();
+      let previousReview: DailyReview | null = null;
+      try {
+        previousReview = previousRow?.payload ? JSON.parse(previousRow.payload) as DailyReview : null;
+      } catch {
+        previousReview = null;
+      }
+      const review = mergeCloseReviewWithExisting(previousReview, nextReview);
+      await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), review.source, review.status, new Date().toISOString()).run();
+      await finishCloseStage(
+        "assemble",
+        review.status === "complete" ? "complete" : "partial",
+        `收盘复盘 ${review.status}`,
+        { status: review.status, breadthCaptured: review.breadthMeta?.captured ?? review.breadth.length },
+      );
+      finalStatus = review.status === "complete" ? "complete" : "partial";
+      finalMessage = `收盘复盘 ${review.status}；盘中快照 ${review.breadthMeta?.captured ?? review.breadth.length}/6`;
     } else {
       const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
       const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
       if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
+        await finishCheckpoint("complete", "already complete; skipped");
         return { ok: true, message: `${label} already complete; skipped` };
       }
       const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key);
       if (selectedKeys.length === 0) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
+        await finishCheckpoint("complete", "no failed or missing modules; skipped");
         return { ok: true, message: `${label} no failed or missing modules; skipped` };
       }
       const snapshotFetcher = createDeadlineAwareBufferedFetcher(fetcher, deadlineAt);
@@ -758,13 +923,15 @@ export async function runPanLayerJob(
       finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }
     if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();
+    await finishCheckpoint(finalStatus, finalMessage);
     return { ok: finalStatus !== "failed", message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (run?.id) await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
+    await finishCheckpoint("failed", message).catch(() => undefined);
     throw error;
   } finally {
-    if (leaseToken && leaseJob) await releaseJobLease(db, leaseJob, date, leaseToken);
+    await releaseJobLease(db, leaseJob, date, leaseToken);
   }
 }
 

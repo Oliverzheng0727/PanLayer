@@ -8,6 +8,9 @@ import {
   morningBriefSections,
 } from "../db/schema";
 import { summarizeDataHealth } from "../lib/data/repository";
+import { buildDailyJobHealth } from "../lib/data/repository";
+import { buildDailyFieldHealth } from "../lib/data/repository";
+import { demoReview } from "../lib/data/demo";
 
 describe("persisted data health", () => {
   it("exports source-audit, global-snapshot, and brief-section tables", () => {
@@ -60,5 +63,60 @@ describe("persisted data health", () => {
       tier1: { status: "partial", fetchDate: "2026-07-24", sourceSuccess: 100, sourceTotal: 108 },
       tier2: { status: "complete", fetchDate: "2026-07-24", sourceSuccess: 3, sourceTotal: 3 },
     });
+  });
+
+  it("reports every expected daily job instead of one overall partial badge", () => {
+    const result = buildDailyJobHealth({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T02:12:00Z"),
+      checkpoints: [{
+        tradeDate: "2026-07-24",
+        key: "breadth-09:25",
+        stage: "main",
+        status: "complete",
+        attempt: 1,
+        expectedAt: "2026-07-24T09:25:00+08:00",
+        startedAt: "2026-07-24T01:25:00Z",
+        finishedAt: "2026-07-24T01:26:00Z",
+        nextRetryAt: null,
+        message: "captured",
+        resultJson: "{}",
+      }],
+    });
+
+    expect(result.jobs["breadth-09:25"].status).toBe("complete");
+    expect(result.jobs["breadth-10:00"].status).toBe("pending");
+    expect(result.jobs["close-review"].status).toBe("pending");
+  });
+
+  it("distinguishes initializing new highs from failed close fields", () => {
+    const review = structuredClone(demoReview);
+    review.metrics.high20 = null;
+    review.metrics.high120 = null;
+    review.metrics.allTimeHigh = null;
+    review.comparison = {
+      brokenCount: null, largeDownCount: null, sealRate: null, yesterdaySuccessRate: null,
+      yesterdaySuccessSampleSize: 0, continuation: null, marketAmount: null,
+      marketCoveragePct: null, maxBoard: null,
+      brokenBoard: { count: null, rate: null, sampleSize: 0, stocks: [] },
+      mainSectors: [], cycleLeader: null, recognition: [], indices: [], evidence: {},
+    };
+
+    const fields = buildDailyFieldHealth(review, {
+      targetDate: review.date,
+      completed: 124,
+      target: 5317,
+      failed: 26,
+      remaining: 5193,
+      coveragePct: 2.33,
+      minimumTarget: 5000,
+      universeComplete: true,
+      ready: false,
+      complete: false,
+      updatedAt: null,
+    });
+
+    expect(fields.high120.status).toBe("initializing");
+    expect(fields.marketAmount.status).toBe("missing");
   });
 });

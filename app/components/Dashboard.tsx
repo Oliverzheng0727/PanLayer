@@ -24,6 +24,8 @@ import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
+import { DailyJobHealthPanel } from "./data/DailyJobHealth";
+import type { DailyJobHealth } from "../../lib/data/repository";
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -67,7 +69,7 @@ function briefSourceCount(section: BriefSection) {
   return new Set([...section.sourceIds, ...blockSourceIds]).size;
 }
 
-export function Dashboard({ review, brief, etfs, history, newHighProgress, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; userName: string; canManageBrief: boolean }) {
+export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -250,6 +252,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
         />
 
         <div className="dashboard-content">
+          <DailyJobHealthPanel health={dataHealth} newHighProgress={newHighProgress} />
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
               <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">{isViewingCurrentReview ? "今日市场，层层拆开。" : `${overviewDate} 市场复盘`}</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {overviewDate} · {isViewingCurrentReview && liveMarket ? `实时接收 ${formatBeijingDateTime(overviewUpdatedAt)}` : `复盘更新 ${formatBeijingDateTime(overviewUpdatedAt)}`} · 数据来源 {overviewSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{isViewingCurrentReview && liveMarket ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""} · 状态口径：完整 / 部分 / 失败 / 演示{isViewingCurrentReview && refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
@@ -278,6 +281,12 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
 
           <section className="dashboard-section grid gap-5 xl:grid-cols-[1.5fr_1fr]">
             <Panel title="盘中涨跌家数" eyebrow="MARKET BREADTH" id="breadth">
+              {review.breadthMeta?.status === "partial" && (
+                <p className="mb-2 text-xs text-amber-300/70">
+                  已采集 {review.breadthMeta.captured}/{review.breadthMeta.expected}
+                  {review.breadthMeta.missing.length > 0 ? ` · 缺少 ${review.breadthMeta.missing.join("、")}` : ""}
+                </p>
+              )}
               {review.breadth.length === 0
                 ? <div className="grid h-[270px] place-items-center text-sm text-white/30">盘中涨跌家数暂缺</div>
                 : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}

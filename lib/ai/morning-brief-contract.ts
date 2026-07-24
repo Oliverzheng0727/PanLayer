@@ -57,6 +57,12 @@ export interface MorningBrief {
   sections: BriefSection[];
   sources: BriefSource[];
   disclaimer: string;
+  publication?: {
+    expectedAt: string;
+    completedAt: string;
+    timeliness: "on-time" | "late";
+    issues: Array<{ code: string; message: string }>;
+  };
 }
 
 export const BRIEF_SECTION_DEFINITIONS = [

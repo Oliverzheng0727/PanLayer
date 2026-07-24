@@ -20,6 +20,22 @@ export interface ReviewOverview {
   updatedAt: string;
 }
 
+const EXPECTED_BREADTH_TIMES = ["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"];
+
+export function breadthCompleteness(
+  breadth: DailyReview["breadth"],
+): NonNullable<DailyReview["breadthMeta"]> {
+  const capturedTimes = new Set(breadth.map((item) => item.time));
+  const missing = EXPECTED_BREADTH_TIMES.filter((time) => !capturedTimes.has(time));
+  const captured = EXPECTED_BREADTH_TIMES.length - missing.length;
+  return {
+    expected: EXPECTED_BREADTH_TIMES.length,
+    captured,
+    missing,
+    status: missing.length === 0 ? "complete" : "partial",
+  };
+}
+
 export function historyRowToOverview(row: HistoryRow): ReviewOverview {
   return {
     date: row.date,

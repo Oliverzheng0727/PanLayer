@@ -130,10 +130,13 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
       const result = await db.prepare(
         "SELECT s.symbol, s.name, s.sector FROM stocks s " +
         "LEFT JOIN new_high_states h ON h.symbol = s.symbol " +
+        "LEFT JOIN new_high_bootstrap_failures f ON f.symbol = s.symbol " +
         "WHERE UPPER(s.name) NOT LIKE '%ST%' AND " +
         "(h.symbol IS NULL OR h.status = 'rebuild' OR h.initialized_through < ?) " +
-        "ORDER BY CASE WHEN h.status = 'rebuild' THEN 0 ELSE 1 END, s.symbol LIMIT ?",
-      ).bind(targetDate, limit).all<{ symbol: string; name: string; sector: string }>();
+        "AND (f.symbol IS NULL OR f.next_retry_at <= ?) " +
+        "ORDER BY CASE WHEN f.symbol IS NULL THEN 0 ELSE 1 END, " +
+        "CASE WHEN h.status = 'rebuild' THEN 0 ELSE 1 END, COALESCE(f.attempts, 0), s.symbol LIMIT ?",
+      ).bind(targetDate, new Date().toISOString(), limit).all<{ symbol: string; name: string; sector: string }>();
       return (result.results ?? []).map((row) => ({
         symbol: String(row.symbol),
         name: String(row.name),
@@ -158,6 +161,29 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
         ...details.map((detail) => detailStatement(db, detail)),
       ];
       await runStatements(db, statements);
+    },
+
+    async recordBootstrapFailure(symbol, message) {
+      const previous = await db.prepare(
+        "SELECT attempts FROM new_high_bootstrap_failures WHERE symbol = ?",
+      ).bind(symbol).first<{ attempts: number }>();
+      const attempts = Number(previous?.attempts ?? 0) + 1;
+      const delays = [15, 60, 360];
+      const delayMinutes = delays[Math.min(attempts - 1, delays.length - 1)];
+      const nextRetryAt = new Date(Date.now() + delayMinutes * 60_000).toISOString();
+      const sanitized = message.replace(/\s+/g, " ").slice(0, 500);
+      await db.prepare(
+        `INSERT INTO new_high_bootstrap_failures
+          (symbol, attempts, last_error, next_retry_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(symbol) DO UPDATE SET attempts=excluded.attempts,
+          last_error=excluded.last_error, next_retry_at=excluded.next_retry_at,
+          updated_at=excluded.updated_at`,
+      ).bind(symbol, attempts, sanitized, nextRetryAt, new Date().toISOString()).run();
+    },
+
+    async clearBootstrapFailure(symbol) {
+      await db.prepare("DELETE FROM new_high_bootstrap_failures WHERE symbol = ?").bind(symbol).run();
     },
 
     async progress(targetDate) {

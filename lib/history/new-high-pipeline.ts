@@ -16,6 +16,8 @@ export interface NewHighStateStore {
   }>>;
   listBackfillDates(targetDate: string): Promise<string[]>;
   saveInitialization(state: NewHighState, details: HighDetail[]): Promise<void>;
+  recordBootstrapFailure(symbol: string, message: string): Promise<void>;
+  clearBootstrapFailure(symbol: string): Promise<void>;
   progress(targetDate: string): Promise<{ completed: number; target: number }>;
   loadStates(symbols: string[]): Promise<NewHighState[]>;
   saveDaily(states: NewHighState[], details: HighDetail[], rebuildSymbols: string[]): Promise<void>;
@@ -40,23 +42,30 @@ export async function runNewHighBootstrapBatch(input: {
   batchSize?: number;
   concurrency?: number;
   retryDelayMs?: number;
+  deadlineMs?: number;
 }): Promise<{
   completed: number;
   target: number;
   remaining: number;
   failed: number;
+  attempted: number;
+  succeeded: number;
   coveragePct: number;
 }> {
-  const batchSize = Math.min(250, Math.max(1, input.batchSize ?? 100));
-  const concurrency = Math.min(8, Math.max(1, input.concurrency ?? 5));
+  const batchSize = Math.min(100, Math.max(1, input.batchSize ?? 40));
+  const concurrency = Math.min(6, Math.max(1, input.concurrency ?? 3));
   const candidates = await input.store.listBootstrapCandidates(input.targetDate, batchSize);
   const backfillDates = await input.store.listBackfillDates(input.targetDate);
+  const deadlineAt = Date.now() + Math.max(5_000, input.deadlineMs ?? 45_000);
   let cursor = 0;
   let failed = 0;
+  let attempted = 0;
+  let succeeded = 0;
 
   const worker = async () => {
-    while (cursor < candidates.length) {
+    while (cursor < candidates.length && Date.now() < deadlineAt) {
       const candidate = candidates[cursor++];
+      attempted += 1;
       try {
         const bars = await withRetry(
           () => input.provider.getAdjustedBars(candidate.symbol),
@@ -69,8 +78,14 @@ export async function runNewHighBootstrapBatch(input: {
           backfillDates,
         });
         await input.store.saveInitialization(initialized.state, initialized.details);
-      } catch {
+        await input.store.clearBootstrapFailure(candidate.symbol);
+        succeeded += 1;
+      } catch (error) {
         failed += 1;
+        await input.store.recordBootstrapFailure(
+          candidate.symbol,
+          error instanceof Error ? error.message : String(error),
+        );
       }
     }
   };
@@ -82,6 +97,8 @@ export async function runNewHighBootstrapBatch(input: {
     ...progress,
     remaining: Math.max(0, progress.target - progress.completed),
     failed,
+    attempted,
+    succeeded,
     coveragePct: progress.target > 0
       ? Number((progress.completed / progress.target * 100).toFixed(2))
       : 0,
