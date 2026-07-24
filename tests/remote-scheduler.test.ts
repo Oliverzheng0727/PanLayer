@@ -51,6 +51,28 @@ describe("remote scheduler", () => {
     expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
   });
 
+  it("does not rerun an exact-time batch after its checkpoint completed", () => {
+    const completed = (
+      key: DailyJobKey,
+      expectedAt: string,
+    ): JobCheckpoint => ({
+      ...checkpoint(key, expectedAt),
+      status: "complete",
+      nextRetryAt: null,
+    });
+
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T15:30:00.000Z"),
+      checkpoints: [
+        completed("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+        completed("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
+        completed("close-review", "2026-07-24T16:10:00+08:00"),
+      ],
+    });
+
+    expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(false);
+  });
+
   it("rotates continuous ETF and new-high work while a close retry remains due", () => {
     const checkpoints = [
       checkpoint("close-review", "2026-07-24T16:10:00+08:00"),

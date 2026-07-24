@@ -16,8 +16,7 @@ const localBindingConfig = {
   compatibility_flags: ["nodejs_compat"],
   triggers: {
     crons: [
-      "*/5 18-21 * * 0-4",
-      "0-45/5 22 * * 0-4",
+      "30 17 * * 0-4",
       "50 22 * * 0-4",
       "55 22 * * 0-4",
       "15 23 * * 0-4",
@@ -29,9 +28,7 @@ const localBindingConfig = {
       "0 6 * * 1-5",
       "0 7 * * 1-5",
       "10 8 * * 1-5",
-      "*/5 23 * * 0-4",
-      "*/5 0-10 * * 1-5",
-      "*/5 11-15 * * 1-5",
+      "0,30 10-15 * * 1-5",
     ],
   },
   d1_databases: d1

@@ -33,9 +33,10 @@ describe("ETF workspace UI contract", () => {
     expect(page).not.toMatch(/loadLiveEtfCatalogEnvelope/);
   });
 
-  it("keeps the background reconciliation heartbeat running during the evening", async () => {
+  it("keeps a low-frequency background reconciliation heartbeat during the evening", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
-    expect(config).toContain('"*/5 11-15 * * 1-5"');
+    expect(config).toContain('"0,30 10-15 * * 1-5"');
+    expect(config).not.toContain('"*/5 11-15 * * 1-5"');
   });
 });

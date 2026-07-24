@@ -119,11 +119,20 @@ export function planRemoteSchedulerJobs({
     checkpoints,
     limit: 20,
   });
+  const checkpointByKey = new Map(
+    checkpoints
+      .filter((checkpoint) => checkpoint.stage === "main")
+      .map((checkpoint) => [checkpoint.key, checkpoint]),
+  );
 
   const candidates = [...(exactJob ? [exactJob] : []), ...catchUpJobs]
     .filter((job, index, all) => (
       all.findIndex((candidate) => scheduledJobKey(candidate) === scheduledJobKey(job)) === index
-    ));
+    ))
+    .filter((job) => {
+      const checkpoint = checkpointByKey.get(scheduledJobKey(job));
+      return !checkpoint || isCheckpointRetryable(checkpoint, now);
+    });
   const isContinuous = (job: ScheduledJob) => (
     job.type === "new-high-bootstrap" || job.type === "etf-metrics-refresh"
   );

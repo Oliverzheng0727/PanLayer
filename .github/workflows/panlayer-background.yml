@@ -2,8 +2,20 @@ name: PanLayer background jobs
 
 on:
   schedule:
-    # Avoid GitHub's busiest minute at the top of each hour.
-    - cron: "2-57/5 * * * *"
+    # UTC schedules, offset by two minutes where possible to avoid GitHub's
+    # busiest minute. The server maps each tick back to its Beijing checkpoint.
+    - cron: "52 22 * * 0-4" # 06:52 Beijing: tier-1 RSS
+    - cron: "57 22 * * 0-4" # 06:57 Beijing: tier-2 news
+    - cron: "17 23 * * 0-4" # 07:17 Beijing: morning brief
+    - cron: "27 1 * * 1-5"  # 09:27 Beijing: 09:25 breadth
+    - cron: "2 2 * * 1-5"   # 10:02 Beijing: 10:00 breadth
+    - cron: "2 3 * * 1-5"   # 11:02 Beijing: 11:00 breadth
+    - cron: "2 5 * * 1-5"   # 13:02 Beijing: 13:00 breadth
+    - cron: "2 6 * * 1-5"   # 14:02 Beijing: 14:00 breadth
+    - cron: "2 7 * * 1-5"   # 15:02 Beijing: 15:00 breadth
+    - cron: "32 7 * * 1-5"  # 15:32 Beijing: ETF metrics
+    - cron: "12 8 * * 1-5"  # 16:12 Beijing: close review
+    - cron: "2,32 10-15 * * 1-5" # 18:02-23:32 Beijing: initialization
   workflow_dispatch:
 
 concurrency:
