@@ -2,6 +2,7 @@ import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } fr
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
+import { NEWS_INTAKE_SCHEMA_STATEMENTS } from "../ai/news-intake/repository";
 import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
@@ -441,6 +442,7 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS new_high_states_progress_idx ON new_high_states(status, initialized_through)`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
+  ...NEWS_INTAKE_SCHEMA_STATEMENTS,
 ];
 
 async function ensureRuntimeSchema(db: D1Database) {
