@@ -161,10 +161,17 @@ export function buildDailyJobHealth({
   tradeDate,
   now,
   checkpoints,
+  artifacts,
 }: {
   tradeDate: string;
   now: Date;
   checkpoints: JobCheckpoint[];
+  artifacts?: {
+    morningBrief?: {
+      valid: boolean;
+      updatedAt: string | null;
+    } | null;
+  };
 }): DailyJobHealth {
   const checkpointByKey = new Map(
     checkpoints
@@ -193,6 +200,17 @@ export function buildDailyJobHealth({
       nextRetryAt: checkpoint.nextRetryAt,
       message: checkpoint.message,
     }]));
+  const persistedBrief = artifacts?.morningBrief;
+  if (persistedBrief?.valid && jobs["morning-brief"]?.status !== "complete") {
+    jobs["morning-brief"] = {
+      ...jobs["morning-brief"],
+      status: "complete",
+      finishedAt: persistedBrief.updatedAt,
+      nextRetryAt: null,
+      message: "早参已生成并通过结构校验",
+      overdue: false,
+    };
+  }
   return { tradeDate, generatedAt: now.toISOString(), jobs, stages };
 }
 
@@ -399,7 +417,7 @@ export async function readDataHealth() {
     ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
     daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
   };
-  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -412,6 +430,8 @@ export async function readDataHealth() {
       .bind(tradeDate).first<{ payload: string }>().catch(() => null),
     db.prepare("SELECT value FROM bootstrap_state WHERE key = 'scheduler-heartbeat'")
       .first<{ value: string }>().catch(() => null),
+    db.prepare("SELECT payload, updated_at FROM morning_briefs WHERE trade_date = ?")
+      .bind(tradeDate).first<{ payload: string; updated_at: string }>().catch(() => null),
   ]);
   let latestReview: DailyReview | null = null;
   try {
@@ -420,7 +440,26 @@ export async function readDataHealth() {
     latestReview = null;
   }
   const progress = await readNewHighProgress(latestReview?.date ?? tradeDate);
-  const daily = buildDailyJobHealth({ tradeDate, now, checkpoints });
+  let persistedMorningBriefValid = false;
+  try {
+    persistedMorningBriefValid = Boolean(
+      morningBriefRow?.payload
+      && isValidPersistedMorningBrief(JSON.parse(morningBriefRow.payload)),
+    );
+  } catch {
+    persistedMorningBriefValid = false;
+  }
+  const daily = buildDailyJobHealth({
+    tradeDate,
+    now,
+    checkpoints,
+    artifacts: {
+      morningBrief: {
+        valid: persistedMorningBriefValid,
+        updatedAt: morningBriefRow?.updated_at ?? null,
+      },
+    },
+  });
   daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
   daily.fields = buildDailyFieldHealth(latestReview, progress);
   return {

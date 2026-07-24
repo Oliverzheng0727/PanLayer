@@ -89,6 +89,27 @@ describe("persisted data health", () => {
     expect(result.jobs["close-review"].status).toBe("pending");
   });
 
+  it("uses a validated persisted morning brief when its checkpoint is missing", () => {
+    const result = buildDailyJobHealth({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T15:20:00Z"),
+      checkpoints: [],
+      artifacts: {
+        morningBrief: {
+          valid: true,
+          updatedAt: "2026-07-24T06:53:00Z",
+        },
+      },
+    });
+
+    expect(result.jobs["morning-brief"]).toMatchObject({
+      status: "complete",
+      finishedAt: "2026-07-24T06:53:00Z",
+      message: "早参已生成并通过结构校验",
+      overdue: false,
+    });
+  });
+
   it("distinguishes initializing new highs from failed close fields", () => {
     const review = structuredClone(demoReview);
     review.metrics.high20 = null;
