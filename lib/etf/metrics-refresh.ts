@@ -4,16 +4,33 @@ import { loadEtfBarsWithFallback, type MarketBar } from "./bars";
 import { loadLatestEtfCatalogSnapshot, saveEtfCatalogSnapshot } from "./catalog-repository";
 import { calculateAverageAmount20, mergeEtfDerivedMetrics } from "./derived-metrics";
 
+export function formatEtfMetricsProgress(progress: {
+  completed: number;
+  attempted: number;
+  remaining: number;
+  failed: number;
+  errors?: Array<{ symbol: string; message: string }>;
+}): string {
+  const failures = (progress.errors ?? [])
+    .slice(0, 2)
+    .map((error) => `${error.symbol} ${error.message}`)
+    .join("；");
+  return `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}`
+    + (failures ? `; ${failures}` : "");
+}
+
 export async function enrichEtfMetricsBatch({
   items,
   cursor,
   batchSize,
   loadBars,
+  minimumIntervalMs = 0,
 }: {
   items: EtfSnapshot[];
   cursor: number;
   batchSize: number;
   loadBars: (symbol: string) => Promise<Array<Pick<MarketBar, "time" | "amount">>>;
+  minimumIntervalMs?: number;
 }): Promise<{
   items: EtfSnapshot[];
   attempted: number;
@@ -22,30 +39,47 @@ export async function enrichEtfMetricsBatch({
   nextCursor: number;
   remaining: number;
 }> {
-  const missingIndices = items.flatMap((item, index) => item.averageAmount20 === null ? [index] : []);
+  const missingIndices = items
+    .flatMap((item, index) => item.averageAmount20 === null ? [index] : [])
+    .sort((left, right) => items[right].amount - items[left].amount);
   const start = cursor >= missingIndices.length ? 0 : Math.max(0, cursor);
   const selected = missingIndices.slice(start, start + Math.max(1, batchSize));
   const next = [...items];
   let completed = 0;
   let failed = 0;
+  const errors: Array<{ symbol: string; message: string }> = [];
+  let lastRequestStartedAt = 0;
 
-  await Promise.all(selected.map(async (itemIndex) => {
+  for (const itemIndex of selected) {
     try {
+      const waitMs = Math.max(0, minimumIntervalMs - (Date.now() - lastRequestStartedAt));
+      if (lastRequestStartedAt > 0 && waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+      lastRequestStartedAt = Date.now();
       const averageAmount20 = calculateAverageAmount20(await loadBars(items[itemIndex].symbol));
       if (averageAmount20 === null) {
         failed += 1;
-        return;
+        errors.push({
+          symbol: items[itemIndex].symbol,
+          message: "不足20个有效成交额交易日",
+        });
+        continue;
       }
       next[itemIndex] = { ...items[itemIndex], averageAmount20 };
       completed += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      errors.push({
+        symbol: items[itemIndex].symbol,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
-  }));
+  }
 
   const remaining = next.filter((item) => item.averageAmount20 === null).length;
   const nextCursor = start + selected.length >= missingIndices.length ? 0 : start + selected.length;
-  return { items: next, attempted: selected.length, completed, failed, nextCursor, remaining };
+  return { items: next, attempted: selected.length, completed, failed, errors, nextCursor, remaining };
 }
 
 export async function runEtfMetricsRefreshBatch({
@@ -74,6 +108,7 @@ export async function runEtfMetricsRefreshBatch({
     items,
     cursor: Number(cursorRow?.value ?? 0),
     batchSize,
+    minimumIntervalMs: 1_100,
     loadBars: async (symbol) => (await loadEtfBarsWithFallback(symbol, "day", "none", fetcher)).bars,
   });
   const receivedAt = new Date().toISOString();

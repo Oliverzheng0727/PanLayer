@@ -1,4 +1,5 @@
 import {
+  isCheckpointRetryable,
   scheduledJobKey,
   type JobCheckpoint,
 } from "./checkpoints";
@@ -9,6 +10,26 @@ import {
   jobForBeijingTime,
   type ScheduledJob,
 } from "./schedule";
+
+export interface SchedulerHeartbeat {
+  receivedAt: string;
+  status: "running" | "complete" | "failed";
+  message: string;
+}
+
+export async function recordSchedulerHeartbeat(
+  db: D1Database,
+  heartbeat: SchedulerHeartbeat,
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+  ).bind(
+    "scheduler-heartbeat",
+    JSON.stringify(heartbeat),
+    heartbeat.receivedAt,
+  ).run();
+}
 
 export function isValidSchedulerAuthorization(
   authorization: string | null,
@@ -34,7 +55,14 @@ export function planRemoteSchedulerJobs({
   now: Date;
   checkpoints: JobCheckpoint[];
 }): ScheduledJob[] {
-  if (!isChinaTradingWeekday(now)) return [];
+  if (!isChinaTradingWeekday(now)) {
+    const bootstrap = checkpoints.find((checkpoint) => (
+      checkpoint.key === "new-high-bootstrap" && checkpoint.stage === "main"
+    ));
+    return !bootstrap || isCheckpointRetryable(bootstrap, now)
+      ? [{ type: "new-high-bootstrap" }]
+      : [];
+  }
   const { date, time } = beijingDateParts(now);
   const [hour, minute] = time.split(":").map(Number);
   const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
@@ -43,11 +71,27 @@ export function planRemoteSchedulerJobs({
     tradeDate: date,
     now,
     checkpoints,
+    limit: 20,
   });
 
-  return [...(exactJob ? [exactJob] : []), ...catchUpJobs]
+  const candidates = [...(exactJob ? [exactJob] : []), ...catchUpJobs]
     .filter((job, index, all) => (
       all.findIndex((candidate) => scheduledJobKey(candidate) === scheduledJobKey(job)) === index
-    ))
-    .slice(0, 2);
+    ));
+  const isContinuous = (job: ScheduledJob) => (
+    job.type === "new-high-bootstrap" || job.type === "etf-metrics-refresh"
+  );
+  const critical = candidates.filter((job) => !isContinuous(job));
+  const continuous = candidates
+    .filter(isContinuous)
+    .sort((left, right) => left.type.localeCompare(right.type));
+  if (continuous.length === 0) return critical.slice(0, 2);
+  const tick = Math.floor(now.getTime() / (5 * 60_000));
+  const selectedContinuous = continuous[tick % continuous.length];
+  if (critical.length === 0) return continuous.slice(0, 2);
+
+  return [
+    critical[0],
+    selectedContinuous,
+  ];
 }

@@ -32,7 +32,7 @@ import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { withRetry } from "../data/resilience";
 import { runHistoryBackfillBatch } from "../history/backfill";
-import { runEtfMetricsRefreshBatch } from "../etf/metrics-refresh";
+import { formatEtfMetricsProgress, runEtfMetricsRefreshBatch } from "../etf/metrics-refresh";
 import { breadthCompleteness } from "../history/overview";
 import {
   createD1NewHighStateStore,
@@ -44,6 +44,7 @@ import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedu
 import { mergeCloseReviewWithExisting, type CloseReviewStage } from "./close-review-stages";
 import {
   expectedAtForJob,
+  nextRetryAtForCheckpoint,
   recordJobCheckpoint,
   retryAtForAttempt,
   scheduledJobKey,
@@ -610,7 +611,12 @@ export async function runPanLayerJob(
       expectedAt: checkpointExpectedAt,
       startedAt: checkpointStartedAt,
       finishedAt,
-      nextRetryAt: status === "complete" ? null : retryAtForAttempt(new Date(), checkpointAttempt),
+      nextRetryAt: nextRetryAtForCheckpoint(
+        checkpointKey,
+        status,
+        new Date(),
+        checkpointAttempt,
+      ),
       message,
       resultJson: JSON.stringify(result),
     });
@@ -741,7 +747,7 @@ export async function runPanLayerJob(
         fetcher,
         batchSize: 12,
       });
-      const message = `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}`;
+      const message = formatEtfMetricsProgress(progress);
       const status = progress.remaining === 0 ? "complete" : "partial";
       if (run?.id) {
         await db.prepare(

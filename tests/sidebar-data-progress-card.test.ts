@@ -9,6 +9,12 @@ describe("sidebar data progress card", () => {
       health: {
         tradeDate: "2026-07-24",
         generatedAt: "2026-07-24T02:12:00Z",
+        heartbeat: {
+          receivedAt: "2026-07-24T02:10:00Z",
+          status: "complete",
+          message: "idle",
+          stale: false,
+        },
         jobs: {
           "morning-brief": {
             status: "complete",
@@ -65,5 +71,7 @@ describe("sidebar data progress card", () => {
     expect(html).toContain('aria-controls="sidebar-data-progress-details"');
     expect(html).toContain("收盘复盘");
     expect(html).toContain("ETF 指标");
+    expect(html).toContain("调度心跳");
+    expect(html).toContain("正常");
   });
 });

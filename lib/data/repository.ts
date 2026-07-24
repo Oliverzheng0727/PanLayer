@@ -40,6 +40,7 @@ const healthSection = (status: string, message: string, updatedAt: string | null
 export interface DailyJobHealth {
   tradeDate: string;
   generatedAt: string;
+  heartbeat?: SchedulerHeartbeatHealth | null;
   jobs: Record<string, {
     status: "pending" | "running" | "partial" | "complete" | "failed";
     expectedAt: string;
@@ -56,6 +57,40 @@ export interface DailyJobHealth {
     message: string;
   }>;
   fields?: Record<string, DailyFieldHealth>;
+}
+
+export interface SchedulerHeartbeatHealth {
+  receivedAt: string;
+  status: "running" | "complete" | "failed";
+  message: string;
+  stale: boolean;
+}
+
+export function buildSchedulerHeartbeat(
+  value: string | null | undefined,
+  now = new Date(),
+): SchedulerHeartbeatHealth | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<SchedulerHeartbeatHealth>;
+    const receivedAt = typeof parsed.receivedAt === "string" ? parsed.receivedAt : "";
+    const timestamp = new Date(receivedAt).getTime();
+    if (!receivedAt || !Number.isFinite(timestamp)) return null;
+    const stale = now.getTime() - timestamp > 10 * 60_000;
+    const status = stale
+      ? "failed"
+      : parsed.status === "running" || parsed.status === "failed"
+        ? parsed.status
+        : "complete";
+    return {
+      receivedAt,
+      status,
+      message: typeof parsed.message === "string" ? parsed.message : "",
+      stale,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export interface DailyFieldHealth {
@@ -364,7 +399,7 @@ export async function readDataHealth() {
     ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
     daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
   };
-  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -375,6 +410,8 @@ export async function readDataHealth() {
     readDailyJobCheckpoints(db, tradeDate).catch(() => []),
     db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1")
       .bind(tradeDate).first<{ payload: string }>().catch(() => null),
+    db.prepare("SELECT value FROM bootstrap_state WHERE key = 'scheduler-heartbeat'")
+      .first<{ value: string }>().catch(() => null),
   ]);
   let latestReview: DailyReview | null = null;
   try {
@@ -384,6 +421,7 @@ export async function readDataHealth() {
   }
   const progress = await readNewHighProgress(latestReview?.date ?? tradeDate);
   const daily = buildDailyJobHealth({ tradeDate, now, checkpoints });
+  daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
   daily.fields = buildDailyFieldHealth(latestReview, progress);
   return {
     ...summarizeDataHealth({

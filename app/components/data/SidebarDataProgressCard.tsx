@@ -115,6 +115,14 @@ export function SidebarDataProgressCard({
             {model.newHighTarget > 0 ? ` · ${model.newHighCoveragePct.toFixed(1)}%` : ""}
           </span>
         </span>
+        <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>调度心跳</span>
+          <span className={health.heartbeat?.status === "failed" ? "text-red-300" : health.heartbeat?.status === "running" ? "text-sky-300" : "text-emerald-300"}>
+            {health.heartbeat
+              ? `${health.heartbeat.stale ? "中断" : health.heartbeat.status === "running" ? "运行中" : health.heartbeat.status === "failed" ? "异常" : "正常"} · ${formatBeijingDateTime(health.heartbeat.receivedAt)}`
+              : "尚未收到"}
+          </span>
+        </span>
       </button>
 
       <div

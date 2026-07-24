@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateBars,
+  fetchEastmoneyDailyBars,
   fetchEastmoneyMinuteBars,
   loadEtfBarsWithFallback,
   fetchSinaDailyBars,
@@ -45,6 +46,19 @@ describe("ETF market bar aggregation", () => {
 
     await fetchEastmoneyMinuteBars("510300", fetcher as typeof fetch);
     expect(requestSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("uses browser-compatible Eastmoney headers for historical ETF requests", async () => {
+    let requestHeaders: HeadersInit | undefined;
+    const fetcher = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestHeaders = init?.headers;
+      return new Response(JSON.stringify({ data: { klines: [] } }));
+    };
+
+    await fetchEastmoneyDailyBars("510300", "none", fetcher as typeof fetch);
+    const headers = new Headers(requestHeaders);
+    expect(headers.get("referer")).toBe("https://quote.eastmoney.com/");
+    expect(headers.get("origin")).toBe("https://quote.eastmoney.com");
   });
 
   it("maps Sina daily K-line JSON and uses the Shanghai market prefix", async () => {

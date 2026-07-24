@@ -2,7 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   isValidSchedulerAuthorization,
   planRemoteSchedulerJobs,
+  recordSchedulerHeartbeat,
 } from "../lib/jobs/remote-scheduler";
+import type { DailyJobKey, JobCheckpoint } from "../lib/jobs/checkpoints";
+
+const checkpoint = (
+  key: DailyJobKey,
+  expectedAt: string,
+): JobCheckpoint => ({
+  tradeDate: "2026-07-24",
+  key,
+  stage: "main",
+  status: "partial",
+  attempt: 1,
+  expectedAt,
+  startedAt: "2026-07-24T08:10:00.000Z",
+  finishedAt: "2026-07-24T08:11:00.000Z",
+  nextRetryAt: null,
+  message: "incomplete",
+  resultJson: "{}",
+});
 
 describe("remote scheduler", () => {
   it("accepts only the configured bearer secret", () => {
@@ -14,7 +33,7 @@ describe("remote scheduler", () => {
 
   it("plans the evening new-high batch and outstanding catch-up work", () => {
     const jobs = planRemoteSchedulerJobs({
-      now: new Date("2026-07-24T13:10:00.000Z"),
+      now: new Date("2026-07-24T13:15:00.000Z"),
       checkpoints: [],
     });
 
@@ -24,10 +43,88 @@ describe("remote scheduler", () => {
 
   it("still plans the intended batch when GitHub starts a few minutes late", () => {
     const jobs = planRemoteSchedulerJobs({
-      now: new Date("2026-07-24T13:12:00.000Z"),
+      now: new Date("2026-07-24T13:17:00.000Z"),
       checkpoints: [],
     });
 
     expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
+  });
+
+  it("rotates continuous ETF and new-high work while a close retry remains due", () => {
+    const checkpoints = [
+      checkpoint("close-review", "2026-07-24T16:10:00+08:00"),
+      checkpoint("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
+      checkpoint("new-high-bootstrap", "2026-07-24T02:00:00+08:00"),
+    ];
+
+    const first = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:20:00.000Z"),
+      checkpoints,
+    });
+    const second = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:25:00.000Z"),
+      checkpoints,
+    });
+
+    expect(first.some((job) => job.type === "close-review")).toBe(true);
+    expect(second.some((job) => job.type === "close-review")).toBe(true);
+    expect(new Set([
+      ...first.map((job) => job.type),
+      ...second.map((job) => job.type),
+    ])).toEqual(new Set([
+      "close-review",
+      "etf-metrics-refresh",
+      "new-high-bootstrap",
+    ]));
+  });
+
+  it("persists the scheduler heartbeat independently of job completion", async () => {
+    const writes: unknown[][] = [];
+    const db = {
+      prepare(sql: string) {
+        expect(sql).toContain("bootstrap_state");
+        return {
+          bind(...values: unknown[]) {
+            writes.push(values);
+            return this;
+          },
+          async run() { return {}; },
+        };
+      },
+    } as unknown as D1Database;
+
+    await recordSchedulerHeartbeat(db, {
+      receivedAt: "2026-07-24T08:20:00.000Z",
+      status: "complete",
+      message: "close-review,new-high-bootstrap",
+    });
+
+    expect(writes).toEqual([[
+      "scheduler-heartbeat",
+      JSON.stringify({
+        receivedAt: "2026-07-24T08:20:00.000Z",
+        status: "complete",
+        message: "close-review,new-high-bootstrap",
+      }),
+      "2026-07-24T08:20:00.000Z",
+    ]]);
+  });
+
+  it("continues only the new-high bootstrap on weekends", () => {
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-25T02:00:00.000Z"),
+      checkpoints: [],
+    });
+
+    expect(jobs).toEqual([{ type: "new-high-bootstrap" }]);
+  });
+
+  it("can recover a missing morning brief later the same trading day", () => {
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T07:25:00.000Z"),
+      checkpoints: [],
+    });
+
+    expect(jobs.some((job) => job.type === "morning-brief")).toBe(true);
   });
 });

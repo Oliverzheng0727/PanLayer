@@ -1,7 +1,11 @@
 import { readDailyJobCheckpoints, scheduledJobKey } from "../../../../../../lib/jobs/checkpoints";
-import { planRemoteSchedulerJobs, isValidSchedulerAuthorization } from "../../../../../../lib/jobs/remote-scheduler";
+import {
+  planRemoteSchedulerJobs,
+  isValidSchedulerAuthorization,
+  recordSchedulerHeartbeat,
+} from "../../../../../../lib/jobs/remote-scheduler";
 import { runPanLayerJob } from "../../../../../../lib/jobs/runner";
-import { beijingDateParts, isChinaTradingWeekday } from "../../../../../../lib/jobs/schedule";
+import { beijingDateParts } from "../../../../../../lib/jobs/schedule";
 
 interface SchedulerEnv {
   DB: D1Database;
@@ -26,11 +30,12 @@ export async function POST(request: Request) {
   }
 
   const now = new Date();
-  if (!isChinaTradingWeekday(now)) {
-    return Response.json({ ok: true, skipped: "non-trading weekday", jobs: [] });
-  }
-
   const { date } = beijingDateParts(now);
+  await recordSchedulerHeartbeat(runtimeEnv.DB, {
+    receivedAt: now.toISOString(),
+    status: "running",
+    message: "scheduler tick started",
+  }).catch(() => undefined);
   const checkpoints = await readDailyJobCheckpoints(runtimeEnv.DB, date).catch(() => []);
   const jobs = planRemoteSchedulerJobs({ now, checkpoints });
   const results = [];
@@ -46,6 +51,14 @@ export async function POST(request: Request) {
       });
     }
   }
+  const heartbeatStatus = results.some((result) => !result.ok) ? "failed" : "complete";
+  await recordSchedulerHeartbeat(runtimeEnv.DB, {
+    receivedAt: new Date().toISOString(),
+    status: heartbeatStatus,
+    message: results.length > 0
+      ? results.map((result) => `${result.job}:${result.ok ? "ok" : "failed"}`).join(",")
+      : "idle",
+  }).catch(() => undefined);
 
   return Response.json({
     ok: results.every((result) => result.ok),

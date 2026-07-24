@@ -57,7 +57,12 @@ function secidFor(symbol: string): string {
 
 async function fetchJson<T>(url: string, fetcher: typeof fetch): Promise<T> {
   const response = await fetcher(url, {
-    headers: { accept: "application/json", "user-agent": "PanLayer/1.0" },
+    headers: {
+      accept: "application/json",
+      origin: "https://quote.eastmoney.com",
+      referer: "https://quote.eastmoney.com/",
+      "user-agent": "Mozilla/5.0 PanLayer/1.0",
+    },
     signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Eastmoney ${response.status}`);

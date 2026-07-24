@@ -145,3 +145,19 @@ export function retryAtForAttempt(now: Date, attempt: number): string {
   const delayMinutes = delays[Math.min(Math.max(attempt - 1, 0), delays.length - 1)];
   return new Date(now.getTime() + delayMinutes * 60_000).toISOString();
 }
+
+export function nextRetryAtForCheckpoint(
+  key: DailyJobKey,
+  status: CheckpointStatus,
+  now: Date,
+  attempt: number,
+): string | null {
+  if (status === "complete") return null;
+  if (
+    status === "partial"
+    && (key === "new-high-bootstrap" || key === "etf-metrics-refresh" || key === "history-backfill")
+  ) {
+    return new Date(now.getTime() + 5 * 60_000).toISOString();
+  }
+  return retryAtForAttempt(now, attempt);
+}

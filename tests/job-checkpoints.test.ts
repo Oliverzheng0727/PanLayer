@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   expectedDailyJobs,
   isCheckpointRetryable,
+  nextRetryAtForCheckpoint,
   type JobCheckpoint,
 } from "../lib/jobs/checkpoints";
 
@@ -48,5 +49,27 @@ describe("daily job checkpoints", () => {
       startedAt: "2026-07-24T02:00:00Z",
       nextRetryAt: null,
     }, new Date("2026-07-24T02:04:00Z"))).toBe(true);
+  });
+
+  it("keeps healthy continuous partial jobs on a five-minute cadence", () => {
+    const now = new Date("2026-07-24T08:00:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "new-high-bootstrap",
+      "partial",
+      now,
+      20,
+    )).toBe("2026-07-24T08:05:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "etf-metrics-refresh",
+      "partial",
+      now,
+      20,
+    )).toBe("2026-07-24T08:05:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "close-review",
+      "failed",
+      now,
+      3,
+    )).toBe("2026-07-24T08:30:00.000Z");
   });
 });
