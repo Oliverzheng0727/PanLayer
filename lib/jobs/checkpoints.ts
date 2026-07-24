@@ -107,10 +107,26 @@ export async function recordJobCheckpoint(db: D1Database, checkpoint: JobCheckpo
       finished_at, next_retry_at, message, result_json, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(trade_date, job_key, stage) DO UPDATE SET
-      status=excluded.status, attempt=excluded.attempt, expected_at=excluded.expected_at,
-      started_at=excluded.started_at, finished_at=excluded.finished_at,
-      next_retry_at=excluded.next_retry_at, message=excluded.message,
-      result_json=excluded.result_json, updated_at=excluded.updated_at`,
+      status=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.status ELSE excluded.status END,
+      attempt=excluded.attempt, expected_at=excluded.expected_at,
+      started_at=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.started_at ELSE excluded.started_at END,
+      finished_at=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.finished_at ELSE excluded.finished_at END,
+      next_retry_at=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.next_retry_at ELSE excluded.next_retry_at END,
+      message=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.message ELSE excluded.message END,
+      result_json=CASE
+        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
+        THEN job_checkpoints.result_json ELSE excluded.result_json END,
+      updated_at=excluded.updated_at`,
   ).bind(
     checkpoint.tradeDate,
     checkpoint.key,

@@ -3,6 +3,7 @@ import {
   expectedDailyJobs,
   isCheckpointRetryable,
   nextRetryAtForCheckpoint,
+  recordJobCheckpoint,
   type JobCheckpoint,
 } from "../lib/jobs/checkpoints";
 
@@ -71,5 +72,35 @@ describe("daily job checkpoints", () => {
       now,
       3,
     )).toBe("2026-07-24T08:30:00.000Z");
+  });
+
+  it("never downgrades an already complete stage during a later partial retry", async () => {
+    let sql = "";
+    const db = {
+      prepare(statement: string) {
+        sql = statement;
+        return {
+          bind() { return this; },
+          async run() { return {}; },
+        };
+      },
+    } as unknown as D1Database;
+
+    await recordJobCheckpoint(db, {
+      tradeDate: "2026-07-24",
+      key: "close-review",
+      stage: "indices",
+      status: "partial",
+      attempt: 2,
+      expectedAt: "2026-07-24T16:10:00+08:00",
+      startedAt: "2026-07-24T08:10:00.000Z",
+      finishedAt: "2026-07-24T08:11:00.000Z",
+      nextRetryAt: "2026-07-24T08:16:00.000Z",
+      message: "one source timed out",
+      resultJson: "{}",
+    });
+
+    expect(sql).toContain("job_checkpoints.status = 'complete'");
+    expect(sql).toContain("excluded.status <> 'complete'");
   });
 });
