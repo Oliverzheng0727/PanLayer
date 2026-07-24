@@ -8,7 +8,7 @@ describe("production background workflow", () => {
       readFile(new URL("../app/api/v1/internal/scheduler/tick/route.ts", import.meta.url), "utf8"),
     ]);
 
-    expect(workflow).toContain('cron: "*/5 * * * *"');
+    expect(workflow).toContain('cron: "2-57/5 * * * *"');
     expect(workflow).toContain("PANLAYER_CRON_SECRET");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
     expect(route).toMatch(/isValidSchedulerAuthorization/);
