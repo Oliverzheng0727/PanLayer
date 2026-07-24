@@ -1,5 +1,6 @@
 import {
   isCheckpointRetryable,
+  readDailyJobCheckpoints,
   scheduledJobKey,
   type JobCheckpoint,
 } from "./checkpoints";
@@ -29,6 +30,51 @@ export async function recordSchedulerHeartbeat(
     JSON.stringify(heartbeat),
     heartbeat.receivedAt,
   ).run();
+}
+
+export async function executeRemoteSchedulerTick({
+  db,
+  now,
+  runJob,
+  loadCheckpoints = readDailyJobCheckpoints,
+}: {
+  db: D1Database;
+  now: Date;
+  runJob: (job: ScheduledJob) => Promise<{ ok: boolean; message: string }>;
+  loadCheckpoints?: (db: D1Database, date: string) => Promise<JobCheckpoint[]>;
+}): Promise<{
+  date: string;
+  jobs: Array<{ job: string; ok: boolean; message: string }>;
+}> {
+  const { date } = beijingDateParts(now);
+  await recordSchedulerHeartbeat(db, {
+    receivedAt: now.toISOString(),
+    status: "running",
+    message: "scheduler tick started",
+  }).catch(() => undefined);
+  const checkpoints = await loadCheckpoints(db, date).catch(() => []);
+  const planned = planRemoteSchedulerJobs({ now, checkpoints });
+  const results: Array<{ job: string; ok: boolean; message: string }> = [];
+  for (const job of planned) {
+    try {
+      const result = await runJob(job);
+      results.push({ job: scheduledJobKey(job), ...result });
+    } catch (error) {
+      results.push({
+        job: scheduledJobKey(job),
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  await recordSchedulerHeartbeat(db, {
+    receivedAt: new Date().toISOString(),
+    status: results.some((result) => !result.ok) ? "failed" : "complete",
+    message: results.length > 0
+      ? results.map((result) => `${result.job}:${result.ok ? "ok" : "failed"}`).join(",")
+      : "idle",
+  }).catch(() => undefined);
+  return { date, jobs: results };
 }
 
 export function isValidSchedulerAuthorization(

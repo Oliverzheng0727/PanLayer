@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  executeRemoteSchedulerTick,
   isValidSchedulerAuthorization,
   planRemoteSchedulerJobs,
   recordSchedulerHeartbeat,
@@ -126,5 +127,40 @@ describe("remote scheduler", () => {
     });
 
     expect(jobs.some((job) => job.type === "morning-brief")).toBe(true);
+  });
+
+  it("executes the same fair queue for a native Worker cron and records its heartbeat", async () => {
+    const writes: unknown[][] = [];
+    const executed: string[] = [];
+    const db = {
+      prepare() {
+        return {
+          bind(...values: unknown[]) {
+            writes.push(values);
+            return this;
+          },
+          async run() { return {}; },
+        };
+      },
+    } as unknown as D1Database;
+
+    const result = await executeRemoteSchedulerTick({
+      db,
+      now: new Date("2026-07-25T02:00:00.000Z"),
+      loadCheckpoints: async () => [],
+      runJob: async (job) => {
+        executed.push(job.type);
+        return { ok: true, message: "advanced" };
+      },
+    });
+
+    expect(executed).toEqual(["new-high-bootstrap"]);
+    expect(result.jobs).toEqual([{
+      job: "new-high-bootstrap",
+      ok: true,
+      message: "advanced",
+    }]);
+    expect(writes.some((values) => String(values[1]).includes("scheduler tick started"))).toBe(true);
+    expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:ok"))).toBe(true);
   });
 });

@@ -1,11 +1,8 @@
-import { readDailyJobCheckpoints, scheduledJobKey } from "../../../../../../lib/jobs/checkpoints";
 import {
-  planRemoteSchedulerJobs,
+  executeRemoteSchedulerTick,
   isValidSchedulerAuthorization,
-  recordSchedulerHeartbeat,
 } from "../../../../../../lib/jobs/remote-scheduler";
 import { runPanLayerJob } from "../../../../../../lib/jobs/runner";
-import { beijingDateParts } from "../../../../../../lib/jobs/schedule";
 
 interface SchedulerEnv {
   DB: D1Database;
@@ -30,41 +27,17 @@ export async function POST(request: Request) {
   }
 
   const now = new Date();
-  const { date } = beijingDateParts(now);
-  await recordSchedulerHeartbeat(runtimeEnv.DB, {
-    receivedAt: now.toISOString(),
-    status: "running",
-    message: "scheduler tick started",
-  }).catch(() => undefined);
-  const checkpoints = await readDailyJobCheckpoints(runtimeEnv.DB, date).catch(() => []);
-  const jobs = planRemoteSchedulerJobs({ now, checkpoints });
-  const results = [];
-  for (const job of jobs) {
-    try {
-      const result = await runPanLayerJob(job, now, runtimeEnv);
-      results.push({ job: scheduledJobKey(job), ...result });
-    } catch (error) {
-      results.push({
-        job: scheduledJobKey(job),
-        ok: false,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  const heartbeatStatus = results.some((result) => !result.ok) ? "failed" : "complete";
-  await recordSchedulerHeartbeat(runtimeEnv.DB, {
-    receivedAt: new Date().toISOString(),
-    status: heartbeatStatus,
-    message: results.length > 0
-      ? results.map((result) => `${result.job}:${result.ok ? "ok" : "failed"}`).join(",")
-      : "idle",
-  }).catch(() => undefined);
+  const result = await executeRemoteSchedulerTick({
+    db: runtimeEnv.DB,
+    now,
+    runJob: (job) => runPanLayerJob(job, now, runtimeEnv),
+  });
 
   return Response.json({
-    ok: results.every((result) => result.ok),
-    date,
-    jobs: results,
+    ok: result.jobs.every((job) => job.ok),
+    date: result.date,
+    jobs: result.jobs,
   }, {
-    status: results.some((result) => !result.ok) ? 502 : 200,
+    status: result.jobs.some((job) => !job.ok) ? 502 : 200,
   });
 }
