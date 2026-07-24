@@ -25,5 +25,11 @@ export function createUnavailableReview(
     ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] },
     sectors: [],
     leaders: [],
+    structure: {
+      status: "failed",
+      source: "数据暂缺",
+      message: "涨停池、行业与连板明细尚未采集",
+      receivedAt: now.toISOString(),
+    },
   };
 }

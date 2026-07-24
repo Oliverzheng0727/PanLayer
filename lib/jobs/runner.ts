@@ -406,16 +406,53 @@ export function buildDailyReview({
 }): DailyReview {
   const pool = new Map(limitPool.map((item) => [item.symbol, item]));
   const merged = quotes.map((item) => pool.has(item.symbol) ? { ...item, ...pool.get(item.symbol) } : item);
+  const quoteByCode = new Map(merged.map((quote) => [quote.symbol.split(".")[0], quote]));
+  const poolLimitUps = boardPools
+    ? boardPools.limitUp.flatMap((item) => {
+        const quote = quoteByCode.get(item.code);
+        if (!quote) return [];
+        return [{
+          ...quote,
+          name: item.name || quote.name,
+          pctChange: item.pctChange ?? quote.pctChange,
+          amount: item.amount ?? quote.amount,
+          sector: item.industry || quote.sector || "未分类",
+          firstLimitTime: item.firstLimitTime,
+          limitStreak: Math.max(1, item.limitStreak),
+        }];
+      })
+    : limitPool;
+  const structure = boardPools
+    ? {
+        status: "complete" as const,
+        source: "东方财富四池",
+        message: `涨停池 ${boardPools.limitUp.length} 只，已校验连板高度、行业与首次封板时间`,
+        receivedAt,
+      }
+    : limitPool.length > 0
+      ? {
+          status: "partial" as const,
+          source: "东方财富涨停池",
+          message: "单涨停池可用，炸板、跌停及昨日涨停池待补充",
+          receivedAt,
+        }
+      : {
+          status: "failed" as const,
+          source,
+          message: "涨停池不可用，连板梯队、热点板块与客观龙头暂缺",
+          receivedAt,
+        };
   const sectors = new Map<string, Quote[]>();
-  merged.forEach((item) => sectors.set(item.sector, [...(sectors.get(item.sector) ?? []), item]));
+  poolLimitUps.forEach((item) => sectors.set(item.sector, [...(sectors.get(item.sector) ?? []), item]));
   const sectorMetrics: SectorMetric[] = [...sectors].map(([name, items]) => ({
     name,
-    limitUpCount: items.filter((item) => classifyLimitStatus(item) === "limit-up").length,
+    limitUpCount: items.length,
     averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
     amountGrowthPct: null,
     maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
   }));
-  const limitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
+  const quoteLimitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
+  const limitUps = structure.status === "failed" ? [] : poolLimitUps;
   const resolvedBreadth = breadth.length > 0 ? breadth : [{ time: "15:00", ...calculateBreadth(quotes) }];
   const rankedSectorMetrics = rankSectors(sectorMetrics).slice(0, 20);
   const comparison = boardPools ? buildMarketComparison({
@@ -431,7 +468,6 @@ export function buildDailyReview({
   const comparisonComplete = comparison
     ? Object.values(comparison.evidence).every((item) => item.status === "complete")
     : boardPools === undefined;
-  const quoteByCode = new Map(quotes.map((quote) => [quote.symbol.split(".")[0], quote]));
   const premium = boardPools
     ? calculateLimitPremium(boardPools.yesterdayLimitUp.flatMap((item) => {
         const quote = quoteByCode.get(item.code);
@@ -445,14 +481,14 @@ export function buildDailyReview({
     : { openPct: null, closePct: null, sampleSize: 0 };
   return {
     date,
-    status: high20 === null || high120 === null || allTimeHigh === null || !comparisonComplete ? "partial" : "complete",
+    status: high20 === null || high120 === null || allTimeHigh === null || !comparisonComplete || structure.status !== "complete" ? "partial" : "complete",
     source,
     updatedAt: receivedAt,
     breadth: resolvedBreadth,
     metrics: {
-      limitUp: limitUps.length,
-      limitDown: merged.filter((item) => classifyLimitStatus(item) === "limit-down").length,
-      consecutive: limitUps.filter((item) => item.limitStreak >= 2).length,
+      limitUp: boardPools ? boardPools.limitUp.length : quoteLimitUps.length,
+      limitDown: boardPools ? boardPools.limitDown.length : merged.filter((item) => classifyLimitStatus(item) === "limit-down").length,
+      consecutive: structure.status === "failed" ? null : limitUps.filter((item) => item.limitStreak >= 2).length,
       largeRise: merged.filter((item) => item.pctChange >= 7 && classifyLimitStatus(item) !== "limit-up").length,
       high20,
       high120,
@@ -460,9 +496,10 @@ export function buildDailyReview({
       marginBalance,
     },
     premium,
-    ladder: bucketLimitLadder(merged),
+    ladder: bucketLimitLadder(limitUps),
     sectors: rankedSectorMetrics,
     leaders: rankLeaders(limitUps).slice(0, 20),
+    structure,
     comparison,
   };
 }

@@ -10,7 +10,7 @@ import {
   type HistoricalPoolItem,
 } from "./backfill-sources";
 
-const PROGRESS_KEY = "history-backfill-v3-verified-sources";
+const PROGRESS_KEY = "history-backfill-v4-structure-repair";
 
 export interface HistoryBackfillProgress {
   target: number;
@@ -109,6 +109,12 @@ export function buildBackfilledReview(
     ladder: bucketLimitLadder(limitUps),
     sectors,
     leaders: rankLeaders(limitUps).slice(0, 20),
+    structure: {
+      status: "complete",
+      source: "东方财富历史四池",
+      message: `历史涨停池 ${validPools.limitUp.length} 只，已修复连板高度、行业与首次封板时间`,
+      receivedAt,
+    },
     comparison: buildMarketComparison({
       date,
       quotes: [],
@@ -120,6 +126,34 @@ export function buildBackfilledReview(
       receivedAt,
     }),
     historyMeta: { backfilled: true, receivedAt },
+  };
+}
+
+export function mergeBackfilledStructure(
+  existing: DailyReview,
+  backfilled: DailyReview,
+): DailyReview {
+  const sources = [...new Set([
+    ...existing.source.split(" / ").filter(Boolean),
+    "东方财富历史四池",
+  ])].join(" / ");
+  return {
+    ...existing,
+    status: existing.status === "failed" ? "partial" : existing.status,
+    source: sources,
+    updatedAt: backfilled.updatedAt,
+    metrics: {
+      ...existing.metrics,
+      limitUp: backfilled.metrics.limitUp,
+      limitDown: backfilled.metrics.limitDown,
+      consecutive: backfilled.metrics.consecutive,
+      marginBalance: existing.metrics.marginBalance ?? backfilled.metrics.marginBalance,
+    },
+    ladder: backfilled.ladder,
+    sectors: backfilled.sectors,
+    leaders: backfilled.leaders,
+    structure: backfilled.structure,
+    comparison: backfilled.comparison,
   };
 }
 
@@ -195,7 +229,7 @@ export async function runHistoryBackfillBatch({
     const pair = pending.slice(offset, offset + 2);
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
-      if (existing && existing.historyMeta?.backfilled !== true) return { date, completed: true };
+      if (existing?.structure?.status === "complete") return { date, completed: true };
       try {
         const [pools, marginBalance, indices] = await Promise.all([
           fetchHistoricalBoardPools(date, fetcher),
@@ -203,7 +237,8 @@ export async function runHistoryBackfillBatch({
           provider.getIndexSnapshots(date).catch(() => []),
         ]);
         const receivedAt = new Date().toISOString();
-        const review = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);
+        const backfilled = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);
+        const review = existing ? mergeBackfilledStructure(existing, backfilled) : backfilled;
         await persistBackfilledReview(db, review);
         return { date, completed: true };
       } catch {

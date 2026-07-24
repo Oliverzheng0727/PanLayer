@@ -41,6 +41,12 @@ export const demoReview: DailyReview = {
     { name: "钠离子电池", limitUpCount: 4, averagePct: 2.21, amountGrowthPct: 14.5, maxStreak: 2 },
   ],
   leaders: [makeLeader("603083.SH", "剑桥科技", "光模块", 6), makeLeader("600589.SH", "大位科技", "算力", 4), makeLeader("002031.SZ", "巨轮智能", "机器人", 3)],
+  structure: {
+    status: "complete",
+    source: "演示涨停池",
+    message: "演示连板与行业结构",
+    receivedAt: "2026-07-22 16:10",
+  },
 };
 
 const demoEtf = (symbol: string, name: string, price: number, pctChange: number, amount: number, scale: number): EtfSnapshot => {

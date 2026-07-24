@@ -104,6 +104,11 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
   const ladderHeight = Math.max(0, ...Object.values(review.ladder).flat().map((item) => item.limitStreak));
+  const structureStatus = review.structure?.status
+    ?? (review.leaders.length > 0 || review.sectors.length > 0 || Object.values(review.ladder).some((items) => items.length > 0) ? "partial" : "failed");
+  const structureMessage = review.structure?.message ?? (structureStatus === "failed"
+    ? "涨停池、行业与连板明细暂缺"
+    : "旧版复盘记录，结构数据尚未完成来源标记");
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const selectedHistoryRow = history.find((row) => row.date === selectedHistoryDate)
@@ -293,12 +298,14 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
 
           <section id="ladder" className="dashboard-section scroll-mt-24">
             <SectionHeading eyebrow="LIMIT-UP LADDER" title="连板梯队" description="按连续封板高度、首次封板时间和成交额客观排序。" />
-            <div className="ladder-stack">{ladder.map(([label, items]) => <div key={label} className="ladder-row"><div className="ladder-label"><span>{label}</span><strong>{items.length}</strong></div><div className="ladder-items">{items.length === 0 ? <span className="text-xs text-white/20">暂无</span> : items.map((item) => <div key={item.symbol} className="stock-chip"><div><strong>{item.name}</strong><span>{item.symbol.split(".")[0]} · {item.sector}</span></div><em>{pct(item.pctChange)}</em></div>)}</div></div>)}</div>
+            {structureStatus === "failed"
+              ? <StructureUnavailable message={structureMessage} />
+              : <div className="ladder-stack">{ladder.map(([label, items]) => <div key={label} className="ladder-row"><div className="ladder-label"><span>{label}</span><strong>{items.length}</strong></div><div className="ladder-items">{items.length === 0 ? <span className="text-xs text-white/20">暂无</span> : items.map((item) => <div key={item.symbol} className="stock-chip"><div><strong>{item.name}</strong><span>{item.symbol.split(".")[0]} · {item.sector}</span></div><em>{pct(item.pctChange)}</em></div>)}</div></div>)}</div>}
           </section>
 
           <section id="themes" className="dashboard-section grid scroll-mt-24 gap-5 xl:grid-cols-2">
-            <Panel title="热点板块" eyebrow="SECTOR HEAT"><DataTable headers={["板块", "涨停", "均涨幅", "成交增量", "高度"]}>{review.sectors.map((item) => <tr key={item.name}><td className="font-medium text-white/85">{item.name}</td><td className="rise">{item.limitUpCount}</td><td className="rise">{pct(item.averagePct)}</td><td>{pct(item.amountGrowthPct)}</td><td>{item.maxStreak}板</td></tr>)}</DataTable></Panel>
-            <Panel title="客观龙头" eyebrow="LEADER BOARD"><DataTable headers={["股票", "题材", "连板", "涨幅"]}>{review.leaders.map((item) => <tr key={item.symbol}><td><strong className="block text-white/85">{item.name}</strong><span className="text-[10px] text-white/25">{item.symbol}</span></td><td>{item.sector}</td><td>{item.limitStreak}板</td><td className="rise">{pct(item.pctChange)}</td></tr>)}</DataTable></Panel>
+            <Panel title="热点板块" eyebrow="SECTOR HEAT">{structureStatus === "failed" ? <StructureUnavailable message={structureMessage} compact /> : <DataTable headers={["板块", "涨停", "均涨幅", "成交增量", "高度"]}>{review.sectors.map((item) => <tr key={item.name}><td className="font-medium text-white/85">{item.name}</td><td className="rise">{item.limitUpCount}</td><td className="rise">{pct(item.averagePct)}</td><td>{pct(item.amountGrowthPct)}</td><td>{item.maxStreak}板</td></tr>)}</DataTable>}</Panel>
+            <Panel title="客观龙头" eyebrow="LEADER BOARD">{structureStatus === "failed" ? <StructureUnavailable message={structureMessage} compact /> : <DataTable headers={["股票", "题材", "连板", "涨幅"]}>{review.leaders.map((item) => <tr key={item.symbol}><td><strong className="block text-white/85">{item.name}</strong><span className="text-[10px] text-white/25">{item.symbol}</span></td><td>{item.sector}</td><td>{item.limitStreak}板</td><td className="rise">{pct(item.pctChange)}</td></tr>)}</DataTable>}</Panel>
           </section>
 
           <section id="etfs" className="dashboard-section scroll-mt-24">
@@ -333,3 +340,6 @@ function BreadthBar({ label, value, max, color }: { label: string; value: number
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-2xl bg-white/[0.035] p-4"><span className="text-[10px] text-white/30">{label}</span><strong className="mt-2 block text-lg">{value}</strong></div> }
 function SectionHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) { return <div className="mb-6"><p className="text-[9px] font-semibold tracking-[0.22em] text-[#e8702a]">{eyebrow}</p><div className="mt-2 flex flex-col justify-between gap-2 sm:flex-row sm:items-end"><h2 className="text-2xl font-medium tracking-[-0.04em]">{title}</h2><p className="text-xs text-white/35">{description}</p></div></div> }
 function DataTable({ headers, children }: { headers: string[]; children: React.ReactNode }) { return <div className="data-table-wrap"><table className="data-table"><thead><tr>{headers.map((header)=><th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div> }
+function StructureUnavailable({ message, compact = false }: { message: string; compact?: boolean }) {
+  return <div className={`grid place-items-center rounded-2xl border border-amber-400/10 bg-amber-400/[0.025] px-5 text-center ${compact ? "mt-5 min-h-36" : "min-h-52"}`}><div><p className="text-sm text-amber-200/70">结构数据暂缺</p><p className="mt-2 text-xs leading-5 text-white/30">{message}</p><p className="mt-1 text-[10px] text-white/20">未使用0板、首板或“未分类”占位</p></div></div>;
+}

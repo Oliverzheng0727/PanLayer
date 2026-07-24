@@ -461,7 +461,71 @@ describe("close review aggregation", () => {
     expect(review.ladder.second[0].symbol).toBe("A");
     expect(review.leaders[0].symbol).toBe("A");
     expect(review.sectors.every((sector) => sector.amountGrowthPct === null)).toBe(true);
-    expect(review.status).toBe("complete");
+    expect(review.structure).toMatchObject({
+      status: "partial",
+      source: "东方财富涨停池",
+    });
+    expect(review.status).toBe("partial");
+  });
+
+  it("does not mislabel quote-only limit-ups as first boards, sectors, or objective leaders", () => {
+    const review = buildDailyReview({
+      date: "2026-07-23",
+      quotes: [q("600001.SH", 10), q("600002.SH", 10), q("600003.SH", 2)],
+      limitPool: [],
+      breadth: [],
+      marginBalance: null,
+      high20: 1,
+      high120: 1,
+      allTimeHigh: 1,
+      source: "新浪财经",
+      boardPools: null,
+    });
+
+    expect(review.metrics.limitUp).toBe(2);
+    expect(review.metrics.consecutive).toBeNull();
+    expect(review.ladder).toEqual({ first: [], second: [], third: [], fourth: [], fivePlus: [] });
+    expect(review.sectors).toEqual([]);
+    expect(review.leaders).toEqual([]);
+    expect(review.structure).toMatchObject({
+      status: "failed",
+      message: expect.stringContaining("涨停池"),
+    });
+    expect(review.status).toBe("partial");
+  });
+
+  it("uses the verified four-pool snapshot as the authoritative ladder and sector source", () => {
+    const boardPools: BoardPools = {
+      limitUp: [
+        { code: "600001", name: "二板甲", pctChange: 10, amount: 2e8, industry: "机器人", limitStreak: 2, previousLimitStreak: 1, firstLimitTime: "09:35:00" },
+        { code: "600002", name: "首板乙", pctChange: 10, amount: 1e8, industry: "机器人", limitStreak: 1, previousLimitStreak: 0, firstLimitTime: "10:00:00" },
+      ],
+      broken: [],
+      limitDown: [],
+      yesterdayLimitUp: [],
+    };
+    const review = buildDailyReview({
+      date: "2026-07-23",
+      quotes: [q("600001.SH", 10), q("600002.SH", 10), q("600003.SH", 2)],
+      limitPool: [],
+      breadth: [],
+      marginBalance: null,
+      high20: 1,
+      high120: 1,
+      allTimeHigh: 1,
+      source: "新浪财经",
+      boardPools,
+    });
+
+    expect(review.metrics).toMatchObject({ limitUp: 2, consecutive: 1 });
+    expect(review.ladder.second.map((item) => item.name)).toEqual(["二板甲"]);
+    expect(review.ladder.first.map((item) => item.name)).toEqual(["首板乙"]);
+    expect(review.sectors[0]).toMatchObject({ name: "机器人", limitUpCount: 2, maxStreak: 2 });
+    expect(review.leaders[0]).toMatchObject({ name: "二板甲", limitStreak: 2 });
+    expect(review.structure).toMatchObject({
+      status: "complete",
+      source: "东方财富四池",
+    });
   });
 
   it("attaches the verified comparison snapshot to the daily review", () => {

@@ -105,12 +105,21 @@ describe("history review backfill", () => {
     expect(review.historyMeta).toEqual({ backfilled: true, receivedAt: "2026-07-23T08:00:00.000Z" });
   });
 
-  it("backfills in resumable batches without overwriting a richer review", async () => {
+  it("repairs a richer review's missing market structure without overwriting its breadth", async () => {
     const richer: DailyReview = {
       ...buildBackfilledReview("2026-07-22", pools, 26978.8, "2026-07-22T08:00:00.000Z"),
       source: "实时收盘",
       historyMeta: undefined,
       breadth: [{ time: "15:00", rising: 3000, falling: 1800, flat: 100 }],
+      structure: {
+        status: "failed",
+        source: "新浪财经",
+        message: "涨停池不可用",
+        receivedAt: "2026-07-22T08:10:00.000Z",
+      },
+      ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] },
+      sectors: [],
+      leaders: [],
     };
     const fixture = createBackfillDb({ "2026-07-22": richer });
     const fetcher = createBackfillFetcher();
@@ -133,7 +142,13 @@ describe("history review backfill", () => {
     expect(first).toMatchObject({ target: 6, completed: 5, remaining: 1 });
     expect(second).toMatchObject({ target: 6, completed: 6, remaining: 0 });
     expect(fixture.reviews.size).toBe(6);
-    expect(JSON.parse(fixture.reviews.get("2026-07-22")!).source).toBe("实时收盘");
+    const repaired = JSON.parse(fixture.reviews.get("2026-07-22")!) as DailyReview;
+    expect(repaired.source).toContain("实时收盘");
+    expect(repaired.breadth).toEqual([{ time: "15:00", rising: 3000, falling: 1800, flat: 100 }]);
+    expect(repaired.ladder.third[0].name).toBe("电子甲");
+    expect(repaired.sectors[0].name).toBe("电子");
+    expect(repaired.leaders[0].name).toBe("电子甲");
+    expect(repaired.structure).toMatchObject({ status: "complete", source: "东方财富历史四池" });
     expect(JSON.parse(fixture.getProgress()!).completed).toHaveLength(6);
   });
 });

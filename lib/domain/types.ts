@@ -116,6 +116,12 @@ export interface DailyReview {
   ladder: Record<"first" | "second" | "third" | "fourth" | "fivePlus", Quote[]>;
   sectors: SectorMetric[];
   leaders: Quote[];
+  structure?: {
+    status: "complete" | "partial" | "failed";
+    source: string;
+    message: string;
+    receivedAt: string;
+  };
   comparison?: DailyComparison;
   historyMeta?: {
     backfilled: boolean;
