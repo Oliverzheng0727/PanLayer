@@ -32,9 +32,28 @@ describe("ETF metrics refresh batch", () => {
 
     expect(result.attempted).toBe(2);
     expect(result.completed).toBe(2);
-    expect(result.nextCursor).toBe(2);
-    expect(result.items.slice(0, 2).every((entry) => entry.averageAmount20 === 1)).toBe(true);
+    expect(result.nextCursor).toBe(0);
+    expect(result.items.slice(0, 2).every((entry) => entry.averageAmount20 === 100_000_000)).toBe(true);
     expect(result.items[2].averageAmount20).toBeNull();
+  });
+
+  it("restarts from the most liquid missing ETF after a successful batch instead of skipping rows", async () => {
+    const requested: string[] = [];
+    const result = await enrichEtfMetricsBatch({
+      items: [item("510001", 300), item("510002", 200), item("510003", 100)],
+      cursor: 2,
+      batchSize: 1,
+      loadBars: async (symbol) => {
+        requested.push(symbol);
+        return Array.from({ length: 20 }, (_, index) => ({
+          time: String(index),
+          amount: 100_000_000,
+        }));
+      },
+    });
+
+    expect(requested).toEqual(["510003"]);
+    expect(result.nextCursor).toBe(0);
   });
 
   it("processes upstream ETF history requests serially to avoid provider bans", async () => {

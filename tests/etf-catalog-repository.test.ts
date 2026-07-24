@@ -89,4 +89,17 @@ describe("ETF catalog repository", () => {
 
     await expect(loadLatestEtfCatalogSnapshot(corrupted.db, "2026-07-23")).resolves.toBeNull();
   });
+
+  it("normalizes verified legacy 亿元 averages to the catalog yuan unit", async () => {
+    const legacy = fakeDb({
+      trade_date: "2026-07-22",
+      payload: JSON.stringify([{ ...item, averageAmount20: 28.6 }]),
+      source: "东方财富",
+      status: "partial",
+      received_at: "2026-07-22T07:00:00.000Z",
+    });
+
+    const snapshot = await loadLatestEtfCatalogSnapshot(legacy.db, "2026-07-23");
+    expect(snapshot?.items[0].averageAmount20).toBe(2_860_000_000);
+  });
 });

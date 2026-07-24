@@ -9,7 +9,7 @@ describe("ETF derived metrics", () => {
       amount: (index + 1) * 100_000_000,
     }));
 
-    expect(calculateAverageAmount20(bars)).toBe(15.5);
+    expect(calculateAverageAmount20(bars)).toBe(1_550_000_000);
   });
 
   it("keeps the value unavailable when fewer than 20 sessions are valid", () => {
@@ -40,6 +40,6 @@ describe("ETF derived metrics", () => {
       updatedAt: "2026-07-24T15:00:00+08:00",
     });
 
-    expect(mergeEtfDerivedMetrics([item(null)], [item(42.5)])[0].averageAmount20).toBe(42.5);
+    expect(mergeEtfDerivedMetrics([item(null)], [item(42.5)])[0].averageAmount20).toBe(4_250_000_000);
   });
 });

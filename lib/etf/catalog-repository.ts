@@ -1,4 +1,5 @@
 import type { EtfSnapshot } from "../data/provider";
+import { normalizeAverageAmount20 } from "./derived-metrics";
 
 export interface PersistedEtfCatalogSnapshot {
   tradeDate: string;
@@ -64,9 +65,13 @@ export async function loadLatestEtfCatalogSnapshot(
   try {
     const payload = JSON.parse(row.payload) as unknown;
     if (!Array.isArray(payload) || payload.length === 0 || !payload.every(validItem)) return null;
+    const items = payload.map((item) => ({
+      ...item,
+      averageAmount20: normalizeAverageAmount20(item.averageAmount20),
+    }));
     return {
       tradeDate: row.trade_date,
-      items: payload,
+      items,
       source: row.source,
       status: row.status === "complete" ? "complete" : "partial",
       receivedAt: row.received_at,

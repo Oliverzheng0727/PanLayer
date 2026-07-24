@@ -78,7 +78,9 @@ export async function enrichEtfMetricsBatch({
   }
 
   const remaining = next.filter((item) => item.averageAmount20 === null).length;
-  const nextCursor = start + selected.length >= missingIndices.length ? 0 : start + selected.length;
+  const nextCursor = completed > 0
+    ? 0
+    : start + selected.length >= missingIndices.length ? 0 : start + selected.length;
   return { items: next, attempted: selected.length, completed, failed, errors, nextCursor, remaining };
 }
 
