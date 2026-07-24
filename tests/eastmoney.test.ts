@@ -151,12 +151,12 @@ describe("Eastmoney provider", () => {
     ]);
   });
 
-  it("rotates Eastmoney hosts when the preferred edge returns 520", async () => {
+  it("prefers the stable Eastmoney hostname and rotates when it returns 520", async () => {
     const hosts: string[] = [];
     const fetcher: typeof fetch = async (input) => {
       const url = new URL(String(input));
       hosts.push(url.host);
-      if (url.host.startsWith("82.")) return new Response("edge failed", { status: 520 });
+      if (url.host === "push2.eastmoney.com") return new Response("edge failed", { status: 520 });
       return new Response(JSON.stringify({ data: { total: 1, diff: [{
         f12: "600000", f14: "浦发银行", f2: 11, f3: 1, f6: 1, f8: 1,
         f15: 11, f16: 10, f17: 10.5, f18: 10.9, f100: "银行",
@@ -164,10 +164,10 @@ describe("Eastmoney provider", () => {
     };
 
     await expect(createEastmoneyProvider(fetcher).getQuotes("11:00")).resolves.toHaveLength(1);
-    expect(hosts).toEqual(["82.push2.eastmoney.com", "push2.eastmoney.com"]);
+    expect(hosts).toEqual(["push2.eastmoney.com", "40.push2.eastmoney.com"]);
   });
 
-  it("uses the HTTP quote edge as a final fallback when HTTPS edges are unavailable", async () => {
+  it("uses the HTTP quote edge after the stable HTTPS hostname is unavailable", async () => {
     const origins: string[] = [];
     const fetcher: typeof fetch = async (input) => {
       const url = new URL(String(input));
@@ -180,7 +180,7 @@ describe("Eastmoney provider", () => {
     };
 
     await expect(createEastmoneyProvider(fetcher).getQuotes("11:00")).resolves.toHaveLength(1);
-    expect(origins.at(-1)).toBe("http://40.push2.eastmoney.com");
+    expect(origins).toEqual(["https://push2.eastmoney.com", "http://40.push2.eastmoney.com"]);
   });
 
   it("falls back to Sina's full A-share pages when every Eastmoney quote edge is unavailable", async () => {
@@ -212,7 +212,39 @@ describe("Eastmoney provider", () => {
     ]);
   });
 
-  it("limits quote-page concurrency and retries a transient provider 520", async () => {
+  it("merges a partial Eastmoney universe with Sina instead of discarding Beijing rows", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.host.includes("eastmoney.com")) {
+        const page = url.searchParams.get("pn") ?? "1";
+        if (page !== "1") return new Response("edge failed", { status: 520 });
+        return new Response(JSON.stringify({ data: { total: 4, diff: [
+          { f12: "920001", f14: "北交示例", f2: 13, f3: 2, f6: 1, f8: 1, f15: 13, f16: 12, f17: 12.8, f18: 12.75, f100: "机械" },
+          { f12: "600000", f14: "浦发银行", f2: 11, f3: 1, f6: 1, f8: 1, f15: 11, f16: 10, f17: 10.5, f18: 10.9, f100: "银行" },
+        ] } }));
+      }
+      if (url.pathname.includes("getHQNodeStockCount")) return new Response('"3"');
+      if (url.pathname.includes("getHQNodeData")) {
+        return new Response(JSON.stringify([
+          { symbol: "sh600000", code: "600000", name: "浦发银行", trade: "11", changepercent: 1, settlement: "10.9", open: "10.5", high: "11", low: "10", amount: 1, turnoverratio: 1 },
+          { symbol: "sz000001", code: "000001", name: "平安银行", trade: "12", changepercent: 1, settlement: "11.9", open: "11.9", high: "12", low: "11.8", amount: 1, turnoverratio: 1 },
+          { symbol: "sz300001", code: "300001", name: "创业示例", trade: "13", changepercent: 1, settlement: "12.9", open: "12.9", high: "13", low: "12.8", amount: 1, turnoverratio: 1 },
+        ]));
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const provider = createEastmoneyProvider(fetcher);
+    await expect(provider.getQuotes("11:00")).resolves.toHaveLength(4);
+    await expect(provider.getMarketAggregate("11:00")).resolves.toMatchObject({
+      rawCount: 4,
+      coveragePct: 100,
+      source: "东方财富 / 新浪财经",
+      status: "complete",
+    });
+  });
+
+  it("loads quote pages with bounded six-way concurrency and retries a transient provider 520", async () => {
     let active = 0;
     let maxActive = 0;
     const attempts = new Map<string, number>();
@@ -220,7 +252,7 @@ describe("Eastmoney provider", () => {
       const page = new URL(String(input)).searchParams.get("pn") ?? "1";
       attempts.set(page, (attempts.get(page) ?? 0) + 1);
       if (page === "1") {
-        return new Response(JSON.stringify({ data: { total: 8, diff: [
+        return new Response(JSON.stringify({ data: { total: 14, diff: [
           { f12: "600001", f14: "股票1", f2: 10, f3: 1, f6: 1, f8: 1, f15: 10, f16: 9, f17: 9.9, f18: 9.9, f100: "测试" },
           { f12: "600002", f14: "股票2", f2: 10, f3: 1, f6: 1, f8: 1, f15: 10, f16: 9, f17: 9.9, f18: 9.9, f100: "测试" },
         ] } }));
@@ -231,7 +263,7 @@ describe("Eastmoney provider", () => {
       active -= 1;
       if (page === "2" && attempts.get(page) === 1) return new Response("temporary", { status: 520 });
       const start = Number(page) * 2 - 1;
-      return new Response(JSON.stringify({ data: { total: 8, diff: [start, start + 1].map((index) => ({
+      return new Response(JSON.stringify({ data: { total: 14, diff: [start, start + 1].map((index) => ({
         f12: String(600000 + index), f14: `股票${index}`, f2: 10, f3: 1, f6: 1, f8: 1,
         f15: 10, f16: 9, f17: 9.9, f18: 9.9, f100: "测试",
       })) } }));
@@ -239,9 +271,26 @@ describe("Eastmoney provider", () => {
 
     const quotes = await createEastmoneyProvider(fetcher).getQuotes("11:00");
 
-    expect(quotes).toHaveLength(8);
+    expect(quotes).toHaveLength(14);
     expect(attempts.get("2")).toBe(2);
-    expect(maxActive).toBeLessThanOrEqual(2);
+    expect(maxActive).toBeGreaterThan(2);
+    expect(maxActive).toBeLessThanOrEqual(6);
+  });
+
+  it("bounds every quote-page request with an abort signal", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const fetcher: typeof fetch = async (_input, init) => {
+      signals.push(init?.signal);
+      return new Response(JSON.stringify({ data: { total: 1, diff: [{
+        f12: "600000", f14: "浦发银行", f2: 11, f3: 1, f6: 1, f8: 1,
+        f15: 11, f16: 10, f17: 10.5, f18: 10.9, f100: "银行",
+      }] } }));
+    };
+
+    await createEastmoneyProvider(fetcher).getQuotes("11:00");
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
   });
 
   it("keeps a sufficiently complete universe when one trailing page remains unavailable", async () => {

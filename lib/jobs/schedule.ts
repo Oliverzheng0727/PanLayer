@@ -10,6 +10,9 @@ export type ScheduledJob =
 const BREADTH_TIMES = new Set(["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"]);
 
 export function jobForBeijingTime(time: string): ScheduledJob | null {
+  if (["01:30", "01:35", "01:40", "01:45", "01:50", "01:55"].includes(time)) {
+    return { type: "history-backfill", days: 20 };
+  }
   if (time === "06:50") return { type: "tier1-rss-prefetch" };
   if (time === "06:55") return { type: "tier2-news-prefetch" };
   if (time === "07:15") return { type: "morning-brief" };

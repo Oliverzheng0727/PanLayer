@@ -68,6 +68,13 @@ describe("history backfill sources", () => {
     await expect(fetchHistoricalBoardPools("2026-07-22", fetcher as typeof fetch)).rejects.toThrow("missing pool");
   });
 
+  it("rejects an all-empty four-pool response instead of publishing false zero counts", async () => {
+    const fetcher = async () => new Response(JSON.stringify({ data: { pool: [] } }));
+
+    await expect(fetchHistoricalBoardPools("2026-07-22", fetcher as typeof fetch))
+      .rejects.toThrow("all pools empty");
+  });
+
   it("bounds every source request with an abort signal", async () => {
     const signals: Array<AbortSignal | null | undefined> = [];
     const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -78,7 +85,7 @@ describe("history backfill sources", () => {
     };
 
     await fetchRecentTradingDates("2026-07-22", 1, fetcher as typeof fetch);
-    await fetchHistoricalBoardPools("2026-07-22", fetcher as typeof fetch);
+    await fetchHistoricalBoardPools("2026-07-22", fetcher as typeof fetch).catch(() => undefined);
 
     expect(signals).toHaveLength(5);
     expect(signals.every((signal) => signal instanceof AbortSignal)).toBe(true);

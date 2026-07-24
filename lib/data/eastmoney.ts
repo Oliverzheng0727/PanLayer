@@ -97,11 +97,13 @@ export function mapEastmoneyQuote(row: EastmoneyQuoteRow): Quote {
 }
 
 const QUOTE_PAGE_SIZE = 100;
+const QUOTE_PAGE_CONCURRENCY = 6;
+const SOURCE_REQUEST_TIMEOUT_MS = 3_500;
 const QUOTE_ORIGINS = [
-  "https://82.push2.eastmoney.com",
   "https://push2.eastmoney.com",
-  "https://48.push2.eastmoney.com",
   "http://40.push2.eastmoney.com",
+  "https://82.push2.eastmoney.com",
+  "https://48.push2.eastmoney.com",
 ];
 
 function quotePageUrl(page: number, origin = QUOTE_ORIGINS[0]) {
@@ -148,9 +150,31 @@ function timeFromNumber(value: number | string | undefined): string | null {
 }
 
 async function fetchJson<T>(fetcher: typeof fetch, url: string): Promise<T> {
-  const response = await fetcher(url, { headers: { accept: "application/json", "user-agent": "PanLayer/1.0" } });
+  const response = await fetcher(url, {
+    headers: { accept: "application/json", "user-agent": "PanLayer/1.0" },
+    signal: AbortSignal.timeout(SOURCE_REQUEST_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`Eastmoney ${response.status}`);
   return response.json() as Promise<T>;
+}
+
+async function loadPages<T>(
+  pages: number[],
+  concurrency: number,
+  loader: (page: number) => Promise<T | null>,
+): Promise<Array<T | null>> {
+  const results: Array<T | null> = Array.from({ length: pages.length }, () => null);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < pages.length) {
+      const index = cursor++;
+      results[index] = await loader(pages[index]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, pages.length) }, worker),
+  );
+  return results;
 }
 
 export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDataProvider {
@@ -181,17 +205,16 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     const effectivePageSize = Math.max(1, firstRows.length);
     const pageCount = Math.min(80, Math.max(1, Math.ceil(total / effectivePageSize)));
     const rows = [...firstRows];
-    for (let start = 2; start <= pageCount; start += 2) {
-      const pages = Array.from({ length: Math.min(2, pageCount - start + 1) }, (_, index) => start + index);
-      const payloads = await Promise.all(pages.map((page) => loadPage(page).catch(() => null)));
-      payloads.forEach((payload) => {
-        if (Array.isArray(payload?.data?.diff)) rows.push(...payload.data.diff);
-      });
-    }
+    const remainingPages = Array.from({ length: Math.max(0, pageCount - 1) }, (_, index) => index + 2);
+    const payloads = await loadPages(
+      remainingPages,
+      QUOTE_PAGE_CONCURRENCY,
+      (page) => loadPage(page).catch(() => null),
+    );
+    payloads.forEach((payload) => {
+      if (Array.isArray(payload?.data?.diff)) rows.push(...payload.data.diff);
+    });
     const uniqueRows = [...new Map(rows.map((row) => [String(row.f12 ?? ""), row])).values()];
-    if (total > 0 && uniqueRows.length / total < 0.95) {
-      throw new Error(`Eastmoney 行情覆盖不足 ${uniqueRows.length}/${total}`);
-    }
     return {
       quotes: uniqueRows.map(mapEastmoneyQuote).filter((item: Quote) => item.price > 0),
       total,
@@ -205,15 +228,15 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     if (total === 0) throw new Error("Sina 证券池为空");
     const pageCount = Math.min(80, Math.max(1, Math.ceil(total / QUOTE_PAGE_SIZE)));
     const rows: SinaQuoteRow[] = [];
-    for (let start = 1; start <= pageCount; start += 2) {
-      const pages = Array.from({ length: Math.min(2, pageCount - start + 1) }, (_, index) => start + index);
-      const payloads = await Promise.all(pages.map((page) => (
-        fetchJson<SinaQuoteRow[]>(fetcher, sinaPageUrl(page)).catch(() => null)
-      )));
-      payloads.forEach((payload) => {
-        if (Array.isArray(payload)) rows.push(...payload);
-      });
-    }
+    const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
+    const payloads = await loadPages(
+      pages,
+      QUOTE_PAGE_CONCURRENCY,
+      (page) => fetchJson<SinaQuoteRow[]>(fetcher, sinaPageUrl(page)).catch(() => null),
+    );
+    payloads.forEach((payload) => {
+      if (Array.isArray(payload)) rows.push(...payload);
+    });
     const uniqueRows = [...new Map(rows.map((row) => [String(row.code ?? row.symbol ?? ""), row])).values()];
     if (uniqueRows.length / total < 0.95) {
       throw new Error(`Sina 行情覆盖不足 ${uniqueRows.length}/${total}`);
@@ -227,8 +250,9 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
 
   let quoteSnapshot: Promise<QuoteSnapshot> | null = null;
   const loadQuoteSnapshot = async (): Promise<QuoteSnapshot> => {
+    let eastmoney: QuoteSnapshot;
     try {
-      return await getEastmoneyQuotes();
+      eastmoney = await getEastmoneyQuotes();
     } catch (eastmoneyError) {
       try {
         return await getSinaQuotes();
@@ -237,6 +261,32 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
         const fallbackMessage = sinaError instanceof Error ? sinaError.message : "Sina failed";
         throw new Error(`${primaryMessage}；${fallbackMessage}`);
       }
+    }
+    if (eastmoney.total === 0 || eastmoney.quotes.length / eastmoney.total >= 0.95) {
+      return eastmoney;
+    }
+    try {
+      const sina = await getSinaQuotes();
+      const quotes = [
+        ...new Map(
+          [...sina.quotes, ...eastmoney.quotes]
+            .map((quote) => [quote.symbol, quote]),
+        ).values(),
+      ];
+      const total = Math.max(eastmoney.total, sina.total, quotes.length);
+      if (quotes.length / Math.max(1, total) < 0.95) {
+        throw new Error(`合并行情覆盖不足 ${quotes.length}/${total}`);
+      }
+      return {
+        quotes,
+        total,
+        source: "东方财富 / 新浪财经",
+      };
+    } catch (sinaError) {
+      const fallbackMessage = sinaError instanceof Error ? sinaError.message : "Sina failed";
+      throw new Error(
+        `Eastmoney 行情覆盖不足 ${eastmoney.quotes.length}/${eastmoney.total}；${fallbackMessage}`,
+      );
     }
   };
   const getQuoteSnapshot = () => {

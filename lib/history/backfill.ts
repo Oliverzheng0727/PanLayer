@@ -10,7 +10,7 @@ import {
   type HistoricalPoolItem,
 } from "./backfill-sources";
 
-const PROGRESS_KEY = "history-backfill-v2-comparison";
+const PROGRESS_KEY = "history-backfill-v3-verified-sources";
 
 export interface HistoryBackfillProgress {
   target: number;

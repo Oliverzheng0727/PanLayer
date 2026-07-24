@@ -7,6 +7,9 @@ describe("Beijing market schedule", () => {
     expect(jobForBeijingTime("06:55")).toEqual({ type: "tier2-news-prefetch" });
     expect(jobForBeijingTime("07:15")).toEqual({ type: "morning-brief" });
     expect(jobForBeijingTime("08:30")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("01:30")).toEqual({ type: "history-backfill", days: 20 });
+    expect(jobForBeijingTime("01:55")).toEqual({ type: "history-backfill", days: 20 });
+    expect(jobForBeijingTime("01:25")).toBeNull();
     expect(jobForBeijingTime("02:00")).toEqual({ type: "new-high-bootstrap" });
     expect(jobForBeijingTime("04:35")).toEqual({ type: "new-high-bootstrap" });
     expect(jobForBeijingTime("06:45")).toEqual({ type: "new-high-bootstrap" });

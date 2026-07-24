@@ -135,6 +135,10 @@ export async function fetchHistoricalBoardPools(
       await fetchPool(endpoint, sort, date, fetcher),
     ] as const),
   );
-  return Object.fromEntries(entries) as unknown as HistoricalBoardPools;
+  const pools = Object.fromEntries(entries) as unknown as HistoricalBoardPools;
+  if (Object.values(pools).every((pool) => pool.length === 0)) {
+    throw new Error(`Eastmoney board pools all pools empty for ${date}`);
+  }
+  return pools;
 }
 import type { BoardPoolItem, BoardPools } from "../data/provider";
