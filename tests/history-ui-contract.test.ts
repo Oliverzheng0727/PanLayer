@@ -80,7 +80,10 @@ describe("PanLayer history comparison workspace UI contract", () => {
 
   it("schedules resumable initialization every five minutes during the overnight window", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-    expect(config).toContain('"*/5 18-22 * * 0-4"');
+    expect(config).toContain('"*/5 18-21 * * 0-4"');
+    expect(config).toContain('"0-45/5 22 * * 0-4"');
+    expect(config).toContain('"50 22 * * 0-4"');
+    expect(config).toContain('"55 22 * * 0-4"');
   });
 
   it("keeps the header and date column frozen inside a two-axis scroll area", async () => {

@@ -14,6 +14,20 @@ import type { GlobalPoint } from "./global/types";
 
 interface HealthJob { job: string; trade_date: string; status: string; message: string; started_at: string; finished_at: string | null }
 interface HealthSource { source?: string; provider?: string; status: string; received_at: string; message: string }
+interface HealthNewsRun {
+  run_id: string;
+  fetch_date: string;
+  source_tier: number;
+  transport: string;
+  status: string;
+  source_total: number;
+  source_success: number;
+  kept_item_count: number;
+  filtered_item_count: number;
+  started_at: string;
+  finished_at: string | null;
+  error_summary_json: string;
+}
 
 const healthSection = (status: string, message: string, updatedAt: string | null) => ({ status, message, updatedAt });
 
@@ -21,10 +35,12 @@ export function summarizeDataHealth({
   jobs,
   audits,
   globalPoints,
+  newsRuns = [],
 }: {
   jobs: HealthJob[];
   audits: HealthSource[];
   globalPoints: HealthSource[];
+  newsRuns?: HealthNewsRun[];
 }) {
   const latestAudit = audits[0];
   const marketPoints = globalPoints.filter((point) => point.provider !== "FRED" && point.provider !== "EIA");
@@ -40,11 +56,37 @@ export function summarizeDataHealth({
     macro: healthSection(macroStatus, macroPoints.find((point) => point.message)?.message ?? (macroPoints.length ? "宏观数据已采集" : "尚无宏观数据"), macroPoints[0]?.received_at ?? null),
     ai: healthSection(aiStatus, aiJob?.message || (aiJob ? "早参已生成" : "尚无早参任务"), aiJob?.finished_at ?? aiJob?.started_at ?? null),
   };
-  const statuses = Object.values(sections).map((section) => section.status);
+  const newsRun = (tier: 1 | 2) => {
+    const run = newsRuns.find((item) => Number(item.source_tier) === tier);
+    if (!run) return null;
+    let errors: string[] = [];
+    try {
+      const parsed = JSON.parse(run.error_summary_json);
+      if (Array.isArray(parsed)) errors = parsed.filter((item): item is string => typeof item === "string");
+    } catch { errors = ["采集错误摘要无法解析"]; }
+    return {
+      status: run.status,
+      fetchDate: run.fetch_date,
+      transport: run.transport,
+      sourceTotal: Number(run.source_total),
+      sourceSuccess: Number(run.source_success),
+      keptItemCount: Number(run.kept_item_count),
+      filteredItemCount: Number(run.filtered_item_count),
+      startedAt: run.started_at,
+      finishedAt: run.finished_at,
+      errors,
+    };
+  };
+  const newsCollection = newsRuns.length > 0 ? { tier1: newsRun(1), tier2: newsRun(2) } : null;
+  const statuses = [
+    ...Object.values(sections).map((section) => section.status),
+    ...(newsCollection ? [newsCollection.tier1?.status, newsCollection.tier2?.status].filter((status): status is string => Boolean(status)) : []),
+  ];
   return {
     status: statuses.every((status) => status === "complete") ? "complete" : statuses.every((status) => status === "demo") ? "demo" : "partial",
     lastRun: jobs[0] ?? null,
     jobs,
+    newsCollection,
     ...sections,
   };
 }
@@ -187,10 +229,19 @@ export async function readGlobalSnapshot(date: string) {
 export async function readDataHealth() {
   const db = await getD1();
   if (!db) return summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] });
-  const [jobResult, auditResult, globalResult] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
+    db.prepare(`SELECT run_id, fetch_date, source_tier, transport, status, source_total, source_success,
+      kept_item_count, filtered_item_count, started_at, finished_at, error_summary_json
+      FROM brief_fetch_runs ORDER BY fetch_date DESC, source_tier ASC, finished_at DESC LIMIT 20`)
+      .all<HealthNewsRun>().catch(() => ({ results: [] })),
   ]);
-  return summarizeDataHealth({ jobs: jobResult.results ?? [], audits: auditResult.results ?? [], globalPoints: globalResult.results ?? [] });
+  return summarizeDataHealth({
+    jobs: jobResult.results ?? [],
+    audits: auditResult.results ?? [],
+    globalPoints: globalResult.results ?? [],
+    newsRuns: newsResult.results ?? [],
+  });
 }

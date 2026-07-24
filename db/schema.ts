@@ -169,3 +169,60 @@ export const globalMarketSnapshots = sqliteTable("global_market_snapshots", {
   status: text("status").notNull(),
   message: text("message").notNull().default(""),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol, table.provider] }), index("global_snapshot_date_idx").on(table.tradeDate)]);
+
+export const briefSources = sqliteTable("brief_sources", {
+  sourceId: text("source_id").primaryKey(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  industryKeysJson: text("industry_keys_json").notNull(),
+  sourceTier: integer("source_tier").notNull(),
+  transport: text("transport").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  lastStatus: text("last_status"),
+  lastSuccessAt: text("last_success_at"),
+  lastError: text("last_error"),
+  latencyMs: integer("latency_ms"),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("brief_sources_url_tier_idx").on(table.url, table.sourceTier)]);
+
+export const briefItems = sqliteTable("brief_items", {
+  itemId: text("item_id").notNull(),
+  canonicalUrl: text("canonical_url").notNull(),
+  title: text("title").notNull(),
+  excerpt: text("excerpt"),
+  publishedAt: text("published_at"),
+  receivedAt: text("received_at").notNull(),
+  fetchDate: text("fetch_date").notNull(),
+  runId: text("run_id").notNull(),
+  sourceIdsJson: text("source_ids_json").notNull(),
+  sourceNamesJson: text("source_names_json").notNull(),
+  industryKeysJson: text("industry_keys_json").notNull(),
+  sourceTier: integer("source_tier").notNull(),
+  verificationStatus: text("verification_status").notNull(),
+  corroboratingUrlsJson: text("corroborating_urls_json").notNull(),
+  contentHash: text("content_hash").notNull(),
+  filterStatus: text("filter_status").notNull(),
+  filterReason: text("filter_reason"),
+}, (table) => [
+  primaryKey({ columns: [table.fetchDate, table.itemId] }),
+  index("brief_items_date_run_idx").on(table.fetchDate, table.runId),
+]);
+
+export const briefFetchRuns = sqliteTable("brief_fetch_runs", {
+  runId: text("run_id").primaryKey(),
+  fetchDate: text("fetch_date").notNull(),
+  sourceTier: integer("source_tier").notNull(),
+  transport: text("transport").notNull(),
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  status: text("status").notNull(),
+  sourceTotal: integer("source_total").notNull(),
+  sourceSuccess: integer("source_success").notNull(),
+  rawItemCount: integer("raw_item_count").notNull(),
+  keptItemCount: integer("kept_item_count").notNull(),
+  filteredItemCount: integer("filtered_item_count").notNull(),
+  errorSummaryJson: text("error_summary_json").notNull().default("[]"),
+}, (table) => [
+  index("brief_fetch_runs_date_tier_idx").on(table.fetchDate, table.sourceTier, table.finishedAt),
+]);

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { globalMarketSnapshots, marketSourceAudits, morningBriefSections } from "../db/schema";
+import {
+  briefFetchRuns,
+  briefItems,
+  briefSources,
+  globalMarketSnapshots,
+  marketSourceAudits,
+  morningBriefSections,
+} from "../db/schema";
 import { summarizeDataHealth } from "../lib/data/repository";
 
 describe("persisted data health", () => {
@@ -7,6 +14,9 @@ describe("persisted data health", () => {
     expect(marketSourceAudits).toBeDefined();
     expect(globalMarketSnapshots).toBeDefined();
     expect(morningBriefSections).toBeDefined();
+    expect(briefSources).toBeDefined();
+    expect(briefItems).toBeDefined();
+    expect(briefFetchRuns).toBeDefined();
   });
 
   it("reports domestic, global, macro and AI health independently", () => {
@@ -23,5 +33,32 @@ describe("persisted data health", () => {
     expect(result.global.status).toBe("complete");
     expect(result.macro.status).toBe("partial");
     expect(result.ai.status).toBe("complete");
+  });
+
+  it("reports tier-1 and tier-2 collection health independently", () => {
+    const result = summarizeDataHealth({
+      jobs: [],
+      audits: [],
+      globalPoints: [],
+      newsRuns: [
+        {
+          run_id: "tier2", fetch_date: "2026-07-24", source_tier: 2, transport: "firecrawl",
+          status: "complete", source_total: 3, source_success: 3, kept_item_count: 4,
+          filtered_item_count: 0, started_at: "2026-07-24T06:55:00+08:00", finished_at: "2026-07-24T06:55:10+08:00",
+          error_summary_json: "[]",
+        },
+        {
+          run_id: "tier1", fetch_date: "2026-07-24", source_tier: 1, transport: "rss",
+          status: "partial", source_total: 108, source_success: 100, kept_item_count: 300,
+          filtered_item_count: 2, started_at: "2026-07-24T06:50:00+08:00", finished_at: "2026-07-24T06:52:00+08:00",
+          error_summary_json: "[\"8 sources failed\"]",
+        },
+      ],
+    });
+
+    expect(result.newsCollection).toMatchObject({
+      tier1: { status: "partial", fetchDate: "2026-07-24", sourceSuccess: 100, sourceTotal: 108 },
+      tier2: { status: "complete", fetchDate: "2026-07-24", sourceSuccess: 3, sourceTotal: 3 },
+    });
   });
 });
