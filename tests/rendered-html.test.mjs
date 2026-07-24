@@ -75,6 +75,8 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /仅供市场复盘，不构成投资建议/);
   assert.match(html, /数据来源/);
   assert.match(html, /更新时间/);
+  assert.match(html, /任务进度/);
+  assert.match(html, /aria-controls="sidebar-data-progress-details"/);
   assert.match(html, /状态口径/);
   assert.match(html, /当天早参尚未生成/);
   assert.doesNotMatch(html, /演示来源占位/);

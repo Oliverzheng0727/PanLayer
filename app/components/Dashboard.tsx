@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Database, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +25,7 @@ import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 import { DailyJobHealthPanel } from "./data/DailyJobHealth";
+import { SidebarDataProgressCard } from "./data/SidebarDataProgressCard";
 import type { DailyJobHealth } from "../../lib/data/repository";
 
 const nav = [
@@ -93,7 +94,6 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
       : review.status !== "complete"
         ? review.status
         : liveMarket?.status ?? "complete";
-  const currentStatusView = statusViews[effectiveStatus];
   const persistedTotal = useMemo(() => review.breadth.at(-1) ?? null, [review]);
   const isLiveBreadthUsable = liveMarket !== null
     && !liveMarket.isStale
@@ -223,12 +223,13 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           {nav.map(({ id, label, icon: Icon }, index) => <a key={id} href={`#${id}`} onClick={() => setMenuOpen(false)} className={`sidebar-link ${index === 0 ? "active" : ""}`}><Icon size={17} /><span>{label}</span><ChevronRight size={14} className="ml-auto opacity-0 transition group-hover:opacity-60" /></a>)}
         </nav>
         <div className="mt-auto px-4 pb-5">
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.035] p-4">
-            <div className="mb-2 flex items-center gap-2 text-xs text-white/45"><Database size={14} /> 数据状态</div>
-            <div className="flex items-center gap-2 text-xs"><span className={`size-1.5 rounded-full ${currentStatusView.dot}`} /><span>{currentStatusView.label}</span></div>
-            <p className="mt-2 text-[10px] leading-5 text-white/35">数据来源：{activeSource}</p>
-            <p className="text-[10px] leading-5 text-white/25">更新时间：{formatBeijingDateTime(activeReceivedAt)}</p>
-          </div>
+          <SidebarDataProgressCard
+            health={dataHealth}
+            newHighProgress={newHighProgress}
+            reviewStatus={effectiveStatus}
+            source={activeSource}
+            updatedAt={activeReceivedAt}
+          />
           <div className="mt-4 flex items-center justify-between px-2 text-xs text-white/40"><span className="truncate">{userName}</span><Link href="/signout-with-chatgpt?return_to=/" aria-label="退出"><LogOut size={15} /></Link></div>
         </div>
       </aside>
