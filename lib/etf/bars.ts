@@ -19,6 +19,7 @@ export interface EtfBarsResult {
 }
 
 const UPSTREAM_TIMEOUT_MS = 4_500;
+const BAIDU_TIMEOUT_MS = 8_000;
 
 const numberValue = (value: string | number | undefined) => {
   const parsed = Number(value);
@@ -112,6 +113,68 @@ async function fetchSinaText(url: string, fetcher: typeof fetch): Promise<string
   return response.text();
 }
 
+interface BaiduKlinePayload {
+  ResultCode?: string | number;
+  Result?: {
+    newMarketData?: {
+      keys?: string[];
+      marketData?: string;
+    };
+  };
+}
+
+export async function fetchBaiduDailyBars(symbol: string, fetcher: typeof fetch = fetch): Promise<MarketBar[]> {
+  const code = symbol.split(".")[0];
+  const params = new URLSearchParams({
+    all: "1",
+    isIndex: "false",
+    isBk: "false",
+    isBlock: "false",
+    stock_type: "ab",
+    newFormat: "1",
+    code,
+    market: "ab",
+    ktype: "1",
+    finClientType: "pc",
+    group: "quotation_kline_ab",
+    startDate: "19900101",
+    endDate: "20500101",
+    isfq: "0",
+  });
+  const response = await fetcher(`https://finance.pae.baidu.com/selfselect/getstockquotation?${params.toString()}`, {
+    headers: {
+      accept: "application/vnd.finance-web.v1+json",
+      origin: "https://gushitong.baidu.com",
+      referer: "https://gushitong.baidu.com/",
+      "user-agent": "Mozilla/5.0 PanLayer/1.0",
+    },
+    signal: AbortSignal.timeout(BAIDU_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Baidu ${response.status}`);
+  const payload = await response.json() as BaiduKlinePayload;
+  if (String(payload.ResultCode ?? "") !== "0") {
+    throw new Error(`Baidu result ${String(payload.ResultCode ?? "missing")}`);
+  }
+  const keys = payload.Result?.newMarketData?.keys ?? [];
+  const marketData = payload.Result?.newMarketData?.marketData ?? "";
+  if (!keys.length || !marketData) return [];
+  const positions = new Map(keys.map((key, index) => [key, index]));
+  const valueAt = (values: string[], key: string) => values[positions.get(key) ?? -1];
+  return marketData.split(";").flatMap((line) => {
+    const values = line.split(",");
+    const bar = {
+      time: valueAt(values, "time") ?? "",
+      open: numberValue(valueAt(values, "open")),
+      high: numberValue(valueAt(values, "high")),
+      low: numberValue(valueAt(values, "low")),
+      close: numberValue(valueAt(values, "close")),
+      volume: numberValue(valueAt(values, "volume")),
+      amount: numberValue(valueAt(values, "amount")),
+    };
+    return bar.time && bar.close > 0 ? [bar] : [];
+  });
+}
+
 export async function fetchEastmoneyDailyBars(symbol: string, adjustment: Adjustment, fetcher: typeof fetch = fetch): Promise<MarketBar[]> {
   const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secidFor(symbol)}&klt=101&fqt=${adjustment === "forward" ? 1 : 0}&lmt=1000&end=20500101&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56,f57`;
   const payload = await fetchJson<{ data?: { klines?: string[] } }>(url, fetcher);
@@ -182,6 +245,22 @@ export async function loadEtfBarsWithFallback(
       appliedAdjustment: period === "minute" ? "none" : adjustment,
     };
   } catch (primaryError) {
+    if (period !== "minute") {
+      try {
+        const daily = await fetchBaiduDailyBars(symbol, fetcher);
+        const bars = period === "day" ? daily : aggregateBars(daily, period);
+        if (bars.length === 0) throw new Error("empty market bars");
+        return {
+          bars,
+          source: "百度股市通（不复权）",
+          status: "partial",
+          appliedAdjustment: "none",
+        };
+      } catch {
+        // Continue to Sina, whose daily endpoint lacks historical turnover amount
+        // but remains useful for chart rendering when both primary sources fail.
+      }
+    }
     try {
       const daily = period === "minute" ? [] : await fetchSinaDailyBars(symbol, fetcher);
       const bars = period === "minute"

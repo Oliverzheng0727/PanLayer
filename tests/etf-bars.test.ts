@@ -4,6 +4,7 @@ import {
   fetchEastmoneyDailyBars,
   fetchEastmoneyMinuteBars,
   loadEtfBarsWithFallback,
+  fetchBaiduDailyBars,
   fetchSinaDailyBars,
   fetchSinaMinuteBars,
   type MarketBar,
@@ -77,6 +78,36 @@ describe("ETF market bar aggregation", () => {
     expect(requestedUrl).toContain("symbol=sh510300");
   });
 
+  it("maps Baidu daily K-line fields including authoritative turnover amount", async () => {
+    let requestedUrl = "";
+    let requestHeaders: HeadersInit | undefined;
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestHeaders = init?.headers;
+      return new Response(JSON.stringify({
+        ResultCode: "0",
+        Result: {
+          newMarketData: {
+            keys: ["timestamp", "time", "open", "close", "volume", "high", "low", "amount"],
+            marketData: [
+              "1784592000,2026-07-21,4.70,4.76,200,4.80,4.68,952.00",
+              "1784678400,2026-07-22,4.76,4.88,300,4.90,4.73,1464.00",
+            ].join(";"),
+          },
+        },
+      }));
+    };
+
+    await expect(fetchBaiduDailyBars("510300", fetcher as typeof fetch)).resolves.toEqual([
+      { time: "2026-07-21", open: 4.7, close: 4.76, high: 4.8, low: 4.68, volume: 200, amount: 952 },
+      { time: "2026-07-22", open: 4.76, close: 4.88, high: 4.9, low: 4.73, volume: 300, amount: 1464 },
+    ]);
+    expect(requestedUrl).toContain("code=510300");
+    const headers = new Headers(requestHeaders);
+    expect(headers.get("origin")).toBe("https://gushitong.baidu.com");
+    expect(headers.get("referer")).toBe("https://gushitong.baidu.com/");
+  });
+
   it("parses Sina minute JSONP and uses the Shenzhen market prefix", async () => {
     let requestedUrl = "";
     const fetcher = async (input: RequestInfo | URL) => {
@@ -102,6 +133,7 @@ describe("ETF market bar aggregation", () => {
     const fetcher = async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("eastmoney.com")) return new Response("upstream unavailable", { status: 520 });
+      if (url.includes("finance.pae.baidu.com")) return new Response("upstream unavailable", { status: 520 });
       return new Response(JSON.stringify([
         { day: "2026-07-21", open: "4.70", high: "4.80", low: "4.68", close: "4.76", volume: "200" },
         { day: "2026-07-22", open: "4.76", high: "4.90", low: "4.73", close: "4.88", volume: "300" },
@@ -113,6 +145,32 @@ describe("ETF market bar aggregation", () => {
       status: "partial",
       appliedAdjustment: "none",
       bars: [{ time: "2026-07-21" }, { time: "2026-07-22" }],
+    });
+  });
+
+  it("uses Baidu as the exact-amount daily fallback before Sina", async () => {
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("eastmoney.com")) return new Response("upstream unavailable", { status: 520 });
+      if (url.includes("finance.pae.baidu.com")) {
+        return new Response(JSON.stringify({
+          ResultCode: "0",
+          Result: {
+            newMarketData: {
+              keys: ["time", "open", "close", "volume", "high", "low", "amount"],
+              marketData: "2026-07-21,4.70,4.76,200,4.80,4.68,952.00;2026-07-22,4.76,4.88,300,4.90,4.73,1464.00",
+            },
+          },
+        }));
+      }
+      throw new Error("Sina should not be requested when Baidu succeeds");
+    };
+
+    await expect(loadEtfBarsWithFallback("510300", "day", "forward", fetcher as typeof fetch)).resolves.toMatchObject({
+      source: "百度股市通（不复权）",
+      status: "partial",
+      appliedAdjustment: "none",
+      bars: [{ time: "2026-07-21", amount: 952 }, { time: "2026-07-22", amount: 1464 }],
     });
   });
 
