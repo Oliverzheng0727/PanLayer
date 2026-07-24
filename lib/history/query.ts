@@ -1,4 +1,5 @@
 import type { DailyComparison, DailyReview } from "../domain/types";
+import { resolveReviewStructureStatus } from "../domain/market-structure";
 
 export const HISTORY_SORT_FIELDS = [
   "date", "rising", "falling", "flat", "riseFallRatio", "limitUp", "limitDown", "consecutive",
@@ -68,8 +69,11 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
   const falling = closeBreadth?.falling ?? null;
   const ladderItems = Object.values(review.ladder).flat();
   const comparison = review.comparison;
-  const maxStreak = comparison?.maxBoard?.height
-    ?? Math.max(0, ...ladderItems.map((item) => item.limitStreak));
+  const structureStatus = resolveReviewStructureStatus(review).status;
+  const structureAvailable = structureStatus !== "failed";
+  const maxStreak = structureAvailable
+    ? comparison?.maxBoard?.height ?? Math.max(0, ...ladderItems.map((item) => item.limitStreak))
+    : 0;
   const formatSignedPct = (value: number | null) =>
     value === null ? "暂缺" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
   return {
@@ -91,15 +95,15 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     continuationAveragePct: comparison?.continuation?.averagePct ?? null,
     continuationPromotionRate: comparison?.continuation?.promotionRate ?? null,
     marketAmount: comparison?.marketAmount ?? null,
-    consecutive: review.metrics.consecutive,
+    consecutive: structureAvailable ? review.metrics.consecutive : null,
     maxStreak,
-    maxBoardNames: comparison?.maxBoard?.stocks.map((item) => item.name).join(" / ") ?? "—",
+    maxBoardNames: structureAvailable ? comparison?.maxBoard?.stocks.map((item) => item.name).join(" / ") ?? "—" : "—",
     brokenBoardCount: comparison?.brokenBoard.count ?? null,
     brokenBoardRate: comparison?.brokenBoard.rate ?? null,
-    cycleLeader: comparison?.cycleLeader
+    cycleLeader: structureAvailable && comparison?.cycleLeader
       ? `${comparison.cycleLeader.name} · ${comparison.cycleLeader.limitStreak}板`
       : "无明确周期龙头",
-    recognition: comparison?.recognition.map((item) => item.name).join(" / ") || "—",
+    recognition: structureAvailable ? comparison?.recognition.map((item) => item.name).join(" / ") || "—" : "—",
     indexSummary: comparison?.indices.map((item) => `${item.name} ${formatSignedPct(item.pctChange)}`).join(" / ") || "暂缺",
     openPremium: review.premium.openPct,
     closePremium: review.premium.closePct,
@@ -107,7 +111,9 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     high120: review.metrics.high120,
     allTimeHigh: review.metrics.allTimeHigh,
     marginBalance: review.metrics.marginBalance,
-    topSector: comparison?.mainSectors.map((item) => item.name).join(" / ") || review.sectors[0]?.name || "—",
+    topSector: structureAvailable
+      ? comparison?.mainSectors.map((item) => item.name).join(" / ") || review.sectors[0]?.name || "—"
+      : "—",
     backfilled: review.historyMeta?.backfilled === true,
     status: review.status,
     source: review.source,

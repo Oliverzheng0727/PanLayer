@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
+import { resolveReviewStructureStatus } from "../../lib/domain/market-structure";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import { historyRowToOverview } from "../../lib/history/overview";
@@ -104,11 +105,9 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
   const ladderHeight = Math.max(0, ...Object.values(review.ladder).flat().map((item) => item.limitStreak));
-  const structureStatus = review.structure?.status
-    ?? (review.leaders.length > 0 || review.sectors.length > 0 || Object.values(review.ladder).some((items) => items.length > 0) ? "partial" : "failed");
-  const structureMessage = review.structure?.message ?? (structureStatus === "failed"
-    ? "涨停池、行业与连板明细暂缺"
-    : "旧版复盘记录，结构数据尚未完成来源标记");
+  const resolvedStructure = resolveReviewStructureStatus(review);
+  const structureStatus = resolvedStructure.status;
+  const structureMessage = resolvedStructure.message;
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const selectedHistoryRow = history.find((row) => row.date === selectedHistoryDate)
@@ -126,7 +125,9 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, userN
   const overviewFalling = isViewingCurrentReview ? total?.falling ?? null : selectedHistoricalOverview.falling;
   const overviewLimitUp = isViewingCurrentReview ? review.metrics.limitUp : selectedHistoricalOverview.limitUp;
   const overviewLimitDown = isViewingCurrentReview ? review.metrics.limitDown : selectedHistoricalOverview.limitDown;
-  const overviewConsecutive = isViewingCurrentReview ? review.metrics.consecutive : selectedHistoricalOverview.consecutive;
+  const overviewConsecutive = isViewingCurrentReview
+    ? structureStatus === "failed" ? null : review.metrics.consecutive
+    : selectedHistoricalOverview.consecutive;
   const overviewMaxStreak = isViewingCurrentReview ? ladderHeight : selectedHistoricalOverview.maxStreak;
   const overviewAllTimeHigh = isViewingCurrentReview ? review.metrics.allTimeHigh : selectedHistoricalOverview.allTimeHigh;
   const overviewHigh20 = isViewingCurrentReview ? review.metrics.high20 ?? null : selectedHistoricalOverview.high20;
