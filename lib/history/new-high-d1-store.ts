@@ -258,7 +258,7 @@ export async function newHighBootstrapTargetDate(
   currentDate: string,
 ): Promise<string> {
   const row = await db.prepare(
-    "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date < ?",
+    "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date <= ?",
   ).bind(currentDate).first<{ trade_date: string | null }>();
   if (row?.trade_date) return row.trade_date;
   const fallback = new Date(`${currentDate}T12:00:00Z`);

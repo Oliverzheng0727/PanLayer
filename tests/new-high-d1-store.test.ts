@@ -3,6 +3,7 @@ import {
   applyNewHighCountsToReview,
   decodeNewHighStateRow,
   encodeNewHighState,
+  newHighBootstrapTargetDate,
 } from "../lib/history/new-high-d1-store";
 import { demoReview } from "../lib/data/demo";
 
@@ -37,5 +38,25 @@ describe("D1 new-high state serialization", () => {
       high120: 20,
       allTimeHigh: 8,
     });
+  });
+
+  it("initializes through the current review date after that review exists", async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() {
+            return {
+              async first() {
+                return {
+                  trade_date: sql.includes("<= ?") ? "2026-07-24" : "2026-07-23",
+                };
+              },
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    await expect(newHighBootstrapTargetDate(db, "2026-07-24")).resolves.toBe("2026-07-24");
   });
 });
