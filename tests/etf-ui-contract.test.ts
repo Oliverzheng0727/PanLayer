@@ -36,7 +36,7 @@ describe("ETF workspace UI contract", () => {
   it("keeps an hourly background reconciliation heartbeat across all days", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
-    expect(config).toContain('"2 * * * *"');
+    expect(config).toContain('"17 * * * *"');
     expect(config).not.toContain('"0,30 10-15 * * 1-5"');
     expect(config).not.toContain('"*/5 11-15 * * 1-5"');
   });

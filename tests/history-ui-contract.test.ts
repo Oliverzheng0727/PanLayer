@@ -84,7 +84,7 @@ describe("PanLayer history comparison workspace UI contract", () => {
 
   it("schedules resumable initialization hourly across weekdays and weekends", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-    expect(config).toContain('"2 * * * *"');
+    expect(config).toContain('"17 * * * *"');
     expect(config).not.toContain('"0,30 10-15 * * 1-5"');
     expect(config).not.toContain('"*/5 18-21 * * 0-4"');
     expect(config).not.toContain('"0-45/5 22 * * 0-4"');

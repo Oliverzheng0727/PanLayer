@@ -10,16 +10,26 @@ describe("production background workflow", () => {
     ]);
 
     expect(workflow).not.toContain('cron: "2-57/5 * * * *"');
-    expect(workflow).toContain('cron: "2 * * * *"');
+    expect(workflow).toContain('cron: "17 * * * *"');
     expect(workflow).toContain('cron: "27 1 * * 1-5"');
-    expect(workflow).toContain('cron: "17 23 * * 0-4"');
+    expect(workflow).toContain('cron: "2 2 * * 1-5"');
+    expect(workflow).toContain('cron: "2 3 * * 1-5"');
+    expect(workflow).toContain('cron: "2 5 * * 1-5"');
+    expect(workflow).toContain('cron: "2 6 * * 1-5"');
+    expect(workflow).toContain('cron: "2 7 * * 1-5"');
+    expect(workflow).not.toContain('cron: "17 23 * * 0-4"');
     expect(workflow).not.toContain('cron: "2,32 10-15 * * 1-5"');
     expect(workflow).toContain("PANLAYER_CRON_SECRET");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
 
-    expect(viteConfig).toContain('"2 * * * *"');
+    expect(viteConfig).toContain('"17 * * * *"');
+    expect(viteConfig).toContain('"2 2 * * 1-5"');
+    expect(viteConfig).toContain('"2 3 * * 1-5"');
+    expect(viteConfig).toContain('"2 5 * * 1-5"');
+    expect(viteConfig).toContain('"2 6 * * 1-5"');
+    expect(viteConfig).toContain('"2 7 * * 1-5"');
     expect(viteConfig).not.toContain('"0,30 10-15 * * 1-5"');
     expect(viteConfig).not.toContain('"*/5 18-21 * * 0-4"');
     expect(viteConfig).not.toContain('"*/5 0-10 * * 1-5"');
