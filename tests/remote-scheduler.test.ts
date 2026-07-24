@@ -21,4 +21,13 @@ describe("remote scheduler", () => {
     expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
     expect(jobs.length).toBeLessThanOrEqual(2);
   });
+
+  it("still plans the intended batch when GitHub starts a few minutes late", () => {
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T13:12:00.000Z"),
+      checkpoints: [],
+    });
+
+    expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
+  });
 });

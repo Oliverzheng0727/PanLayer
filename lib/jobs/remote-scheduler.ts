@@ -36,7 +36,9 @@ export function planRemoteSchedulerJobs({
 }): ScheduledJob[] {
   if (!isChinaTradingWeekday(now)) return [];
   const { date, time } = beijingDateParts(now);
-  const exactJob = jobForBeijingTime(time);
+  const [hour, minute] = time.split(":").map(Number);
+  const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
+  const exactJob = jobForBeijingTime(scheduledTime);
   const catchUpJobs = planCatchUpJobs({
     tradeDate: date,
     now,
