@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EtfSnapshot } from "../lib/data/provider";
 import {
+  fetchTencentAdjustedBars,
   fetchTencentQuotes,
   mapTencentLine,
   refreshEtfCatalogFromTencent,
@@ -114,5 +115,42 @@ describe("Tencent quote adapter", () => {
     await expect(refreshEtfCatalogFromTencent(catalog, fetcher, {
       minimumCoverage: 0.7,
     })).rejects.toThrow("Tencent ETF coverage");
+  });
+
+  it("paginates and deduplicates forward-adjusted daily bars", async () => {
+    const requestedEnds: string[] = [];
+    const fetcher = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      const [, , , end = ""] = String(url.searchParams.get("param")).split(",");
+      requestedEnds.push(end);
+      const rows = end
+        ? [
+            ["2026-07-18", "9.8", "10.0", "10.1", "9.7", "100"],
+            ["2026-07-19", "10.0", "10.2", "10.3", "9.9", "110"],
+          ]
+        : [
+            ["2026-07-20", "10.2", "10.4", "10.5", "10.1", "120"],
+            ["2026-07-21", "10.4", "10.6", "10.7", "10.3", "130"],
+            ["2026-07-22", "10.6", "10.8", "10.9", "10.5", "140"],
+          ];
+      return new Response(JSON.stringify({
+        code: 0,
+        data: { sh600001: { qfqday: rows } },
+      }));
+    }) as typeof fetch;
+
+    const bars = await fetchTencentAdjustedBars("600001.SH", fetcher, {
+      pageSize: 2,
+      maxPages: 3,
+    });
+
+    expect(requestedEnds).toEqual(["", "2026-07-19"]);
+    expect(bars.map((bar) => [bar.date, bar.close])).toEqual([
+      ["2026-07-18", 10],
+      ["2026-07-19", 10.2],
+      ["2026-07-20", 10.4],
+      ["2026-07-21", 10.6],
+      ["2026-07-22", 10.8],
+    ]);
   });
 });

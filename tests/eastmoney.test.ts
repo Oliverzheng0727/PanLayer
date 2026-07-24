@@ -151,6 +151,31 @@ describe("Eastmoney provider", () => {
     ]);
   });
 
+  it("falls back to Tencent forward-adjusted bars when Eastmoney history is unavailable", async () => {
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.hostname === "push2his.eastmoney.com") {
+        return new Response("edge failed", { status: 520 });
+      }
+      return new Response(JSON.stringify({
+        code: 0,
+        data: {
+          sh600001: {
+            qfqday: [
+              ["2026-07-22", "10.0", "10.25", "10.3", "9.9", "100"],
+              ["2026-07-23", "10.25", "10.66", "10.7", "10.2", "120"],
+            ],
+          },
+        },
+      }));
+    };
+
+    await expect(createEastmoneyProvider(fetcher).getAdjustedBars("600001.SH")).resolves.toEqual([
+      { date: "2026-07-22", close: 10.25 },
+      { date: "2026-07-23", close: 10.66 },
+    ]);
+  });
+
   it("prefers the stable Eastmoney hostname and rotates when it returns 520", async () => {
     const hosts: string[] = [];
     const fetcher: typeof fetch = async (input) => {

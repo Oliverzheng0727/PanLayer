@@ -1,7 +1,9 @@
 import type { Board, Exchange, Quote } from "../domain/types";
-import type { EtfSnapshot } from "./provider";
+import type { AdjustedBar, EtfSnapshot } from "./provider";
 
 const TENCENT_URL = "https://qt.gtimg.cn/q=";
+const TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get";
+const TENCENT_KLINE_TIMEOUT_MS = 6_000;
 
 function securityMeta(code: string, prefix?: string): { exchange: Exchange; board: Board; limitRate: number } {
   if (prefix === "bj" || /^(4|8|9)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
@@ -106,6 +108,72 @@ export async function fetchTencentQuotes(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()));
   return results.flat();
+}
+
+function previousDate(date: string): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
+export async function fetchTencentAdjustedBars(
+  symbol: string,
+  fetcher: typeof fetch = fetch,
+  options: { pageSize?: number; maxPages?: number } = {},
+): Promise<AdjustedBar[]> {
+  const marketCode = toTencentCode(symbol);
+  const pageSize = Math.min(640, Math.max(2, options.pageSize ?? 640));
+  const maxPages = Math.min(16, Math.max(1, options.maxPages ?? 12));
+  const byDate = new Map<string, AdjustedBar>();
+  let endDate = "";
+  let previousEarliest = "";
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const url = new URL(TENCENT_KLINE_URL);
+    url.searchParams.set("param", `${marketCode},day,,${endDate},${pageSize},qfq`);
+    const response = await fetcher(url, {
+      headers: {
+        accept: "application/json",
+        referer: "https://gu.qq.com/",
+        "user-agent": "PanLayer/1.0",
+      },
+      signal: AbortSignal.timeout(TENCENT_KLINE_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Tencent K-line ${response.status}`);
+    const payload = await response.json() as {
+      code?: number;
+      data?: Record<string, { qfqday?: Array<Array<string | number>>; day?: Array<Array<string | number>> }>;
+    };
+    if (payload.code !== undefined && payload.code !== 0) {
+      throw new Error(`Tencent K-line code ${payload.code}`);
+    }
+    const item = payload.data?.[marketCode];
+    const rows = Array.isArray(item?.qfqday)
+      ? item.qfqday
+      : Array.isArray(item?.day)
+        ? item.day
+        : [];
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      const date = String(row[0] ?? "");
+      const close = Number(row[2]);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(close) && close > 0) {
+        byDate.set(date, { date, close });
+      }
+    }
+
+    const earliest = String(rows[0]?.[0] ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(earliest) || earliest === previousEarliest || rows.length <= pageSize) {
+      break;
+    }
+    previousEarliest = earliest;
+    endDate = previousDate(earliest);
+  }
+
+  const bars = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
+  if (bars.length === 0) throw new Error("Tencent K-line returned no valid bars");
+  return bars;
 }
 
 export async function refreshEtfCatalogFromTencent(

@@ -3,7 +3,7 @@ import { classifyLimitStatus, rankSectors } from "../domain/metrics";
 import type { MarketDataProvider } from "./provider";
 import { classifyEtf } from "../etf/catalog";
 import { fetchHistoricalBoardPools } from "../history/backfill-sources";
-import { fetchTencentQuotes } from "./tencent";
+import { fetchTencentAdjustedBars, fetchTencentQuotes } from "./tencent";
 import { withRetry } from "./resilience";
 
 export interface EastmoneyQuoteRow {
@@ -477,20 +477,26 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       }).filter((item: Quote) => !item.isST);
     },
     async getAdjustedBars(symbol) {
-      const [code, exchange] = symbol.split(".");
-      const secid = `${exchange === "SH" ? 1 : 0}.${code}`;
-      const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53,f57,f59`;
-      const payload = await fetchJson<{ data?: { klines?: string[] } }>(fetcher, url);
-      const rows: string[] = Array.isArray(payload?.data?.klines) ? payload.data.klines : [];
-      return rows.map((row) => {
-        const [date, close, amount, pctChange] = row.split(",");
-        return {
-          date,
-          close: numberValue(close),
-          amount: numberValue(amount),
-          pctChange: numberValue(pctChange),
-        };
-      }).filter((bar) => bar.date && bar.close > 0);
+      try {
+        const [code, exchange] = symbol.split(".");
+        const secid = `${exchange === "SH" ? 1 : 0}.${code}`;
+        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53,f57,f59`;
+        const payload = await fetchJson<{ data?: { klines?: string[] } }>(fetcher, url);
+        const rows: string[] = Array.isArray(payload?.data?.klines) ? payload.data.klines : [];
+        const bars = rows.map((row) => {
+          const [date, close, amount, pctChange] = row.split(",");
+          return {
+            date,
+            close: numberValue(close),
+            amount: numberValue(amount),
+            pctChange: numberValue(pctChange),
+          };
+        }).filter((bar) => bar.date && bar.close > 0);
+        if (bars.length === 0) throw new Error("Eastmoney K-line returned no valid bars");
+        return bars;
+      } catch {
+        return fetchTencentAdjustedBars(symbol, fetcher);
+      }
     },
     async getSectors() {
       const quotes = await getQuotes();
