@@ -1,4 +1,6 @@
 export type ScheduledJob =
+  | { type: "tier1-rss-prefetch" }
+  | { type: "tier2-news-prefetch" }
   | { type: "morning-brief" }
   | { type: "breadth"; time: string }
   | { type: "close-review" }
@@ -8,6 +10,8 @@ export type ScheduledJob =
 const BREADTH_TIMES = new Set(["09:25", "10:00", "11:00", "13:00", "14:00", "15:00"]);
 
 export function jobForBeijingTime(time: string): ScheduledJob | null {
+  if (time === "06:50") return { type: "tier1-rss-prefetch" };
+  if (time === "06:55") return { type: "tier2-news-prefetch" };
   if (time === "07:15") return { type: "morning-brief" };
   if (time === "08:30") return { type: "new-high-bootstrap" };
   const [hour, minute] = time.split(":").map(Number);
@@ -15,7 +19,7 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
     Number.isInteger(hour)
     && Number.isInteger(minute)
     && hour >= 2
-    && hour < 7
+    && (hour < 6 || (hour === 6 && minute <= 45))
     && minute % 5 === 0
   ) {
     return { type: "new-high-bootstrap" };

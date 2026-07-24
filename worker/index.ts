@@ -9,6 +9,8 @@ interface Env {
   DB: D1Database;
   DASHSCOPE_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  FIRECRAWL_API_KEY?: string;
+  FIRECRAWL_API_URL?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {

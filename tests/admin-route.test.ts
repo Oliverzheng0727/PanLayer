@@ -14,12 +14,19 @@ describe("admin morning brief regeneration API", () => {
     expect(adminRouteSource).toContain('job === "new-high-bootstrap"');
   });
 
+  it("exposes both protected tiered-news prefetch jobs", async () => {
+    const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
+    expect(adminRouteSource).toContain('job === "tier1-rss-prefetch"');
+    expect(adminRouteSource).toContain('job === "tier2-news-prefetch"');
+  });
+
   it("seeds an empty stock universe and runs larger overnight bootstrap batches", async () => {
     const runner = await readFile(new URL("../lib/jobs/runner.ts", import.meta.url), "utf8");
     expect(runner).toContain("provider.getUniverse()");
     expect(runner).toContain("batchSize: 150");
     expect(runner).toContain("coverage ${progress.coveragePct}%");
-    expect(runner).toContain('acquireJobLease(db, "new-high-bootstrap"');
+    expect(runner).toContain('job.type === "new-high-bootstrap"');
+    expect(runner).toContain("acquireJobLease(db, leaseJob, date)");
   });
 
   it("validates a requested brief section before passing it to the runner", async () => {

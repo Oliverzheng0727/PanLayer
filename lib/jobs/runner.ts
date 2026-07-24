@@ -2,7 +2,14 @@ import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } fr
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
-import { NEWS_INTAKE_SCHEMA_STATEMENTS } from "../ai/news-intake/repository";
+import { collectTier1News } from "../ai/news-intake/collector";
+import { loadTier1NewsConfig } from "../ai/news-intake/config";
+import {
+  NEWS_INTAKE_SCHEMA_STATEMENTS,
+  persistNewsCollection,
+  readCurrentNewsBundle,
+} from "../ai/news-intake/repository";
+import { collectTier2News } from "../ai/news-intake/tier2";
 import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
@@ -480,15 +487,12 @@ export async function runPanLayerJob(
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
   const leaseJob = job.type === "morning-brief"
-    ? "morning-brief"
-    : job.type === "new-high-bootstrap"
-      ? "new-high-bootstrap"
-      : null;
-  const leaseToken = job.type === "morning-brief"
-    ? await acquireJobLease(db, "morning-brief", date)
-    : job.type === "new-high-bootstrap"
-      ? await acquireJobLease(db, "new-high-bootstrap", date)
-      : null;
+    || job.type === "new-high-bootstrap"
+    || job.type === "tier1-rss-prefetch"
+    || job.type === "tier2-news-prefetch"
+    ? job.type
+    : null;
+  const leaseToken = leaseJob ? await acquireJobLease(db, leaseJob, date) : null;
   if (leaseJob && !leaseToken) return { ok: false, message: `${leaseJob} already running` };
   const morningBriefLease: MorningBriefLease | undefined = leaseJob === "morning-brief" && leaseToken
     ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) }
@@ -502,7 +506,31 @@ export async function runPanLayerJob(
     const provider = createEastmoneyProvider(fetcher);
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
-    if (job.type === "history-backfill") {
+    if (job.type === "tier1-rss-prefetch") {
+      const summary = await collectTier1News({
+        date,
+        config: loadTier1NewsConfig(),
+        fetcher,
+        now,
+      });
+      await persistNewsCollection(db, summary);
+      finalStatus = summary.status;
+      finalMessage = `${summary.sourceSuccess}/${summary.sourceTotal} sources; ${summary.keptItemCount} verified; ${summary.filteredItemCount} filtered`;
+    } else if (job.type === "tier2-news-prefetch") {
+      if (!env.FIRECRAWL_API_KEY) throw new Error("FIRECRAWL_API_KEY is not configured");
+      const bundle = await readCurrentNewsBundle(db, date);
+      const summary = await collectTier2News({
+        date,
+        bundle,
+        apiKey: env.FIRECRAWL_API_KEY,
+        endpoint: env.FIRECRAWL_API_URL,
+        fetcher,
+        now,
+      });
+      await persistNewsCollection(db, summary);
+      finalStatus = summary.status;
+      finalMessage = `${summary.sourceSuccess}/${summary.sourceTotal} gap searches; ${summary.keptItemCount} verified`;
+    } else if (job.type === "history-backfill") {
       const progress = await runHistoryBackfillBatch({
         db,
         endDate: date,

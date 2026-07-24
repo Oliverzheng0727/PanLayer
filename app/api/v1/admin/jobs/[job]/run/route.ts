@@ -15,6 +15,10 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   }
   const mapped: ScheduledJob | null = job === "morning-brief"
     ? { type: "morning-brief" }
+    : job === "tier1-rss-prefetch"
+      ? { type: "tier1-rss-prefetch" }
+      : job === "tier2-news-prefetch"
+        ? { type: "tier2-news-prefetch" }
     : job === "new-high-bootstrap"
       ? { type: "new-high-bootstrap" }
     : job === "close-review"
