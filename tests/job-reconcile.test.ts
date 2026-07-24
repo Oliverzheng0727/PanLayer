@@ -32,6 +32,18 @@ describe("daily job reconciliation", () => {
     expect(jobs).toContainEqual({ type: "close-review" });
   });
 
+  it("can still rebuild close and ETF data later in the evening", () => {
+    const jobs = planCatchUpJobs({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T13:00:00Z"),
+      checkpoints: [],
+      limit: 4,
+    });
+
+    expect(jobs).toContainEqual({ type: "close-review" });
+    expect(jobs).toContainEqual({ type: "etf-metrics-refresh" });
+  });
+
   it("does not schedule completed work again", () => {
     const jobs = planCatchUpJobs({
       tradeDate: "2026-07-24",

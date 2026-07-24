@@ -16,9 +16,9 @@ const CATCH_UP_MINUTES: Record<DailyJobKey, number> = {
   "breadth-13:00": 20,
   "breadth-14:00": 20,
   "breadth-15:00": 20,
-  "close-review": 110,
+  "close-review": 470,
   "new-high-bootstrap": 24 * 60,
-  "etf-metrics-refresh": 150,
+  "etf-metrics-refresh": 510,
   "history-backfill": 45,
 };
 

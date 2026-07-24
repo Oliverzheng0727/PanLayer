@@ -22,8 +22,10 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
   if (
     Number.isInteger(hour)
     && Number.isInteger(minute)
-    && hour >= 2
-    && (hour < 6 || (hour === 6 && minute <= 45))
+    && (
+      (hour >= 2 && (hour < 6 || (hour === 6 && minute <= 45)))
+      || (hour >= 18 && hour <= 23)
+    )
     && minute % 5 === 0
   ) {
     return { type: "new-high-bootstrap" };

@@ -22,6 +22,13 @@ describe("Beijing market schedule", () => {
     expect(jobForBeijingTime("12:12")).toBeNull();
   });
 
+  it("continues the new-high bootstrap after market close until midnight", () => {
+    expect(jobForBeijingTime("18:00")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("21:35")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("23:55")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("00:00")).toBeNull();
+  });
+
   it("skips Saturday and Sunday in Asia/Shanghai", () => {
     expect(isChinaTradingWeekday(new Date("2026-07-24T23:30:00Z"))).toBe(false);
     expect(isChinaTradingWeekday(new Date("2026-07-26T23:00:00Z"))).toBe(true);
