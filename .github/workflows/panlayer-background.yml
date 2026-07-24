@@ -1,0 +1,27 @@
+name: PanLayer background jobs
+
+on:
+  schedule:
+    - cron: "*/5 * * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: panlayer-background
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the current scheduled task
+        env:
+          PANLAYER_CRON_SECRET: ${{ secrets.PANLAYER_CRON_SECRET }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --max-time 240 \
+            --retry 2 \
+            --retry-all-errors \
+            -X POST \
+            -H "Authorization: Bearer ${PANLAYER_CRON_SECRET}" \
+            "https://panlayer-market-review.lihaozheng567.chatgpt.site/api/v1/internal/scheduler/tick"
