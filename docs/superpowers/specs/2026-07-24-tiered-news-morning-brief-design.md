@@ -1,12 +1,13 @@
-# PanLayer 一级资讯预采集与早参生成设计
+# PanLayer 分级资讯预采集与早参生成设计
 
 ## 1. 目标
 
-在不改变 PanLayer 现有页面框架、五模块早参结构和市场数据口径的前提下，增加独立的“一级资讯预采集层”：
+在不改变 PanLayer 现有页面框架、五模块早参结构和市场数据口径的前提下，增加独立的分级资讯预采集层：
 
 - 北京时间 06:50 从固定白名单 RSS/Atom 源预采集资讯，清洗后写入 D1。
+- 北京时间 06:55 检查一级资讯的行业和必查主题缺口，通过 Firecrawl 定向搜索形成二级补充资讯。
 - 北京时间 07:15 由 Qwen 读取当日资讯包，生成固定五模块盘前早参。
-- Firecrawl 仅在可靠资讯不足或特定模块缺少必要事实时补充，不作为默认主链路。
+- 一级资讯始终优先；二级资讯只有经过来源校验或交叉验证后才能进入 Qwen 输入，不能覆盖一级来源事实。
 - 行情数字继续只来自结构化行情适配器；RSS、Firecrawl 和 Qwen 均不得生成或修补市场数字。
 - 任一 RSS 源、Qwen 模块或 Firecrawl 调用失败时，其他模块仍可正常展示，并明确标记“部分”或“失败”。
 
@@ -15,7 +16,7 @@
 ## 2. 总体架构
 
 ```text
-固定 RSS 白名单
+一级：固定 RSS 白名单
       │
       ▼
 06:50 采集器 ── 超时/重试/安全校验
@@ -24,7 +25,10 @@
 解析与清洗 ── URL 去重/标题去重/红线过滤/行业映射
       │
       ▼
-D1 当日资讯包 + 采集健康状态
+D1 一级资讯包 + 采集健康状态
+      │
+      ▼
+06:55 缺口扫描 ── 二级 Firecrawl 定向搜索/交叉验证
       │
       ▼
 07:15 模块选择器 ── 结构化行情快照
@@ -37,7 +41,7 @@ Qwen 五模块生成 ── 模块校验与定向重试
 早参持久化 ── 完整/部分/失败 + 来源引用 + 生成时间
 ```
 
-06:50 与 07:15 是两个独立、可幂等重跑的任务。07:15 不等待实时抓取全部 RSS，而是优先读取已经落库的当日资讯包，从而降低网络波动造成整份早参缺失的概率。
+06:50、06:55 与 07:15 是三个独立、可幂等重跑的任务。07:15 不等待实时抓取全部 RSS 或搜索，而是优先读取已经落库的当日分级资讯包，从而降低网络波动造成整份早参缺失的概率。
 
 ## 3. 配置与来源管理
 
@@ -81,11 +85,27 @@ config/tier1-rss-sources.json
 
 健康信息扩展到现有 `/api/v1/data-health`，无需新增公开页面入口。页面继续使用现有视觉语言展示采集时间、成功率和完整状态。
 
+### 3.4 二级资讯层
+
+二级资讯不是未经筛选的小媒体集合，也不是让 Qwen 自由联网。它是对一级资讯缺口的受控搜索层：
+
+- 06:55 读取当日一级资讯包，逐模块检查行业覆盖、必查主题和来源多样性。
+- 只对缺失项生成固定查询，例如“美债 10 年期收益率”“存储芯片 涨价 减产”“人形机器人 产业公告”。
+- 使用 Firecrawl Search 获取候选结果；Qwen 只负责最终摘要，不负责发现来源。
+- 候选结果优先接受政府、交易所、央行、上市公司官网、研究机构和一级媒体原文。
+- 非官方二级媒体事实必须获得至少 2 个相互独立来源的交叉印证，才能标记为 `verified` 并进入 Qwen 输入。
+- 只有一个二级来源、时间不明、标题与正文不一致或无法读取原文时，保存为 `unverified`，仅用于健康诊断，不进入早参。
+- 二级资讯不能推翻一级资讯；若两级来源冲突，模块显示“来源存在差异”，并同时保留证据。
+- 每个模块最多补充 6 条二级资讯，同一事件最多保留 2 个来源，控制成本和噪声。
+
+二级搜索失败不会阻塞 07:15 生成。一级资讯已经满足要求时，06:55 不调用 Firecrawl。
+
 ## 4. 采集、解析与清洗
 
 ### 4.1 调度与并发
 
 - Cloudflare UTC Cron：`50 22 * * 0-4`，对应北京时间周一至周五 06:50。
+- Cloudflare UTC Cron：`55 22 * * 0-4`，对应北京时间周一至周五 06:55。
 - 任务入口再次检查中国交易日；休市日跳过正式生成并记录原因。
 - 最大并发 8 个来源。
 - 每个来源 15 秒超时。
@@ -134,19 +154,21 @@ interface NormalizedRssItem {
 
 “最近 7 天”是文章发布时间窗口；“当日资讯包”是采集批次窗口。07:15 只读取北京日期与当前交易日一致、且来自当日成功运行的条目，不把昨天的采集结果冒充今天的新资讯。
 
-若 06:50 任务完全失败，可在 07:15 触发一次轻量重采集；仍失败则进入 Firecrawl 定向补充和“部分”状态。
+若 06:50 任务完全失败，06:55 仍可生成经过验证的二级资讯包；07:15 还会触发一次轻量重采集。一级和二级均失败时，早参进入“部分”状态。
 
 ## 5. D1 数据模型
 
-新增三张幂等表：
+为同时容纳 RSS 和 Firecrawl 结果，新增三张通用幂等表：
 
-### 5.1 `rss_sources`
+### 5.1 `brief_sources`
 
 ```text
 source_id TEXT PRIMARY KEY
 name TEXT NOT NULL
 url TEXT NOT NULL UNIQUE
 industry_keys_json TEXT NOT NULL
+source_tier INTEGER NOT NULL
+transport TEXT NOT NULL
 enabled INTEGER NOT NULL
 last_status TEXT
 last_success_at TEXT
@@ -156,7 +178,7 @@ consecutive_failures INTEGER NOT NULL DEFAULT 0
 updated_at TEXT NOT NULL
 ```
 
-### 5.2 `rss_items`
+### 5.2 `brief_items`
 
 ```text
 item_id TEXT PRIMARY KEY
@@ -170,6 +192,9 @@ run_id TEXT NOT NULL
 source_ids_json TEXT NOT NULL
 source_names_json TEXT NOT NULL
 industry_keys_json TEXT NOT NULL
+source_tier INTEGER NOT NULL
+verification_status TEXT NOT NULL
+corroborating_urls_json TEXT NOT NULL
 content_hash TEXT NOT NULL
 filter_status TEXT NOT NULL
 filter_reason TEXT
@@ -178,11 +203,13 @@ UNIQUE(fetch_date, canonical_url)
 
 `item_id` 使用确定性哈希生成。任务重跑时更新同一日期的记录，不产生重复条目。
 
-### 5.3 `rss_fetch_runs`
+### 5.3 `brief_fetch_runs`
 
 ```text
 run_id TEXT PRIMARY KEY
 fetch_date TEXT NOT NULL
+source_tier INTEGER NOT NULL
+transport TEXT NOT NULL
 started_at TEXT NOT NULL
 finished_at TEXT
 status TEXT NOT NULL
@@ -195,16 +222,18 @@ error_summary_json TEXT
 UNIQUE(fetch_date, run_id)
 ```
 
-正式任务获取该日期的租约；同一日期并发运行时只允许一个写入者。手动重跑创建新 `run_id`，模块选择器读取当日最新的成功或部分成功批次。
+正式任务按日期和资讯级别获取租约；同一级别、同一日期并发运行时只允许一个写入者。手动重跑创建新 `run_id`，模块选择器读取当日最新的成功或部分成功批次。
 
 ## 6. 五模块资讯选择
 
-模块选择器只把与模块相关、未被过滤的条目交给 Qwen。默认每模块最多 12 条，每条摘要最多 900 字符，总输入按现有模型上下文预算截断。候选按以下顺序排序：
+模块选择器只把与模块相关、未被过滤且已验证的条目交给 Qwen。默认每模块最多 12 条一级资讯，并在存在覆盖缺口时补充最多 6 条二级资讯；每条摘要最多 900 字符，总输入按现有模型上下文预算截断。候选按以下顺序排序：
 
-1. 发布时间新鲜度
-2. 标题和摘要与固定主题的相关度
-3. 不同来源覆盖度
-4. 同事件去重后的补充价值
+1. 资讯级别，一级优先于二级
+2. 验证状态
+3. 发布时间新鲜度
+4. 标题和摘要与固定主题的相关度
+5. 不同来源覆盖度
+6. 同事件去重后的补充价值
 
 各模块来源范围：
 
@@ -246,8 +275,8 @@ Qwen 每个模块只接收：
 当校验发现缺少必要主题，例如全球外围模块缺少“美债”：
 
 1. 只重试失败模块，传入缺失项诊断和相同 RSS 资讯包。
-2. 第二次仍失败或可靠资讯不足时，Firecrawl 只搜索该模块缺失主题。
-3. 将 Firecrawl 返回的标题、URL、发布时间和摘要通过同样的来源校验后加入资讯包，再进行最后一次 Qwen 模块生成。
+2. 第二次仍失败时，检查 06:55 二级资讯包是否已经包含该主题；若缺失，Firecrawl 只搜索该模块缺失主题。
+3. 将 Firecrawl 返回的标题、URL、发布时间和摘要通过二级来源验证后加入资讯包，再进行最后一次 Qwen 模块生成。
 4. 仍失败则保存该模块失败原因，其他成功模块照常发布，整份早参状态为“部分”。
 
 Firecrawl 不是市场数字来源，不能替换行情 API。
@@ -285,11 +314,16 @@ lib/ai/rss/collector.ts
 lib/ai/rss/repository.ts
 lib/ai/rss/bundle-selector.ts
 lib/jobs/rss-prefetch.ts
+lib/ai/news-tier2/gap-detector.ts
+lib/ai/news-tier2/firecrawl-collector.ts
+lib/ai/news-tier2/verifier.ts
+lib/jobs/tier2-news-prefetch.ts
 ```
 
 现有 `lib/jobs/runner.ts` 负责：
 
 - 注册 `tier1-rss-prefetch`
+- 注册 `tier2-news-prefetch`
 - 07:15 读取资讯包
 - 调用 Qwen 模块生成器
 - 按需调用现有 Firecrawl fallback
@@ -310,10 +344,15 @@ lib/jobs/rss-prefetch.ts
 - 非 HTTPS 最终地址、私网地址、大响应和 XML 实体拒绝
 - D1 同日重跑幂等
 - 模块选择的行业范围、来源数量与输入长度上限
+- 二级缺口检测、固定查询生成和单模块数量上限
+- 二级官方来源直接验证、非官方来源双源交叉验证
+- 未验证二级资讯不得进入 Qwen 输入
 
 ### 10.2 集成测试
 
 - 06:50 部分来源失败仍生成当日资讯包
+- 06:55 只搜索一级资讯未覆盖的主题
+- 一级资讯充分时不产生 Firecrawl 调用
 - 07:15 仅读取当日运行，不使用旧批次冒充
 - Qwen 只能引用已提供的来源 ID
 - 缺少“美债”等必要项时只重试失败模块
@@ -324,6 +363,7 @@ lib/jobs/rss-prefetch.ts
 ### 10.3 调度测试
 
 - UTC Cron 正确对应北京时间 06:50
+- UTC Cron 正确对应北京时间 06:55
 - 周末和休市日跳过
 - 任务租约阻止同一日期并发写入
 - 单一 RSS、Qwen 或 Firecrawl 故障不会导致整份早参不可见
@@ -331,6 +371,7 @@ lib/jobs/rss-prefetch.ts
 ## 11. 验收标准
 
 - 交易日 06:50 后 D1 存在当日资讯包和来源健康记录。
+- 交易日 06:55 后，一级资讯缺口已有经过验证的二级补充，或记录明确的补充失败原因。
 - 交易日 07:15 后页面存在固定五模块早参，或明确显示具体失败模块。
 - 早参重要事实均能追溯到标题、URL、发布时间和引用位置。
 - 单源失败不影响其他源；单模块失败不影响其他模块。
@@ -342,6 +383,7 @@ lib/jobs/rss-prefetch.ts
 
 - 不建设公开 RSS 管理后台。
 - 不允许用户添加任意抓取网址。
+- 不把未经交叉验证的二级搜索结果直接交给 Qwen。
 - 不用 AI 生成市场统计数据、板块排名或个股排名。
 - 不承诺免费公开源达到专业行情 SLA。
 - 不改变历史复盘表、ETF 工作台、登录和账号体系。
