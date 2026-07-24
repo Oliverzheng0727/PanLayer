@@ -25,4 +25,11 @@ describe("ETF workspace UI contract", () => {
     expect(catalog).toMatch(/isStale/);
     expect(catalog).toMatch(/SERVER_LIVE_CACHE_MS/);
   });
+
+  it("does not block the dashboard server render on live ETF providers", async () => {
+    const page = await readFile(new URL("../app/dashboard/page.tsx", import.meta.url), "utf8");
+
+    expect(page).toMatch(/loadPersistedEtfCatalogEnvelope/);
+    expect(page).not.toMatch(/loadLiveEtfCatalogEnvelope/);
+  });
 });

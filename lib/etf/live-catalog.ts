@@ -103,6 +103,29 @@ export function createEtfCatalogCache<T>(ttlMs: number) {
 
 const liveCatalogCache = createEtfCatalogCache<Omit<EtfCatalogEnvelope, "isStale">>(SERVER_LIVE_CACHE_MS);
 
+export async function loadPersistedEtfCatalogEnvelope(
+  date = new Date().toISOString().slice(0, 10),
+): Promise<EtfCatalogEnvelope> {
+  let db: D1Database | null = null;
+  try {
+    const { env } = await import("cloudflare:workers");
+    db = env.DB ?? null;
+  } catch {
+    db = null;
+  }
+  if (!db) throw new Error("ETF catalog database is unavailable");
+  const persisted = await loadLatestEtfCatalogSnapshot(db, date);
+  if (!persisted) throw new Error("ETF catalog snapshot is unavailable");
+  return {
+    items: persisted.items,
+    source: persisted.source,
+    status: persisted.status,
+    receivedAt: persisted.receivedAt,
+    marketTime: null,
+    isStale: isStale(persisted.receivedAt),
+  };
+}
+
 export async function loadLiveEtfCatalogEnvelope(date = new Date().toISOString().slice(0, 10)): Promise<EtfCatalogEnvelope> {
   const cached = await liveCatalogCache.get(async () => {
     let db: D1Database | null = null;
