@@ -8,8 +8,8 @@ on:
     - cron: "17 * * * *"
     # Extra market checkpoints preserve the six intraday snapshots and the
     # pre-market/close deadlines without returning to five-minute polling.
-    - cron: "52 22 * * 0-4" # 06:52 Beijing: tier-1 RSS
-    - cron: "57 22 * * 0-4" # 06:57 Beijing: tier-2 news
+    - cron: "52 22 * * *" # 06:52 Beijing: tier-1 RSS, including weekends
+    - cron: "57 22 * * *" # 06:57 Beijing: tier-2 news, including weekends
     - cron: "27 1 * * 1-5"  # 09:27 Beijing: 09:25 breadth
     - cron: "2 2 * * 1-5"   # 10:02 Beijing: 10:00 breadth
     - cron: "2 3 * * 1-5"   # 11:02 Beijing: 11:00 breadth
