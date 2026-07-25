@@ -45,11 +45,13 @@ export function planCatchUpJobs({
   now,
   checkpoints,
   limit = 2,
+  marketSession = true,
 }: {
   tradeDate: string;
   now: Date;
   checkpoints: JobCheckpoint[];
   limit?: number;
+  marketSession?: boolean;
 }): ScheduledJob[] {
   const byKey = new Map(
     checkpoints
@@ -57,7 +59,7 @@ export function planCatchUpJobs({
       .map((checkpoint) => [checkpoint.key, checkpoint]),
   );
 
-  return expectedDailyJobs(tradeDate)
+  return expectedDailyJobs(tradeDate, { marketSession })
     .filter(({ key, expectedAt }) => {
       const expectedTime = new Date(expectedAt).getTime();
       const ageMs = now.getTime() - expectedTime;

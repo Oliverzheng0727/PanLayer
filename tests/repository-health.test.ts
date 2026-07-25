@@ -110,6 +110,22 @@ describe("persisted data health", () => {
     });
   });
 
+  it("does not mark market-session jobs due on weekends while keeping the morning brief due", () => {
+    const result = buildDailyJobHealth({
+      tradeDate: "2026-07-25",
+      now: new Date("2026-07-25T02:00:00Z"),
+      checkpoints: [],
+    });
+
+    expect(result.jobs["morning-brief"]).toMatchObject({
+      status: "pending",
+      overdue: true,
+    });
+    expect(result.jobs["breadth-09:25"]).toBeUndefined();
+    expect(result.jobs["etf-metrics-refresh"]).toBeUndefined();
+    expect(result.jobs["close-review"]).toBeUndefined();
+  });
+
   it("distinguishes initializing new highs from failed close fields", () => {
     const review = structuredClone(demoReview);
     review.metrics.high20 = null;

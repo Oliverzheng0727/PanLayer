@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHistory, demoReview } from "../../lib/data/demo";
-import { readBrief, readDataHealth, readHistory, readLatestReview, readNewHighProgress } from "../../lib/data/repository";
+import { readBrief, readDataHealth, readHistory, readLatestBrief, readLatestReview, readNewHighProgress } from "../../lib/data/repository";
+import { selectDashboardBrief } from "../../lib/data/brief-selection";
 import { createUnavailableReview } from "../../lib/data/unavailable";
 import { queryEtfs } from "../../lib/etf/catalog";
 import { loadPersistedEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
@@ -19,9 +20,10 @@ export default async function DashboardPage() {
   const start = new Date(`${completedReviewDate}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - 550);
   const from = start.toISOString().slice(0, 10);
-  const [storedReview, storedBrief, storedHistory, persistedEtfCatalog, newHighProgress, dataHealth] = await Promise.all([
+  const [storedReview, storedBrief, latestBrief, storedHistory, persistedEtfCatalog, newHighProgress, dataHealth] = await Promise.all([
     readLatestReview(completedReviewDate),
     readBrief(date),
+    readLatestBrief(date),
     readHistory(from, completedReviewDate),
     loadPersistedEtfCatalogEnvelope(date).catch(() => ({ items: process.env.NODE_ENV === "development" ? demoEtfs : [] })),
     readNewHighProgress(completedReviewDate),
@@ -31,7 +33,8 @@ export default async function DashboardPage() {
   const review = storedReview ?? (isDevelopment
     ? { ...demoReview, date: completedReviewDate }
     : createUnavailableReview(completedReviewDate));
-  const brief = storedBrief ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
+  const brief = selectDashboardBrief(storedBrief, latestBrief)
+    ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
   const history = storedHistory.length > 0 ? storedHistory : isDevelopment ? demoHistory : [];
   const etfs = queryEtfs(persistedEtfCatalog.items, {
     category: "全部",

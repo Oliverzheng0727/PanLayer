@@ -48,6 +48,37 @@ function missingOnlySection(key: BriefSectionKey, citationField: "sourceIds" | "
 }
 
 describe("independent morning-brief section providers", () => {
+  it("tells the provider that a weekend brief is for a closed A-share session", async () => {
+    let prompt = "";
+    const fetcher: typeof fetch = async (_input, init) => {
+      prompt = JSON.parse(String(init?.body)).input.messages[1].content;
+      return new Response(JSON.stringify({
+        output: {
+          choices: [{ message: { content: JSON.stringify(modelSection("risk")) } }],
+          search_info: {
+            search_results: [{
+              index: 1,
+              title: "可信来源",
+              url: "https://example.com/weekend",
+            }],
+          },
+        },
+      }));
+    };
+
+    await generateQwenBriefSection({
+      date: "2026-07-25",
+      key: "risk",
+      apiKey: "secret",
+      fetcher,
+      globalSnapshot: [],
+    });
+
+    expect(prompt).toContain("A股今日休市");
+    expect(prompt).toContain("周末资讯与下个交易日背景梳理");
+    expect(prompt).toContain("禁止输出高开、低开、平开或盘中方向判断");
+  });
+
   it("forbids ranked-context terms in mapping and risk model prose", async () => {
     let prompt = "";
     const fetcher: typeof fetch = async (_input, init) => {

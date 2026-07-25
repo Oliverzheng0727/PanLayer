@@ -101,23 +101,21 @@ export function planRemoteSchedulerJobs({
   now: Date;
   checkpoints: JobCheckpoint[];
 }): ScheduledJob[] {
-  if (!isChinaTradingWeekday(now)) {
-    const bootstrap = checkpoints.find((checkpoint) => (
-      checkpoint.key === "new-high-bootstrap" && checkpoint.stage === "main"
-    ));
-    return !bootstrap || isCheckpointRetryable(bootstrap, now)
-      ? [{ type: "new-high-bootstrap" }]
-      : [];
-  }
   const { date, time } = beijingDateParts(now);
+  const marketSession = isChinaTradingWeekday(now);
   const [hour, minute] = time.split(":").map(Number);
   const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
-  const exactJob = jobForBeijingTime(scheduledTime);
+  const scheduledJob = jobForBeijingTime(scheduledTime);
+  const exactJob = marketSession
+    || (scheduledJob && ["tier1-rss-prefetch", "tier2-news-prefetch", "morning-brief"].includes(scheduledJob.type))
+    ? scheduledJob
+    : null;
   const catchUpJobs = planCatchUpJobs({
     tradeDate: date,
     now,
     checkpoints,
     limit: 20,
+    marketSession,
   });
   const checkpointByKey = new Map(
     checkpoints

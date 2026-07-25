@@ -133,13 +133,21 @@ describe("remote scheduler", () => {
     ]]);
   });
 
-  it("continues only the new-high bootstrap on weekends", () => {
+  it("runs the due morning brief and one background batch on weekends without market-session jobs", () => {
     const jobs = planRemoteSchedulerJobs({
-      now: new Date("2026-07-25T02:00:00.000Z"),
+      now: new Date("2026-07-25T00:17:00.000Z"),
       checkpoints: [],
     });
 
-    expect(jobs).toEqual([{ type: "new-high-bootstrap" }]);
+    expect(jobs).toEqual([
+      { type: "morning-brief" },
+      { type: "new-high-bootstrap" },
+    ]);
+    expect(jobs.some((job) => (
+      job.type === "breadth"
+      || job.type === "etf-metrics-refresh"
+      || job.type === "close-review"
+    ))).toBe(false);
   });
 
   it("can recover a missing morning brief later the same trading day", () => {
@@ -168,7 +176,7 @@ describe("remote scheduler", () => {
 
     const result = await executeRemoteSchedulerTick({
       db,
-      now: new Date("2026-07-25T02:00:00.000Z"),
+      now: new Date("2026-07-25T00:17:00.000Z"),
       loadCheckpoints: async () => [],
       runJob: async (job) => {
         executed.push(job.type);
@@ -176,12 +184,19 @@ describe("remote scheduler", () => {
       },
     });
 
-    expect(executed).toEqual(["new-high-bootstrap"]);
-    expect(result.jobs).toEqual([{
-      job: "new-high-bootstrap",
-      ok: true,
-      message: "advanced",
-    }]);
+    expect(executed).toEqual(["morning-brief", "new-high-bootstrap"]);
+    expect(result.jobs).toEqual([
+      {
+        job: "morning-brief",
+        ok: true,
+        message: "advanced",
+      },
+      {
+        job: "new-high-bootstrap",
+        ok: true,
+        message: "advanced",
+      },
+    ]);
     expect(writes.some((values) => String(values[1]).includes("scheduler tick started"))).toBe(true);
     expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:ok"))).toBe(true);
   });

@@ -41,10 +41,19 @@ interface CheckpointRow {
   result_json: string;
 }
 
-const DAILY_TIMES: Array<[Exclude<DailyJobKey, "new-high-bootstrap" | "history-backfill">, string]> = [
+const CALENDAR_DAY_TIMES: Array<[Extract<DailyJobKey, "tier1-rss-prefetch" | "tier2-news-prefetch" | "morning-brief">, string]> = [
   ["tier1-rss-prefetch", "06:50"],
   ["tier2-news-prefetch", "06:55"],
   ["morning-brief", "07:15"],
+];
+
+const MARKET_SESSION_TIMES: Array<[Exclude<DailyJobKey,
+  | "tier1-rss-prefetch"
+  | "tier2-news-prefetch"
+  | "morning-brief"
+  | "new-high-bootstrap"
+  | "history-backfill"
+>, string]> = [
   ["breadth-09:25", "09:25"],
   ["breadth-10:00", "10:00"],
   ["breadth-11:00", "11:00"],
@@ -55,9 +64,16 @@ const DAILY_TIMES: Array<[Exclude<DailyJobKey, "new-high-bootstrap" | "history-b
   ["close-review", "16:10"],
 ];
 
-export function expectedDailyJobs(tradeDate: string): Array<{ key: DailyJobKey; expectedAt: string }> {
+export function expectedDailyJobs(
+  tradeDate: string,
+  options: { marketSession?: boolean } = {},
+): Array<{ key: DailyJobKey; expectedAt: string }> {
+  const timedJobs = [
+    ...CALENDAR_DAY_TIMES,
+    ...(options.marketSession === false ? [] : MARKET_SESSION_TIMES),
+  ];
   return [
-    ...DAILY_TIMES.map(([key, time]) => ({
+    ...timedJobs.map(([key, time]) => ({
       key,
       expectedAt: `${tradeDate}T${time}:00+08:00`,
     })),

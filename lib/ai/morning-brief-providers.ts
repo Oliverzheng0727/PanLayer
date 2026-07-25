@@ -167,6 +167,15 @@ function asBeijingMarketTime(value: string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : beijingTimestamp(date);
 }
 
+function calendarSessionInstruction(date: string): string {
+  const beijingNoon = new Date(`${date}T12:00:00+08:00`);
+  if (Number.isNaN(beijingNoon.getTime())) return "";
+  const weekday = beijingNoon.getUTCDay();
+  return weekday === 0 || weekday === 6
+    ? `${date} 为周末，A股今日休市。本次内容定位为周末资讯与下个交易日背景梳理；禁止将今天描述为交易日，禁止输出高开、低开、平开或盘中方向判断。`
+    : `${date} 为工作日；如无法确认交易所当日是否开市，不得把开市状态作为既定事实。`;
+}
+
 function snapshotBlocks(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoint[]): BriefBlock[] {
   if (key !== "global-markets") return [];
   return globalSnapshot.flatMap((point) => {
@@ -225,6 +234,7 @@ function promptForSection(
       ? "每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组，并引用联网搜索返回的本地编号 ref_1、ref_2 等；不可引用不存在的编号、不可虚构 URL、不可在 JSON 中输出 sources。"
       : "每条事实、解读和风险说明均须在 sourceUrls 中引用联网搜索返回的精确 URL；不可引用不存在的 URL、不可虚构 URL、不可在 JSON 中输出 sources。";
   return `生成 ${date} 北京时间 07:15 的A股隔夜早参模块。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。
+${calendarSessionInstruction(date)}
 
 ${coverageInstruction}正文内容长度（仅内容块文字）目标为 1200 至 1400 个字符；服务端最终容错范围为 600 至 1600 字符，但不得主动缩短内容。必须输出 6 至 7 个有事实内容的 paragraph 或 bullet item，并用 heading 分组；每个 paragraph 或每个 bullet item 约 180 至 230 个中文字符。不要提前结束；所有必需词必须在这些内容块中逐项出现。
 ${externalSources.length > 0 ? "只使用下方服务端资料包。" : "主动检索从上一交易日收盘至当前的可靠来源。"}${citationInstruction}若没有可靠更新，请明确写“未查到可靠更新”并仍引用检索来源。
@@ -976,6 +986,7 @@ function qwenSupplementPrompt(date: string, key: BriefSectionKey, globalSnapshot
   const missingTerms = definition.requiredTerms.filter((term) => !coveredTerms.includes(term));
   const originalSummary = initial.summary.slice(0, 400);
   return `为 ${date} 北京时间 07:15 的A股隔夜早参模块做一次短文补写。只生成一个模块，key 必须为 "${key}"，标题必须为 "${definition.title}"。这是补写，不是重写：只补充新的事实、影响解读或不确定性块，不得重复原文结论、措辞或事实。
+${calendarSessionInstruction(date)}
 
 原文摘要：${originalSummary}
 已覆盖词：${coveredTerms.join("、") || "暂无"}

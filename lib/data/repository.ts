@@ -16,7 +16,7 @@ import {
   readDailyJobCheckpoints,
   type JobCheckpoint,
 } from "../jobs/checkpoints";
-import { beijingDateParts } from "../jobs/schedule";
+import { beijingDateParts, isChinaTradingWeekday } from "../jobs/schedule";
 
 interface HealthJob { job: string; trade_date: string; status: string; message: string; started_at: string; finished_at: string | null }
 interface HealthSource { source?: string; provider?: string; status: string; received_at: string; message: string }
@@ -178,7 +178,9 @@ export function buildDailyJobHealth({
       .filter((checkpoint) => checkpoint.stage === "main")
       .map((checkpoint) => [checkpoint.key, checkpoint]),
   );
-  const jobs = Object.fromEntries(expectedDailyJobs(tradeDate).map((expected) => {
+  const jobs = Object.fromEntries(expectedDailyJobs(tradeDate, {
+    marketSession: isChinaTradingWeekday(now),
+  }).map((expected) => {
     const checkpoint = checkpointByKey.get(expected.key);
     const overdue = now.getTime() > new Date(expected.expectedAt).getTime() + 5 * 60_000
       && checkpoint?.status !== "complete";
@@ -308,6 +310,29 @@ export async function readBrief(date: string): Promise<MorningBrief | null> {
   } catch {
     return null;
   }
+}
+
+export async function readLatestBriefFromDatabase(
+  db: D1Database,
+  onOrBefore: string,
+): Promise<MorningBrief | null> {
+  const result = await db.prepare(
+    "SELECT payload FROM morning_briefs WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 30",
+  ).bind(onOrBefore).all<{ payload: string }>();
+  for (const row of result.results ?? []) {
+    try {
+      const brief = JSON.parse(row.payload) as unknown;
+      if (isValidPersistedMorningBrief(brief)) return brief;
+    } catch {
+      // Skip malformed persisted rows and continue to the next verified brief.
+    }
+  }
+  return null;
+}
+
+export async function readLatestBrief(onOrBefore: string): Promise<MorningBrief | null> {
+  const db = await getD1();
+  return db ? readLatestBriefFromDatabase(db, onOrBefore) : null;
 }
 
 export async function readHistory(from: string, to: string): Promise<HistoryRow[]> {
