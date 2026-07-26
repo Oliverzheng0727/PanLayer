@@ -14,6 +14,13 @@ describe("ETF catalog", () => {
     expect(classifyEtf("新能源车ETF").category).toBe("汽车");
     expect(classifyEtf("纳斯达克100ETF").category).toBe("海外指数");
     expect(classifyEtf("黄金ETF").category).toBe("商品");
+    expect(classifyEtf("通信ETF").category).toBe("通信光模块");
+    expect(classifyEtf("食品饮料ETF").category).toBe("食品饮料");
+    expect(classifyEtf("家电ETF").category).toBe("家电家居");
+    expect(classifyEtf("游戏ETF").category).toBe("传媒游戏");
+    expect(classifyEtf("房地产ETF").category).toBe("地产基建");
+    expect(classifyEtf("有色金属ETF").category).toBe("有色金属");
+    expect(classifyEtf("化工ETF").category).toBe("化工材料");
   });
 
   it("filters by category and searches tags", () => {

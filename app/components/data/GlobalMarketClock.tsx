@@ -22,12 +22,14 @@ export function GlobalMarketClock({
   status,
   marketTime,
   receivedAt,
+  marketSession = true,
   error = "",
 }: {
   source: string;
   status: LiveDataState;
   marketTime: string | null;
   receivedAt: string | null;
+  marketSession?: boolean;
   error?: string;
 }) {
   const [now, setNow] = useState<Date | null>(null);
@@ -43,11 +45,13 @@ export function GlobalMarketClock({
 
   const failed = status === "failed" || Boolean(error);
   const delayedBy = now ? delayMinutes(receivedAt, now) : null;
-  const delayed = failed || (delayedBy !== null && delayedBy > 5);
+  const delayed = failed || (marketSession && delayedBy !== null && delayedBy > 5);
   const inSession = now ? isBeijingMarketSession(now) : false;
   const seconds = now ? nextRefreshSeconds(receivedAt, now) : 0;
   const statusLabel = failed
     ? "更新失败 · 旧数据"
+    : !marketSession
+      ? "最近交易日数据"
     : delayed
       ? `数据已延迟 ${delayedBy} 分钟`
       : status === "complete"
@@ -57,7 +61,9 @@ export function GlobalMarketClock({
           : "部分";
   const refreshLabel = now === null
     ? "同步中"
-    : inSession
+    : !marketSession
+      ? "非交易日"
+      : inSession
     ? seconds > 0 ? `下次刷新 ${countdown(seconds)}` : "正在刷新"
     : "已收盘";
 

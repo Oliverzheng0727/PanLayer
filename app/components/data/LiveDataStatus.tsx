@@ -21,6 +21,7 @@ export function LiveDataStatus({
   marketTime,
   receivedAt,
   isStale,
+  marketSession = true,
   error = "",
   label = "行情",
 }: {
@@ -29,12 +30,24 @@ export function LiveDataStatus({
   marketTime: string | null;
   receivedAt: string | null;
   isStale: boolean;
+  marketSession?: boolean;
   error?: string;
   label?: string;
 }) {
   const failed = status === "failed" || Boolean(error);
-  const stateLabel = failed ? "更新失败 · 旧数据" : isStale ? "旧数据" : status === "complete" ? "完整" : status === "demo" ? "演示" : "部分";
-  const tone = failed || isStale ? "failed" : status;
+  const effectiveStale = marketSession && isStale;
+  const stateLabel = failed
+    ? "更新失败 · 旧数据"
+    : !marketSession
+      ? "最近交易日"
+      : effectiveStale
+        ? "旧数据"
+        : status === "complete"
+          ? "完整"
+          : status === "demo"
+            ? "演示"
+            : "部分";
+  const tone = failed || effectiveStale ? "failed" : status;
 
   return (
     <div className={`live-data-status ${tone}`} aria-live="polite" title={error || undefined}>

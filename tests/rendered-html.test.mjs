@@ -121,7 +121,7 @@ test("expands the ETF K-line into a full-width row on medium screens", async () 
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const responsiveRule = css.match(/@media \(max-width:1180px\) \{[^}]+(?:\}[^@]*)*/)?.[0] ?? "";
   assert.match(responsiveRule, /\.etf-chart-panel \{ grid-column:1\/-1;/);
-  assert.match(responsiveRule, /\.etf-chart-canvas \{ height:500px;/);
+  assert.match(responsiveRule, /\.etf-chart-canvas \{ height:560px;/);
 });
 
 test("infers chart time from each bar instead of the selected period", async () => {

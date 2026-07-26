@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBackfilledReview, runHistoryBackfillBatch } from "../lib/history/backfill";
+import { buildBackfilledReview, mergeBackfilledStructure, runHistoryBackfillBatch } from "../lib/history/backfill";
 import type { HistoricalBoardPools } from "../lib/history/backfill-sources";
 import type { DailyReview } from "../lib/domain/types";
 
@@ -150,5 +150,63 @@ describe("history review backfill", () => {
     expect(repaired.leaders[0].name).toBe("电子甲");
     expect(repaired.structure).toMatchObject({ status: "complete", source: "东方财富历史四池" });
     expect(JSON.parse(fixture.getProgress()!).completed).toHaveLength(6);
+  });
+
+  it("preserves verified aggregate and index evidence while replacing historical pool structure", () => {
+    const existing = buildBackfilledReview(
+      "2026-07-22",
+      pools,
+      26978.8,
+      "2026-07-22T08:00:00.000Z",
+    );
+    existing.comparison!.largeDownCount = 167;
+    existing.comparison!.marketAmount = 18_253;
+    existing.comparison!.marketCoveragePct = 98.5;
+    existing.comparison!.indices = [{
+      symbol: "000001.SH",
+      name: "上证指数",
+      price: 3500,
+      pctChange: 0.5,
+      amount: 500_000_000_000,
+      marketTime: "2026-07-22T15:00:00+08:00",
+      receivedAt: "2026-07-22T15:01:00+08:00",
+      source: "腾讯 / 东方财富",
+      status: "complete",
+      message: "已交叉核验",
+    }];
+    existing.comparison!.evidence.largeDownCount = {
+      source: "全市场收盘快照",
+      formula: "真实快照计算",
+      marketTime: "2026-07-22T15:00:00+08:00",
+      receivedAt: "2026-07-22T15:01:00+08:00",
+      sampleSize: 5300,
+      coveragePct: 99,
+      status: "complete",
+      message: "",
+    };
+    existing.comparison!.evidence.marketAmount = {
+      ...existing.comparison!.evidence.largeDownCount,
+      source: "全市场成交额快照",
+    };
+    existing.comparison!.evidence.indices = {
+      ...existing.comparison!.evidence.largeDownCount,
+      source: "腾讯 / 东方财富",
+      sampleSize: 5,
+    };
+    const refreshed = buildBackfilledReview(
+      "2026-07-22",
+      { ...pools, broken: [] },
+      null,
+      "2026-07-24T08:00:00.000Z",
+    );
+
+    const merged = mergeBackfilledStructure(existing, refreshed);
+
+    expect(merged.comparison?.brokenCount).toBe(0);
+    expect(merged.comparison?.largeDownCount).toBe(167);
+    expect(merged.comparison?.marketAmount).toBe(18_253);
+    expect(merged.comparison?.marketCoveragePct).toBe(98.5);
+    expect(merged.comparison?.indices[0]?.source).toBe("腾讯 / 东方财富");
+    expect(merged.comparison?.evidence.marketAmount.source).toBe("全市场成交额快照");
   });
 });

@@ -14,6 +14,8 @@ describe("global market clock UI", () => {
     expect(clock).toContain("市场数据");
     expect(clock).toContain("下次刷新");
     expect(clock).toContain("更新失败 · 旧数据");
+    expect(clock).toContain("最近交易日数据");
+    expect(clock).toContain("非交易日");
     expect(clock).toMatch(/setInterval/);
     expect(clock).not.toMatch(/useState\(\(\) => new Date\(\)\)/);
     expect(clock).toMatch(/useState<Date \| null>\(null\)/);

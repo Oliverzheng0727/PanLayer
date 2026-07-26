@@ -1,4 +1,5 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { withRetry } from "../data/resilience";
 import { bucketLimitLadder, rankLeaders, rankSectors } from "../domain/metrics";
 import { buildMarketComparison, withoutStBoardPools } from "../domain/comparison";
 import type { Board, DailyReview, Exchange, Quote, SectorMetric } from "../domain/types";
@@ -10,7 +11,7 @@ import {
   type HistoricalPoolItem,
 } from "./backfill-sources";
 
-const PROGRESS_KEY = "history-backfill-v4-structure-repair";
+const PROGRESS_KEY = "history-backfill-v5-evidence-safe";
 
 export interface HistoryBackfillProgress {
   target: number;
@@ -137,6 +138,51 @@ export function mergeBackfilledStructure(
     ...existing.source.split(" / ").filter(Boolean),
     "东方财富历史四池",
   ])].join(" / ");
+  const existingComparison = existing.comparison;
+  const backfilledComparison = backfilled.comparison;
+  const preserveExistingAggregate = (
+    key: "largeDownCount" | "marketAmount",
+  ) => existingComparison?.[key] !== null && existingComparison?.[key] !== undefined;
+  const preserveExistingIndices = Boolean(existingComparison?.indices.length);
+  const preserveExistingSectors = Boolean(
+    existingComparison?.mainSectors.length
+    && existingComparison.evidence?.mainSectors?.status === "complete",
+  );
+  const comparison = backfilledComparison
+    ? {
+      ...backfilledComparison,
+      largeDownCount: preserveExistingAggregate("largeDownCount")
+        ? existingComparison!.largeDownCount
+        : backfilledComparison.largeDownCount,
+      marketAmount: preserveExistingAggregate("marketAmount")
+        ? existingComparison!.marketAmount
+        : backfilledComparison.marketAmount,
+      marketCoveragePct: preserveExistingAggregate("marketAmount")
+        ? existingComparison!.marketCoveragePct
+        : backfilledComparison.marketCoveragePct,
+      mainSectors: preserveExistingSectors
+        ? existingComparison!.mainSectors
+        : backfilledComparison.mainSectors,
+      indices: preserveExistingIndices
+        ? existingComparison!.indices
+        : backfilledComparison.indices,
+      evidence: {
+        ...backfilledComparison.evidence,
+        ...(preserveExistingAggregate("largeDownCount") && existingComparison?.evidence?.largeDownCount
+          ? { largeDownCount: existingComparison.evidence.largeDownCount }
+          : {}),
+        ...(preserveExistingAggregate("marketAmount") && existingComparison?.evidence?.marketAmount
+          ? { marketAmount: existingComparison.evidence.marketAmount }
+          : {}),
+        ...(preserveExistingSectors && existingComparison?.evidence?.mainSectors
+          ? { mainSectors: existingComparison.evidence.mainSectors }
+          : {}),
+        ...(preserveExistingIndices && existingComparison?.evidence?.indices
+          ? { indices: existingComparison.evidence.indices }
+          : {}),
+      },
+    }
+    : existingComparison;
   return {
     ...existing,
     status: existing.status === "failed" ? "partial" : existing.status,
@@ -153,7 +199,8 @@ export function mergeBackfilledStructure(
     sectors: backfilled.sectors,
     leaders: backfilled.leaders,
     structure: backfilled.structure,
-    comparison: backfilled.comparison,
+    comparison,
+    historyMeta: existing.historyMeta ?? backfilled.historyMeta,
   };
 }
 
@@ -202,20 +249,6 @@ async function persistBackfilledReview(db: D1Database, review: DailyReview) {
   ).bind(review.date, JSON.stringify(review), review.source, review.status, review.updatedAt).run();
 }
 
-function hasCompleteStructureEvidence(review: DailyReview | null): boolean {
-  const comparison = review?.comparison;
-  if (!review || review.structure?.status !== "complete" || !comparison) return false;
-  if (review.historyMeta?.backfilled) return true;
-  const requiredEvidence = ["brokenCount", "sealRate", "yesterdaySuccessRate", "continuation", "brokenBoard", "maxBoard", "cycleLeader", "recognition"];
-  return requiredEvidence.every((key) => {
-    const item = comparison.evidence?.[key];
-    return Boolean(item && item.status !== "failed");
-  })
-    && Array.isArray(review.ladder?.first)
-    && Array.isArray(review.sectors)
-    && Array.isArray(review.leaders);
-}
-
 function normalizeMarginBalance(value: number | null): number | null {
   if (value === null || !Number.isFinite(value) || value <= 0) return null;
   return value > 1_000_000 ? Number((value / 100_000_000).toFixed(2)) : value;
@@ -243,15 +276,20 @@ export async function runHistoryBackfillBatch({
     const pair = pending.slice(offset, offset + 2);
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
-      // Older records may have been marked structurally complete before the
-      // historical comparison payload existed. Re-run those dates once; a
-      // fully evidenced record remains idempotently skipped.
-      if (hasCompleteStructureEvidence(existing)) return { date, completed: true };
       try {
         const [pools, marginBalance, indices] = await Promise.all([
-          fetchHistoricalBoardPools(date, fetcher),
-          provider.getMarginBalance(date).catch(() => null),
-          provider.getIndexSnapshots(date).catch(() => []),
+          withRetry(
+            () => fetchHistoricalBoardPools(date, fetcher),
+            { retries: 2, delayMs: 180 },
+          ),
+          withRetry(
+            () => provider.getMarginBalance(date),
+            { retries: 2, delayMs: 180 },
+          ).catch(() => null),
+          withRetry(
+            () => provider.getIndexSnapshots(date),
+            { retries: 1, delayMs: 180 },
+          ).catch(() => []),
         ]);
         const receivedAt = new Date().toISOString();
         const backfilled = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);

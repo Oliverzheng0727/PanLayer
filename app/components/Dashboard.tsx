@@ -258,7 +258,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           <button className="grid size-9 place-items-center rounded-full border border-white/10 lg:hidden" onClick={() => setMenuOpen(true)} aria-label="打开导航"><Menu size={18} /></button>
           <div className="hidden items-center gap-2 text-sm text-white/40 sm:flex"><CalendarDays size={16} /><span>{overviewDate}</span><span className="mx-2 text-white/10">/</span><span>收盘复盘</span></div>
           <div className="ml-auto flex items-center gap-2">
-            <div className="hidden xl:block"><LiveDataStatus label="市场" source={liveMarket?.source ?? review.source} status={refreshError ? "failed" : liveMarket?.status ?? review.status} marketTime={liveMarket?.marketTime ?? null} receivedAt={liveMarket?.receivedAt ?? review.updatedAt} isStale={Boolean(refreshError) || (liveMarket?.isStale ?? review.status === "demo")} error={refreshError} /></div>
+            <div className="hidden xl:block"><LiveDataStatus label="市场" source={liveMarket?.source ?? review.source} status={refreshError ? "failed" : liveMarket?.status ?? review.status} marketTime={liveMarket?.marketTime ?? null} receivedAt={liveMarket?.receivedAt ?? review.updatedAt} isStale={Boolean(refreshError) || (liveMarket?.isStale ?? review.status === "demo")} marketSession={dataHealth.marketSession ?? true} error={refreshError} /></div>
             <label className="hidden items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.035] px-4 py-2 text-xs text-white/35 md:flex"><Search size={14} /><input className="w-32 bg-transparent outline-none placeholder:text-white/25" placeholder="搜索指标或板块" /></label>
             <button onClick={refresh} disabled={refreshing} title={refreshError || undefined} className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/65 transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />{refreshing ? "刷新中" : "刷新数据"}</button>
           </div>
@@ -268,6 +268,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           status={refreshError ? "failed" : liveMarket?.status ?? review.status}
           marketTime={liveMarket?.marketTime ?? `${review.date}T15:00:00+08:00`}
           receivedAt={liveMarket?.receivedAt ?? (review.updatedAt.includes("T") ? review.updatedAt : `${review.updatedAt.replace(" ", "T")}:00+08:00`)}
+          marketSession={dataHealth.marketSession ?? true}
           error={refreshError}
         />
 
@@ -275,7 +276,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           <DailyJobHealthPanel health={dataHealth} newHighProgress={newHighProgress} />
           <section id="overview" className="scroll-mt-24">
             <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">{isViewingCurrentReview ? "今日市场，层层拆开。" : `${overviewDate} 市场复盘`}</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {overviewDate} · {isViewingCurrentReview && liveMarket ? `实时接收 ${formatBeijingDateTime(overviewUpdatedAt)}` : `复盘更新 ${formatBeijingDateTime(overviewUpdatedAt)}`} · 数据来源 {overviewSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{isViewingCurrentReview && liveMarket ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""} · 状态口径：完整 / 部分 / 失败 / 演示{isViewingCurrentReview && refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
+              <div><div className="mb-3 flex items-center gap-2 text-xs font-medium text-[#e8702a]"><span className="size-1.5 rounded-full bg-[#e8702a]" /> AFTER MARKET · 16:10</div><h1 className="text-3xl font-medium tracking-[-0.04em] sm:text-4xl">{isViewingCurrentReview ? dataHealth.marketSession === false ? "最近交易日市场，层层拆开。" : "今日市场，层层拆开。" : `${overviewDate} 市场复盘`}</h1><p className="mt-3 text-sm text-white/42">复盘交易日 {overviewDate} · {isViewingCurrentReview && liveMarket && dataHealth.marketSession !== false ? `实时接收 ${formatBeijingDateTime(overviewUpdatedAt)}` : `复盘更新 ${formatBeijingDateTime(overviewUpdatedAt)}`} · 数据来源 {overviewSource}</p><p className="mt-2 text-[11px] text-white/25">统计范围：沪深京全 A，剔除 ST{isViewingCurrentReview && liveMarket && dataHealth.marketSession !== false ? ` · 实时覆盖 ${liveMarket.universeSize.toLocaleString("zh-CN")} 只（${liveMarket.coveragePct.toFixed(2)}%）` : ""}{dataHealth.marketSession === false ? " · 今日非交易日，展示最近交易日数据" : ""} · 状态口径：完整 / 部分 / 失败 / 演示{isViewingCurrentReview && refreshError ? ` · 更新失败：${refreshError}` : ""}</p></div>
               <div className={`rounded-full border px-4 py-2 text-xs ${overviewStatusView.pill}`}>{overviewStatusView.label} · {overviewStatusView.detail}</div>
             </div>
 
