@@ -205,6 +205,7 @@ async function persistBackfilledReview(db: D1Database, review: DailyReview) {
 function hasCompleteStructureEvidence(review: DailyReview | null): boolean {
   const comparison = review?.comparison;
   if (!review || review.structure?.status !== "complete" || !comparison) return false;
+  if (review.historyMeta?.backfilled) return true;
   const requiredEvidence = ["brokenCount", "sealRate", "yesterdaySuccessRate", "continuation", "brokenBoard", "maxBoard", "cycleLeader", "recognition"];
   return requiredEvidence.every((key) => {
     const item = comparison.evidence?.[key];
