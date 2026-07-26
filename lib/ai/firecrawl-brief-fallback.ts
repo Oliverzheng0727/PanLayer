@@ -4,9 +4,11 @@ import {
 } from "./morning-brief-contract";
 
 export const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search";
-const FIRECRAWL_TIMEOUT_MS = 10_000;
-const FIRECRAWL_BODY_TIMEOUT_MS = 9_000;
-const DEADLINE_SAFETY_MS = 1_000;
+// Search + hydration can legitimately take longer than a plain HTTP search.
+// Keep a bounded client deadline, but do not fail healthy requests after 10s.
+export const FIRECRAWL_TIMEOUT_MS = 30_000;
+const FIRECRAWL_BODY_TIMEOUT_MS = 25_000;
+const DEADLINE_SAFETY_MS = 2_000;
 const MAX_SOURCE_CONTENT = 6_000;
 const MAX_BUNDLE_CONTENT = 24_000;
 const MIN_SOURCE_CONTENT = 120;
@@ -77,11 +79,26 @@ type FirecrawlResult = {
 
 type FirecrawlPayload = {
   success?: boolean;
+  error?: unknown;
+  code?: unknown;
+  details?: unknown;
   data?: {
     news?: unknown;
     web?: unknown;
   };
 };
+
+export class FirecrawlRequestError extends Error {
+  readonly status: number | null;
+  readonly retryable: boolean;
+
+  constructor(message: string, status: number | null, retryable: boolean) {
+    super(message);
+    this.name = "FirecrawlRequestError";
+    this.status = status;
+    this.retryable = retryable;
+  }
+}
 
 export function buildFirecrawlBriefQuery(date: string, key: BriefSectionKey): string {
   const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key);
@@ -165,26 +182,47 @@ function resolveSearchEndpoint(value?: string): string {
   return url.href;
 }
 
-async function readJsonWithAbort(response: Response, signal: AbortSignal): Promise<unknown> {
-  return new Promise<unknown>((resolve, reject) => {
+async function readTextWithAbort(response: Response, signal: AbortSignal): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     let settled = false;
-    const settle = (callback: (value: unknown) => void, value: unknown) => {
+    const settleResolve = (value: string) => {
       if (settled) return;
       settled = true;
       signal.removeEventListener("abort", onAbort);
-      callback(value);
+      resolve(value);
+    };
+    const settleReject = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
     };
     const onAbort = () => {
       void response.body?.cancel().catch(() => undefined);
-      settle(reject, new Error("response body read aborted"));
+      settleReject(new Error("response body read aborted"));
     };
     if (signal.aborted) {
       onAbort();
       return;
     }
     signal.addEventListener("abort", onAbort, { once: true });
-    void response.json().then((value) => settle(resolve, value), (error) => settle(reject, error));
+    void response.text().then(settleResolve, settleReject);
   });
+}
+
+function responseDetail(payload: FirecrawlPayload): string {
+  for (const value of [payload.error, payload.code, payload.details]) {
+    if (typeof value === "string" && value.trim()) return cleanText(value).slice(0, 240);
+    if (value && typeof value === "object") {
+      try {
+        const serialized = JSON.stringify(value);
+        if (serialized) return serialized.slice(0, 240);
+      } catch {
+        // Ignore non-serializable provider details.
+      }
+    }
+  }
+  return "";
 }
 
 export async function searchFirecrawlBriefSources(
@@ -207,7 +245,9 @@ export async function searchFirecrawlBriefSources(
       },
       body: JSON.stringify({
         query: (input.query?.trim() || buildFirecrawlBriefQuery(input.date, input.key)).slice(0, 500),
-        sources: [{ type: "news" }, { type: "web" }],
+        // The REST API accepts source names and this form is compatible with
+        // both the current v2 endpoint and older Firecrawl deployments.
+        sources: ["news", "web"],
         limit: Math.max(1, Math.min(input.limit ?? 5, 10)),
         tbs: "qdr:w",
         country: "CN",
@@ -221,8 +261,23 @@ export async function searchFirecrawlBriefSources(
       }),
       signal: controller.signal,
     });
-    const payload = await readJsonWithAbort(response, controller.signal) as FirecrawlPayload;
-    if (!response.ok || payload.success !== true) throw new Error(`Firecrawl search failed with HTTP ${response.status}`);
+    let payload: FirecrawlPayload;
+    try {
+      const raw = await readTextWithAbort(response, controller.signal);
+      payload = (raw ? JSON.parse(raw) : {}) as FirecrawlPayload;
+    } catch (error) {
+      if (controller.signal.aborted) throw error;
+      throw new FirecrawlRequestError(`Firecrawl response was not valid JSON (HTTP ${response.status})`, response.status, true);
+    }
+    if (!response.ok || payload.success !== true) {
+      const detail = responseDetail(payload);
+      const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+      throw new FirecrawlRequestError(
+        `Firecrawl search failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+        response.status,
+        retryable,
+      );
+    }
 
     const retrievedAt = beijingTimestamp(new Date());
     const seen = new Set<string>();
@@ -253,7 +308,7 @@ export async function searchFirecrawlBriefSources(
       }];
     }).slice(0, 5);
   } catch (error) {
-    if (controller.signal.aborted) throw new Error(`Firecrawl request timed out after ${timeoutMs}ms`);
+    if (controller.signal.aborted) throw new FirecrawlRequestError(`Firecrawl request timed out after ${timeoutMs}ms`, null, true);
     throw error;
   } finally {
     clearTimeout(timer);

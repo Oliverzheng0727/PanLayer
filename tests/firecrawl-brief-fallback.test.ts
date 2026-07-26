@@ -44,10 +44,10 @@ describe("Firecrawl morning brief fallback", () => {
 
     expect(new Headers(request?.headers).get("authorization")).toBe("Bearer firecrawl-secret");
     expect(JSON.parse(String(request?.body))).toMatchObject({
-      sources: [{ type: "news" }, { type: "web" }],
+      sources: ["news", "web"],
       limit: 5,
       ignoreInvalidURLs: true,
-      timeout: 9_000,
+      timeout: 25_000,
       scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
     });
     expect(sources).toHaveLength(1);
@@ -170,9 +170,9 @@ describe("Firecrawl morning brief fallback", () => {
         apiKey: "secret",
         fetcher,
       });
-      const rejected = expect(pending).rejects.toThrow(/Firecrawl request timed out after 10000ms/);
+      const rejected = expect(pending).rejects.toThrow(/Firecrawl request timed out after 30000ms/);
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
 
       await rejected;
       expect(aborted).toBe(true);
@@ -196,9 +196,9 @@ describe("Firecrawl morning brief fallback", () => {
         apiKey: "secret-key-must-not-leak",
         fetcher,
       });
-      const rejected = expect(pending).rejects.toThrow(/Firecrawl request timed out after 10000ms/);
+      const rejected = expect(pending).rejects.toThrow(/Firecrawl request timed out after 30000ms/);
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
 
       await rejected;
       await pending.catch((error) => expect(String(error)).not.toContain("secret-key-must-not-leak"));
@@ -206,5 +206,26 @@ describe("Firecrawl morning brief fallback", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("preserves the provider error code without leaking the API key", async () => {
+    const fetcher: typeof fetch = async () => Response.json({
+      success: false,
+      error: "Invalid search payload",
+      code: "BAD_REQUEST",
+    }, { status: 400 });
+
+    await expect(searchFirecrawlBriefSources({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret-key-must-not-leak",
+      fetcher,
+    })).rejects.toThrow(/HTTP 400: Invalid search payload/);
+    await expect(searchFirecrawlBriefSources({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret-key-must-not-leak",
+      fetcher,
+    })).rejects.not.toThrow(/secret-key-must-not-leak/);
   });
 });

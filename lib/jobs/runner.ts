@@ -704,7 +704,12 @@ export async function runPanLayerJob(
       });
       await persistNewsCollection(db, summary);
       finalStatus = summary.status;
-      finalMessage = `${summary.sourceSuccess}/${summary.sourceTotal} gap searches; ${summary.keptItemCount} verified`;
+      const diagnostics = summary.errors
+        .slice(0, 2)
+        .map((error) => sanitizeMorningBriefDiagnostic(error))
+        .filter(Boolean)
+        .join("；");
+      finalMessage = `${summary.sourceSuccess}/${summary.sourceTotal} gap searches; ${summary.keptItemCount} verified${diagnostics ? `; ${diagnostics}` : ""}`;
     } else if (job.type === "history-backfill") {
       const progress = await runHistoryBackfillBatch({
         db,

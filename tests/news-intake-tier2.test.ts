@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { collectTier2News, detectTier2Gaps, verifyTier2Candidates } from "../lib/ai/news-intake/tier2";
 import type { NewsBundle } from "../lib/ai/news-intake/types";
-import type { FirecrawlBriefSource } from "../lib/ai/firecrawl-brief-fallback";
+import { FirecrawlRequestError, type FirecrawlBriefSource } from "../lib/ai/firecrawl-brief-fallback";
 
 const emptyBundle: NewsBundle = {
   fetchDate: "2026-07-24",
@@ -76,5 +76,26 @@ describe("tier-2 news enrichment", () => {
     expect(result.status).toBe("partial");
     expect(result.items.every((item) => item.runId === result.runId)).toBe(true);
     expect(result.sourceSuccess).toBe(4);
+  });
+
+  it("retries transient Firecrawl failures once and preserves the successful result", async () => {
+    let attempts = 0;
+    const result = await collectTier2News({
+      date: "2026-07-24",
+      bundle: emptyBundle,
+      apiKey: "secret",
+      searcher: async (input) => {
+        if (input.key === "global-markets") {
+          attempts += 1;
+          if (attempts === 1) throw new FirecrawlRequestError("Firecrawl search failed with HTTP 503", 503, true);
+        }
+        return [source(`${input.key} 官方更新`, `https://www.gov.cn/${input.key}-${attempts}`)];
+      },
+      now: new Date("2026-07-23T22:55:00Z"),
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.sourceSuccess).toBe(5);
+    expect(result.status).toBe("complete");
   });
 });

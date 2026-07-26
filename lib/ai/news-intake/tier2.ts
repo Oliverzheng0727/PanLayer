@@ -3,6 +3,7 @@ import {
   type BriefSectionKey,
 } from "../morning-brief-contract";
 import {
+  FirecrawlRequestError,
   searchFirecrawlBriefSources,
   type FirecrawlBriefSource,
   type SearchFirecrawlBriefSourcesInput,
@@ -33,6 +34,8 @@ const SECTION_INDUSTRIES: Record<BriefSectionKey, string[]> = {
   mapping: ["macro", "ai", "semi", "robot", "auto", "energy", "bio", "consumer"],
   risk: ["macro"],
 };
+
+const FIRECRAWL_MAX_ATTEMPTS = 2;
 
 export interface VerifyTier2CandidatesInput {
   date: string;
@@ -194,15 +197,25 @@ export async function collectTier2News(input: CollectTier2Input): Promise<NewsCo
   for (const gap of gaps) {
     const started = Date.now();
     try {
-      const candidates = await searcher({
-        date: input.date,
-        key: gap.sectionKey,
-        query: gap.query,
-        limit: 6,
-        apiKey: input.apiKey,
-        endpoint: input.endpoint,
-        fetcher: input.fetcher,
-      });
+      let candidates: FirecrawlBriefSource[] = [];
+      for (let attempt = 1; attempt <= FIRECRAWL_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          candidates = await searcher({
+            date: input.date,
+            key: gap.sectionKey,
+            query: gap.query,
+            limit: 6,
+            apiKey: input.apiKey,
+            endpoint: input.endpoint,
+            fetcher: input.fetcher,
+          });
+          break;
+        } catch (error) {
+          const retryable = error instanceof FirecrawlRequestError && error.retryable;
+          if (!retryable || attempt === FIRECRAWL_MAX_ATTEMPTS) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        }
+      }
       rawItemCount += candidates.length;
       const verified = verifyTier2Candidates({
         date: input.date,
