@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { DatabaseZap, Filter, LoaderCircle } from "lucide-react";
+import { DatabaseZap, Filter, LoaderCircle, Maximize2, Minimize2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
 import { formatNewHighProgress, type NewHighProgress } from "../../../lib/history/new-high-progress";
@@ -46,6 +46,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
   const [newHighLabel, setNewHighLabel] = useState("初始化新高");
   const [newHighProgress, setNewHighProgress] = useState(initialNewHighProgress);
   const [restored, setRestored] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
 
@@ -101,6 +102,20 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
       scrollLeft: scrollPosition.current.left,
     } satisfies StoredHistoryView));
   }, [order, restored, sector, selected, sort, visibleCount]);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsFullscreen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isFullscreen]);
 
   const refreshNewHighProgress = useCallback(async () => {
     const response = await fetch("/api/v1/new-high/progress", { cache: "no-store" });
@@ -219,8 +234,18 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
   };
 
   return (
-    <div className="history-workspace panel">
+    <div className={`history-workspace panel ${isFullscreen ? "is-fullscreen" : ""}`}>
       <div className="history-toolbar">
+        <button
+          type="button"
+          className="history-fullscreen-toggle"
+          onClick={() => setIsFullscreen((current) => !current)}
+          aria-label={isFullscreen ? "退出历史数据全屏" : "放大历史数据表"}
+          aria-expanded={isFullscreen}
+          title={isFullscreen ? "退出全屏（Esc）" : "全屏查看历史数据"}
+        >
+          {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
         <div><strong>历史数据表</strong><span>当前查看 {selected || "暂无记录"} · 固定表头与日期列</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
         <span className={`new-high-progress ${newHighProgress.ready ? "ready" : ""}`}>{formatNewHighProgress(newHighProgress)}</span>
