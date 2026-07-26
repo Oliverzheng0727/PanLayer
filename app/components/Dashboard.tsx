@@ -247,6 +247,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
             reviewStatus={effectiveStatus}
             source={activeSource}
             updatedAt={activeReceivedAt}
+            canManageJobs={canManageBrief}
           />
           <div className="mt-4 flex items-center justify-between px-2 text-xs text-white/40"><span className="truncate">{userName}</span><Link href="/signout-with-chatgpt?return_to=/" aria-label="退出"><LogOut size={15} /></Link></div>
         </div>

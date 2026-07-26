@@ -10,6 +10,7 @@ import {
   type SidebarProgressStatus,
 } from "../../../lib/jobs/sidebar-progress";
 import { formatBeijingDateTime } from "../../../lib/live/market-clock";
+import { Tier2RerunButton } from "./Tier2RerunButton";
 
 const statusView: Record<SidebarProgressStatus, {
   label: string;
@@ -54,12 +55,14 @@ export function SidebarDataProgressCard({
   reviewStatus,
   source,
   updatedAt,
+  canManageJobs,
 }: {
   health: DailyJobHealth;
   newHighProgress: NewHighProgress;
   reviewStatus: DailyReview["status"];
   source: string;
   updatedAt: string;
+  canManageJobs: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const model = useMemo(
@@ -160,6 +163,7 @@ export function SidebarDataProgressCard({
                     {task.detail}
                     {taskTime ? ` · ${taskTime}` : ""}
                   </p>
+                  {canManageJobs && task.key === "tier2-firecrawl" && <Tier2RerunButton />}
                 </div>
               );
             })}
