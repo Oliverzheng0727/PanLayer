@@ -9,7 +9,7 @@ import {
 } from "../db/schema";
 import { summarizeDataHealth } from "../lib/data/repository";
 import { buildDailyJobHealth } from "../lib/data/repository";
-import { buildDailyFieldHealth, buildSchedulerHeartbeat } from "../lib/data/repository";
+import { buildDailyFieldHealth, buildSchedulerHeartbeat, SCHEDULER_HEARTBEAT_STALE_MS } from "../lib/data/repository";
 import { demoReview } from "../lib/data/demo";
 
 describe("persisted data health", () => {
@@ -157,7 +157,7 @@ describe("persisted data health", () => {
     expect(fields.marketAmount.status).toBe("missing");
   });
 
-  it("marks a scheduler heartbeat stale after ten minutes", () => {
+  it("keeps the hourly scheduler heartbeat healthy between reconciliation ticks", () => {
     const current = buildSchedulerHeartbeat(
       JSON.stringify({
         receivedAt: "2026-07-24T08:20:00.000Z",
@@ -172,7 +172,7 @@ describe("persisted data health", () => {
         status: "complete",
         message: "idle",
       }),
-      new Date("2026-07-24T08:31:00.000Z"),
+      new Date(new Date("2026-07-24T08:20:00.000Z").getTime() + SCHEDULER_HEARTBEAT_STALE_MS + 1),
     );
 
     expect(current).toMatchObject({ status: "complete", stale: false });

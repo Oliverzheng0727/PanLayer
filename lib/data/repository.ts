@@ -68,6 +68,12 @@ export interface SchedulerHeartbeatHealth {
   stale: boolean;
 }
 
+// The background Worker currently uses an hourly reconciliation cron. A ten
+// minute stale window therefore labels a healthy scheduler as "interrupted"
+// for most of every hour. Keep a little room for a long-running data batch
+// and only mark the heartbeat stale after one missed hourly window.
+export const SCHEDULER_HEARTBEAT_STALE_MS = 90 * 60_000;
+
 export function buildSchedulerHeartbeat(
   value: string | null | undefined,
   now = new Date(),
@@ -78,7 +84,7 @@ export function buildSchedulerHeartbeat(
     const receivedAt = typeof parsed.receivedAt === "string" ? parsed.receivedAt : "";
     const timestamp = new Date(receivedAt).getTime();
     if (!receivedAt || !Number.isFinite(timestamp)) return null;
-    const stale = now.getTime() - timestamp > 10 * 60_000;
+    const stale = now.getTime() - timestamp > SCHEDULER_HEARTBEAT_STALE_MS;
     const status = stale
       ? "failed"
       : parsed.status === "running" || parsed.status === "failed"

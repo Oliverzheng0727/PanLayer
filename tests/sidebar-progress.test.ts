@@ -100,4 +100,34 @@ describe("sidebar progress model", () => {
     expect(result.tasks.find((item) => item.key === "close-review")).toMatchObject({ status: "closed", value: "不适用" });
     expect(result.tasks.find((item) => item.key === "etf")).toMatchObject({ status: "closed", value: "不适用" });
   });
+
+  it("does not inherit Friday's failed review status on a closed weekend", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-26",
+      generatedAt: "2026-07-26T06:00:00Z",
+      marketSession: false,
+      jobs: {
+        "morning-brief": job("complete", "2026-07-26T07:15:00+08:00"),
+      },
+    };
+
+    expect(buildSidebarProgress(health, progress, "failed").overallStatus).not.toBe("failed");
+  });
+
+  it("exposes RSS and Firecrawl failures in the expanded task list", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-26",
+      generatedAt: "2026-07-26T06:00:00Z",
+      marketSession: false,
+      jobs: {
+        "tier1-rss-prefetch": job("failed", "2026-07-26T06:50:00+08:00", "RSS timeout"),
+        "tier2-news-prefetch": job("partial", "2026-07-26T06:55:00+08:00", "Firecrawl 2/3 sources"),
+      },
+    };
+
+    expect(buildSidebarProgress(health, progress, "complete").tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "tier1-rss", status: "failed", detail: "RSS timeout" }),
+      expect.objectContaining({ key: "tier2-firecrawl", status: "partial", detail: "Firecrawl 2/3 sources" }),
+    ]));
+  });
 });

@@ -11,7 +11,7 @@ export type SidebarProgressStatus =
   | "closed";
 
 export interface SidebarProgressTask {
-  key: "breadth" | "close-review" | "new-high" | "morning-brief" | "etf";
+  key: "tier1-rss" | "tier2-firecrawl" | "breadth" | "close-review" | "new-high" | "morning-brief" | "etf";
   label: string;
   status: SidebarProgressStatus;
   value: string;
@@ -97,11 +97,15 @@ export function buildSidebarProgress(
   const failed = dueJobs.some(([, item]) => item.status === "failed");
   const running = dueJobs.some(([, item]) => item.status === "running");
   const partial = dueJobs.some(([, item]) => item.status === "partial" || item.overdue);
-  const overallStatus: SidebarProgressStatus = failed || reviewStatus === "failed"
+  // A weekend page reads the latest completed market review (usually Friday).
+  // Its status must not turn the current closed day red; only today's due
+  // jobs participate in the aggregate status on a non-trading day.
+  const reviewAffectsStatus = marketSession;
+  const overallStatus: SidebarProgressStatus = failed || (reviewAffectsStatus && reviewStatus === "failed")
     ? "failed"
     : running
       ? "running"
-      : partial || reviewStatus === "partial" || reviewStatus === "demo"
+      : partial || (reviewAffectsStatus && (reviewStatus === "partial" || reviewStatus === "demo"))
         ? "partial"
         : dueJobs.length > 0 && completedDue === dueJobs.length
           ? "complete"
@@ -130,6 +134,22 @@ export function buildSidebarProgress(
     newHighCoveragePct: newHighProgress.coveragePct,
     marketSession,
     tasks: [
+      {
+        key: "tier1-rss",
+        label: "一级资讯 RSS",
+        status: normalizeStatus(health.jobs["tier1-rss-prefetch"]?.status),
+        value: STATUS_VALUE[normalizeStatus(health.jobs["tier1-rss-prefetch"]?.status)],
+        detail: health.jobs["tier1-rss-prefetch"]?.message || "等待 06:50",
+        updatedAt: health.jobs["tier1-rss-prefetch"]?.finishedAt ?? null,
+      },
+      {
+        key: "tier2-firecrawl",
+        label: "二级资讯 Firecrawl",
+        status: normalizeStatus(health.jobs["tier2-news-prefetch"]?.status),
+        value: STATUS_VALUE[normalizeStatus(health.jobs["tier2-news-prefetch"]?.status)],
+        detail: health.jobs["tier2-news-prefetch"]?.message || "等待 06:55",
+        updatedAt: health.jobs["tier2-news-prefetch"]?.finishedAt ?? null,
+      },
       {
         key: "breadth",
         label: "盘中快照",
