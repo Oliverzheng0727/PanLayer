@@ -32,6 +32,25 @@ function TableProvenance({ block }: { block: Extract<BriefBlock, { type: "table"
   return <p className="brief-table-provenance">{block.provenance.label} · 市场时间 {block.provenance.marketTime} · {block.provenance.providers.join(" / ")} · <time dateTime={block.provenance.receivedAt}>接收时间（北京时间）{formatBeijingTime(block.provenance.receivedAt)}</time></p>;
 }
 
+function NewsItemBlock({ brief, block }: { brief: BriefWithSources; block: Extract<BriefBlock, { type: "news-item" }> }) {
+  return (
+    <article className="brief-news-item">
+      <div className="brief-news-item-head">
+        <span className={`brief-news-verification is-${block.verification}`}>{block.verification === "verified" ? "已核验" : block.verification === "partial" ? "部分核验" : "未核验"}</span>
+        {block.publishedAt && <time dateTime={block.publishedAt}>发布时间 {formatBeijingTime(block.publishedAt)}</time>}
+      </div>
+      <h3>{block.event}</h3>
+      <dl>
+        <div><dt>原文摘录</dt><dd>“{block.excerpt}”</dd></div>
+        <div><dt>核心影响</dt><dd>{block.impact}</dd></div>
+        <div><dt>对应板块</dt><dd>{block.sectors.length ? block.sectors.join("、") : "暂缺"}</dd></div>
+        <div><dt>客观龙头映射</dt><dd>{block.leaderMap.length ? block.leaderMap.join("、") : "未形成可验证映射"}</dd></div>
+      </dl>
+      <SourceChips brief={brief} block={block} />
+    </article>
+  );
+}
+
 function formatBeijingTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "未提供";
@@ -68,6 +87,7 @@ export function BriefBlockRenderer({ brief, section }: { brief: BriefWithSources
             {block.provenance.kind === "search" && <SourceChips brief={brief} block={block} />}
           </section>
         );
+        if (block.type === "news-item") return <NewsItemBlock key={id} brief={brief} block={block} />;
         return <aside key={id} className={`brief-block brief-callout ${calloutClass[block.tone]}`} aria-label={block.tone === "risk" ? "风险提示" : block.tone === "missing" ? "内容暂缺" : "重点提示"}><p>{block.text}</p>{block.tone !== "missing" && <SourceChips brief={brief} block={block} />}{block.tone === "missing" && <span className="brief-source-missing">来源暂缺，未提供链接。</span>}</aside>;
       })}
     </div>

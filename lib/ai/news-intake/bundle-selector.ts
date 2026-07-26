@@ -1,5 +1,5 @@
 import {
-  BRIEF_SECTION_DEFINITIONS,
+  BRIEF_SECTION_DEFINITIONS_V3,
   type BriefSectionKey,
 } from "../morning-brief-contract";
 import type { FirecrawlBriefSource } from "../firecrawl-brief-fallback";
@@ -14,12 +14,14 @@ const SECTION_INDUSTRIES: Record<BriefSectionKey, Set<string>> = {
   "global-markets": new Set(["macro"]),
   "global-industry": new Set(["ai", "semi", "robot", "auto", "energy", "bio", "space", "science", "tech"]),
   domestic: new Set(["macro", "ai", "semi", "robot", "auto", "energy", "bio", "tech", "consumer"]),
+  technical: new Set(["macro", "tech", "semi"]),
+  funding: new Set(["macro", "finance"]),
   mapping: new Set(["macro", "ai", "semi", "robot", "auto", "energy", "bio", "consumer"]),
   risk: new Set(["macro", "security"]),
 };
 
 function relevance(item: NormalizedNewsItem, key: BriefSectionKey): number {
-  const definition = BRIEF_SECTION_DEFINITIONS.find((section) => section.key === key);
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((section) => section.key === key);
   const text = `${item.title}\n${item.excerpt ?? ""}`.toLowerCase();
   const termScore = definition?.requiredTerms.reduce((score, term) => score + (text.includes(term.toLowerCase()) ? 2 : 0), 0) ?? 0;
   const industryScore = item.industries.some((industry) => SECTION_INDUSTRIES[key].has(industry)) ? 3 : 0;

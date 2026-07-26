@@ -1,11 +1,13 @@
 export type BriefStatus = "complete" | "partial" | "failed";
 
-export type BriefSectionKey =
+export type LegacyBriefSectionKey =
   | "global-markets"
   | "global-industry"
   | "domestic"
   | "mapping"
   | "risk";
+
+export type BriefSectionKey = LegacyBriefSectionKey | "technical" | "funding";
 
 export interface BriefSource {
   id: string;
@@ -36,6 +38,17 @@ export type BriefBlock =
     provenance?:
       | { kind: "snapshot"; label: string; marketTime: string; providers: string[]; receivedAt: string }
       | { kind: "unavailable"; label: string };
+  }
+  | {
+    type: "news-item";
+    event: string;
+    excerpt: string;
+    impact: string;
+    sectors: string[];
+    leaderMap: string[];
+    publishedAt: string | null;
+    verification: "verified" | "partial" | "unverified";
+    sourceIds: string[];
   };
 
 export interface BriefSection {
@@ -49,14 +62,32 @@ export interface BriefSection {
   sourceIds: string[];
 }
 
+export interface MorningBriefSourceWindow {
+  from: string;
+  to: string;
+  timezone: "Asia/Shanghai";
+}
+
+export interface MorningBriefCoverage {
+  status: "complete" | "partial" | "failed" | "unavailable";
+  sourceTotal: number;
+  sourceSuccess: number;
+  failedSources: number;
+  verifiedFacts: number;
+  crossCheckedFacts: number;
+  collectedAt: string | null;
+}
+
 export interface MorningBrief {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   date: string;
   status: BriefStatus;
   generatedAt: string;
   sections: BriefSection[];
   sources: BriefSource[];
   disclaimer: string;
+  sourceWindow?: MorningBriefSourceWindow;
+  coverage?: MorningBriefCoverage;
   publication?: {
     expectedAt: string;
     completedAt: string;
@@ -65,17 +96,47 @@ export interface MorningBrief {
   };
 }
 
-export const BRIEF_SECTION_DEFINITIONS = [
+export const LEGACY_BRIEF_SECTION_DEFINITIONS = [
   { key: "global-markets", title: "全球外围市场全景", requiredTerms: ["道琼斯", "标普", "纳斯达克", "费城半导体", "英伟达", "美光", "中概", "A50", "人民币", "美债", "原油", "黄金", "工业金属"] },
   { key: "global-industry", title: "全球产业重大催化", requiredTerms: ["Kimi", "DeepSeek", "GPT", "存储", "人形机器人", "算力", "光模块", "钠离子电池", "新能源车", "医药"] },
   { key: "domestic", title: "国内隔夜重磅信息", requiredTerms: ["宏观", "政策", "产业", "公告", "央行", "流动性"] },
   { key: "mapping", title: "板块利好、利空与内需映射", requiredTerms: ["指数", "成交额", "涨跌停", "连板", "资金", "ETF", "利好", "利空", "内需"] },
   { key: "risk", title: "盘前情绪、观察方向与风险", requiredTerms: ["情绪", "观察", "持续性", "风险", "关键"] },
 ] as const satisfies ReadonlyArray<{
+  key: LegacyBriefSectionKey;
+  title: string;
+  requiredTerms: readonly string[];
+}>;
+
+// Kept as the V2 export so older integrations and fixtures continue to work.
+export const BRIEF_SECTION_DEFINITIONS = LEGACY_BRIEF_SECTION_DEFINITIONS;
+
+export const BRIEF_SECTION_DEFINITIONS_V3 = [
+  { key: "global-markets", title: "全球外围与跨资产全景", requiredTerms: ["道琼斯", "标普", "纳斯达克", "费城半导体", "英伟达", "美光", "中概", "A50", "人民币", "美债", "原油", "黄金", "工业金属"] },
+  { key: "global-industry", title: "全球产业重大催化", requiredTerms: ["Kimi", "DeepSeek", "GPT", "存储", "人形机器人", "算力", "光模块", "钠离子电池", "新能源车", "医药"] },
+  { key: "domestic", title: "国内政策、公告与宏观流动性", requiredTerms: ["宏观", "政策", "产业", "公告", "央行", "流动性"] },
+  { key: "technical", title: "A股技术面", requiredTerms: ["技术面", "上证指数", "深证成指", "创业板指", "均线", "成交量", "支撑", "压力"] },
+  { key: "funding", title: "资金面与跨市场资金", requiredTerms: ["资金面", "成交额", "北向资金", "两融", "汇率", "美债", "流动性"] },
+  { key: "mapping", title: "情绪、板块与客观龙头映射", requiredTerms: ["情绪", "板块", "客观", "连板", "涨停", "龙头", "依据"] },
+  { key: "risk", title: "盘前情景预判、观察信号与风险", requiredTerms: ["情景", "主线排序", "强弱预判", "观察信号", "风险", "风险暴露参考", "非个性化"] },
+] as const satisfies ReadonlyArray<{
   key: BriefSectionKey;
   title: string;
   requiredTerms: readonly string[];
 }>;
+
+export type BriefSectionDefinition = (typeof LEGACY_BRIEF_SECTION_DEFINITIONS)[number] | (typeof BRIEF_SECTION_DEFINITIONS_V3)[number];
+
+export function briefDefinitionsForVersion(version: MorningBrief["schemaVersion"]): readonly BriefSectionDefinition[] {
+  return version === 3 ? BRIEF_SECTION_DEFINITIONS_V3 : LEGACY_BRIEF_SECTION_DEFINITIONS;
+}
+
+function definitionForSection(section: Pick<BriefSection, "key" | "title">): BriefSectionDefinition | undefined {
+  return BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === section.key && item.title === section.title)
+    ?? LEGACY_BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section.key && item.title === section.title)
+    ?? BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === section.key)
+    ?? LEGACY_BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section.key);
+}
 
 export interface BriefValidationResult {
   ok: boolean;
@@ -89,7 +150,7 @@ const INVESTMENT_ACTION_LANGUAGE = /买入|卖出|加仓|减仓|布局|配置|�
 const RETURN_GUARANTEE_LANGUAGE = /保证|承诺|确保|保本|稳赚|必赚|无风险|确定性/;
 const RETURN_LANGUAGE = /收益|回报|盈利|获利|年化|翻倍/;
 const BRIEF_STATUSES = new Set<BriefStatus>(["complete", "partial", "failed"]);
-const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS.map((item) => item.key));
+const SECTION_KEYS = new Set<BriefSectionKey>(BRIEF_SECTION_DEFINITIONS_V3.map((item) => item.key));
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 const BEIJING_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?\+08:00$/;
@@ -111,6 +172,8 @@ function blockText(block: BriefBlock): string[] {
       return block.items.map((item) => item.text);
     case "table":
       return [...block.columns, ...block.rows.flat()];
+    case "news-item":
+      return [block.event, block.excerpt, block.impact, ...block.sectors, ...block.leaderMap];
   }
 }
 
@@ -126,6 +189,8 @@ function blockSourceIds(block: BriefBlock): string[] {
       return block.provenance?.kind === "snapshot" ? [] : block.sourceIds;
     case "bullets":
       return block.items.flatMap((item) => item.sourceIds);
+    case "news-item":
+      return block.sourceIds;
   }
 }
 
@@ -137,6 +202,19 @@ function requiresSources(block: BriefBlock, sectionStatus: BriefStatus): boolean
 
 function isExplicitFailedSectionCallout(block: BriefBlock): boolean {
   return block.type === "callout" && block.tone === "missing" && /(?:失败|暂缺|未查到|不可用|缺失)/.test(block.text);
+}
+
+const NEWS_VERIFICATIONS = new Set(["verified", "partial", "unverified"]);
+
+function validateNewsItem(errors: string[], sectionTitle: string, index: number, block: Extract<BriefBlock, { type: "news-item" }>): void {
+  if (![block.event, block.excerpt, block.impact].every(isNonBlankString)) {
+    errors.push(`${sectionTitle}第${index + 1}条消息缺少事实、摘录或影响`);
+  }
+  if (block.excerpt.length > 600) errors.push(`${sectionTitle}第${index + 1}条消息原文摘录过长`);
+  if (!Array.isArray(block.sectors) || block.sectors.some((item) => !isNonBlankString(item))) errors.push(`${sectionTitle}第${index + 1}条消息板块映射不合法`);
+  if (!Array.isArray(block.leaderMap) || block.leaderMap.some((item) => !isNonBlankString(item))) errors.push(`${sectionTitle}第${index + 1}条消息龙头映射不合法`);
+  if (block.publishedAt !== null && !isIsoTimestamp(block.publishedAt)) errors.push(`${sectionTitle}第${index + 1}条消息发布时间不合法`);
+  if (!NEWS_VERIFICATIONS.has(block.verification)) errors.push(`${sectionTitle}第${index + 1}条消息核验状态不合法`);
 }
 
 function appendSourceErrors(errors: string[], label: string, sourceIds: string[], knownSourceIds: Set<string>): void {
@@ -243,11 +321,12 @@ export function resolveBlockSources(brief: Pick<MorningBrief, "sources">, block:
 
 export function validateBriefSection(section: BriefSection, knownSourceIds: Set<string>): BriefValidationResult {
   const errors: string[] = [];
-  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section.key);
+  const definition = definitionForSection(section);
 
   if (!SECTION_KEYS.has(section.key)) {
     errors.push(`未知模块：${section.key}`);
-  } else if (definition && section.title !== definition.title) {
+  } else if (definition && section.title !== definition.title
+    && !LEGACY_BRIEF_SECTION_DEFINITIONS.some((item) => item.key === section.key && item.title === section.title)) {
     errors.push(`${section.key}模块标题不匹配`);
   }
   if (!BRIEF_STATUSES.has(section.status)) errors.push(`${section.title}状态不合法`);
@@ -260,6 +339,7 @@ export function validateBriefSection(section: BriefSection, knownSourceIds: Set<
   section.blocks.forEach((block, index) => {
     if (block.type === "table") validateTableProvenance(errors, section.title, index, block);
     if (block.type === "callout") validateSnapshotCalloutProvenance(errors, section.title, index, block);
+    if (block.type === "news-item") validateNewsItem(errors, section.title, index, block);
     if (requiresSources(block, section.status)) {
       appendSourceErrors(errors, `${section.title}第${index + 1}个内容块`, blockSourceIds(block), knownSourceIds);
     }
@@ -327,17 +407,27 @@ function validateSources(sources: BriefSource[]): { errors: string[]; validIds: 
 
 export function validateMorningBrief(brief: MorningBrief): BriefValidationResult {
   const errors: string[] = [];
-  if (brief.schemaVersion !== 2) errors.push("schemaVersion必须为2");
+  if (brief.schemaVersion !== 2 && brief.schemaVersion !== 3) errors.push("schemaVersion必须为2或3");
   if (!BRIEF_STATUSES.has(brief.status)) errors.push("早参状态不合法");
   if (!isCalendarDate(brief.date)) errors.push("早参日期必须为YYYY-MM-DD的有效日期");
   if (!isBeijingTimestamp(brief.generatedAt)) errors.push("早参生成时间必须为北京时间");
+  if (brief.sourceWindow) {
+    if (!isBeijingTimestamp(brief.sourceWindow.from) || !isBeijingTimestamp(brief.sourceWindow.to) || brief.sourceWindow.timezone !== "Asia/Shanghai") errors.push("早参消息时间窗口不合法");
+  }
+  if (brief.coverage) {
+    const numericCoverage = [brief.coverage.sourceTotal, brief.coverage.sourceSuccess, brief.coverage.failedSources, brief.coverage.verifiedFacts, brief.coverage.crossCheckedFacts];
+    if (numericCoverage.some((value) => !Number.isInteger(value) || value < 0)) errors.push("早参来源覆盖统计不合法");
+    if (brief.coverage.sourceSuccess > brief.coverage.sourceTotal) errors.push("早参来源成功数超过来源总数");
+    if (brief.coverage.collectedAt !== null && !isIsoTimestamp(brief.coverage.collectedAt)) errors.push("早参来源采集时间不合法");
+  }
 
   const sourceValidation = validateSources(brief.sources);
   errors.push(...sourceValidation.errors);
   const knownSourceIds = sourceValidation.validIds;
+  const definitions = briefDefinitionsForVersion(brief.schemaVersion);
   const sectionKeys = new Set(brief.sections.map((section) => section.key));
 
-  BRIEF_SECTION_DEFINITIONS.forEach((definition) => {
+  definitions.forEach((definition) => {
     if (!sectionKeys.has(definition.key)) errors.push(`缺少模块：${definition.title}`);
   });
   if (sectionKeys.size !== brief.sections.length) errors.push("存在重复模块");
@@ -351,8 +441,10 @@ export function validateMorningBrief(brief: MorningBrief): BriefValidationResult
       errors.push("完整早参不能包含非完整模块");
     }
     const length = brief.sections.reduce((total, section) => total + briefTextLength(section), 0);
-    if (length < 3_000 || length > 8_000) {
-      errors.push("完整早参字数应为3000至8000字符");
+    const minimum = brief.schemaVersion === 3 ? 4_200 : 3_000;
+    const maximum = brief.schemaVersion === 3 ? 11_000 : 8_000;
+    if (length < minimum || length > maximum) {
+      errors.push(`完整早参字数应为${minimum}至${maximum}字符`);
     }
   }
 

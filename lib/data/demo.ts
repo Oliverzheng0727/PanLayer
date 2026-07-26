@@ -1,5 +1,5 @@
 import type { DailyReview, Quote } from "../domain/types";
-import { BRIEF_SECTION_DEFINITIONS, type MorningBrief } from "../ai/morning-brief";
+import { BRIEF_SECTION_DEFINITIONS_V3, type MorningBrief } from "../ai/morning-brief-contract";
 import type { EtfSnapshot } from "./provider";
 import type { HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
@@ -168,11 +168,11 @@ export const demoHighDetailsByDate: Record<string, HighDetail[]> = Object.fromEn
 
 /** Local-only fixture. Production callers must render an unavailable brief instead. */
 export const demoBrief: MorningBrief = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   date: "2026-07-22",
   status: "partial",
   generatedAt: "2026-07-22T07:15:00+08:00",
-  sections: BRIEF_SECTION_DEFINITIONS.map((definition) => ({
+  sections: BRIEF_SECTION_DEFINITIONS_V3.map((definition) => ({
     key: definition.key,
     title: definition.title,
     summary: "本地开发预览；生产环境仅显示已持久化的联网早参。",

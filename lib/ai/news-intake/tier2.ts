@@ -1,5 +1,5 @@
 import {
-  BRIEF_SECTION_DEFINITIONS,
+  LEGACY_BRIEF_SECTION_DEFINITIONS,
   type BriefSectionKey,
 } from "../morning-brief-contract";
 import {
@@ -28,6 +28,8 @@ const SECTION_INDUSTRIES: Record<BriefSectionKey, string[]> = {
   "global-markets": ["macro"],
   "global-industry": ["ai", "semi", "robot", "auto", "energy", "bio", "space", "science", "tech"],
   domestic: ["macro", "ai", "semi", "robot", "auto", "energy", "bio", "tech", "consumer"],
+  technical: ["macro", "tech", "semi"],
+  funding: ["macro", "finance"],
   mapping: ["macro", "ai", "semi", "robot", "auto", "energy", "bio", "consumer"],
   risk: ["macro"],
 };
@@ -48,6 +50,7 @@ export interface CollectTier2Input {
   now?: Date;
   runId?: string;
   searcher?: (input: SearchFirecrawlBriefSourcesInput) => Promise<FirecrawlBriefSource[]>;
+  definitions?: ReadonlyArray<{ key: BriefSectionKey; title: string; requiredTerms: readonly string[] }>;
 }
 
 function normalizedTitle(value: string): string {
@@ -104,13 +107,16 @@ function beijingTimestamp(value: Date): string {
   return `${fields.year}-${fields.month}-${fields.day}T${fields.hour}:${fields.minute}:${fields.second}+08:00`;
 }
 
-export function detectTier2Gaps(bundle: NewsBundle): Tier2Gap[] {
+export function detectTier2Gaps(
+  bundle: NewsBundle,
+  definitions: ReadonlyArray<{ key: BriefSectionKey; title: string; requiredTerms: readonly string[] }> = LEGACY_BRIEF_SECTION_DEFINITIONS,
+): Tier2Gap[] {
   const tier1Text = bundle.items
     .filter((item) => item.tier === 1 && item.verification === "verified")
     .map((item) => `${item.title}\n${item.excerpt ?? ""}`)
     .join("\n")
     .toLowerCase();
-  return BRIEF_SECTION_DEFINITIONS.flatMap((definition) => {
+  return definitions.flatMap((definition) => {
     const requiredTerms = definition.requiredTerms.filter((term) => !tier1Text.includes(term.toLowerCase()));
     const relevantSourceIds = new Set(bundle.items
       .filter((item) => item.tier === 1 && item.verification === "verified"
@@ -178,7 +184,7 @@ export async function collectTier2News(input: CollectTier2Input): Promise<NewsCo
   const now = input.now ?? new Date();
   const startedAt = beijingTimestamp(now);
   const runId = input.runId ?? `tier2_${input.date}_${crypto.randomUUID()}`;
-  const gaps = detectTier2Gaps(input.bundle);
+  const gaps = detectTier2Gaps(input.bundle, input.definitions);
   const searcher = input.searcher ?? searchFirecrawlBriefSources;
   const redlineKeywords = loadTier1NewsConfig().redlineKeywords;
   const sourceHealth: NewsSourceHealth[] = [];

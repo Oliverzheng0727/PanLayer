@@ -171,6 +171,8 @@ type RunRow = {
   source_tier: number;
   status: NewsCollectionStatus;
   finished_at: string | null;
+  source_total?: number;
+  source_success?: number;
 };
 
 type ItemRow = {
@@ -202,15 +204,15 @@ function jsonStrings(value: string): string[] {
 
 export async function readCurrentNewsBundle(db: D1Database, fetchDate: string): Promise<NewsBundle> {
   const runResult = await db.prepare(
-    `SELECT run_id, fetch_date, source_tier, status, finished_at
+    `SELECT run_id, fetch_date, source_tier, status, finished_at, source_total, source_success
      FROM brief_fetch_runs
-     WHERE fetch_date = ? AND status IN ('complete', 'partial')
+     WHERE fetch_date = ? AND status IN ('complete', 'partial', 'failed')
      ORDER BY source_tier ASC, finished_at DESC`,
   ).bind(fetchDate).all<RunRow>();
   const latestByTier = new Map<number, RunRow>();
   for (const row of runResult.results ?? []) if (!latestByTier.has(Number(row.source_tier))) latestByTier.set(Number(row.source_tier), row);
   const runs = [...latestByTier.values()];
-  if (runs.length === 0) return { fetchDate, collectedAt: null, status: "unavailable", items: [] };
+  if (runs.length === 0) return { fetchDate, collectedAt: null, status: "unavailable", items: [], sourceTotal: 0, sourceSuccess: 0, failedSources: 0 };
 
   const placeholders = runs.map(() => "?").join(",");
   const itemResult = await db.prepare(
@@ -238,6 +240,12 @@ export async function readCurrentNewsBundle(db: D1Database, fetchDate: string): 
     filterReason: row.filter_reason === null ? null : String(row.filter_reason),
   }));
   const collectedAt = runs.map((run) => run.finished_at).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
-  const status: NewsCollectionStatus = runs.some((run) => run.status === "partial") ? "partial" : "complete";
-  return { fetchDate, collectedAt, status, items };
+  const status: NewsCollectionStatus = runs.every((run) => run.status === "failed")
+    ? "failed"
+    : runs.some((run) => run.status === "partial" || run.status === "failed")
+      ? "partial"
+      : "complete";
+  const sourceTotal = runs.reduce((total, run) => total + Number(run.source_total ?? 0), 0);
+  const sourceSuccess = runs.reduce((total, run) => total + Number(run.source_success ?? 0), 0);
+  return { fetchDate, collectedAt, status, items, sourceTotal, sourceSuccess, failedSources: Math.max(sourceTotal - sourceSuccess, 0) };
 }

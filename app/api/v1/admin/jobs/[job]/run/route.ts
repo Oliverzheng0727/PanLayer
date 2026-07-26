@@ -1,5 +1,5 @@
 import { authorizeAdminApi } from "../../../../../../auth-guard";
-import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../../../../../../../lib/ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS_V3, type BriefSectionKey } from "../../../../../../../lib/ai/morning-brief-contract";
 import { runPanLayerJob } from "../../../../../../../lib/jobs/runner";
 import { canRunCloseReview, type ScheduledJob } from "../../../../../../../lib/jobs/schedule";
 
@@ -51,7 +51,7 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
     if (mapped.type !== "morning-brief") {
       return Response.json({ error: "section is only supported for morning-brief" }, { status: 400 });
     }
-    const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === section);
+    const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === section);
     if (!definition) return Response.json({ error: "unknown brief section" }, { status: 400 });
     sectionKeys = [definition.key];
   }

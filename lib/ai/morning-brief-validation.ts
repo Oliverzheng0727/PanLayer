@@ -35,6 +35,7 @@ const SEQUENCE = /一度|盘中|随后|之后|转而|冲高回落|先.*后/;
 function blockTexts(block: BriefBlock): string[] {
   if (block.type === "heading" || block.type === "paragraph" || block.type === "callout") return [block.text];
   if (block.type === "bullets") return block.items.map((item) => item.text);
+  if (block.type === "news-item") return [block.event, block.excerpt, block.impact, ...block.sectors, ...block.leaderMap];
   return [...block.columns, ...block.rows.flat()];
 }
 

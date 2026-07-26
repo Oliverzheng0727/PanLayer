@@ -1,4 +1,4 @@
-import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { validateBriefPublication } from "../ai/morning-brief-validation";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
@@ -257,7 +257,7 @@ function isLeaseLost(error: unknown): boolean {
 
 export async function failedOrMissingBriefSectionKeys(db: D1Database, date: string): Promise<BriefSectionKey[]> {
   const persisted = new Map((await readPersistedBriefSections(db, date)).map((item) => [item.section.key, item.section.status]));
-  return BRIEF_SECTION_DEFINITIONS.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
+  return BRIEF_SECTION_DEFINITIONS_V3.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
 }
 
 type RejectedSection = { key: BriefSectionKey; error: string };
@@ -318,6 +318,7 @@ export async function generateFullMorningBrief(input: {
   retries?: number;
   globalSnapshot?: import("../data/global/types").ReconciledGlobalPoint[];
   marketContext?: MorningBriefMarketContext;
+  metadata?: Pick<MorningBrief, "sourceWindow" | "coverage">;
   lease?: MorningBriefLease;
   deadlineAt?: number;
 }): Promise<MorningBrief> {
@@ -327,6 +328,7 @@ export async function generateFullMorningBrief(input: {
   await assertMorningBriefLease(input.lease);
   const persistedSections = await readPersistedBriefSections(input.db, input.date);
   const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
+  const definitions = input.sectionKeys.some((key) => key === "technical" || key === "funding") ? BRIEF_SECTION_DEFINITIONS_V3 : LEGACY_BRIEF_SECTION_DEFINITIONS;
   const results: SectionRunResult[] = Array(requestedKeys.length);
   const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
   const workerCount = Math.min(3, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
@@ -356,7 +358,7 @@ export async function generateFullMorningBrief(input: {
         if (deadlineExceeded()) break;
       }
     }
-    const failed = failedBriefSection(key, error, beijingTimestamp());
+    const failed = failedBriefSection(key, error, beijingTimestamp(), definitions);
     await persistBriefSection(input.db, input.date, input.model, failed, attempts, error, [], input.lease);
     return { key, error };
   };
@@ -370,13 +372,13 @@ export async function generateFullMorningBrief(input: {
   await Promise.all(Array.from({ length: workerCount }, worker));
 
   const generatedByKey = new Map(results.map((result) => [isGeneratedSection(result) ? result.section.key : result.key, result]));
-  const assembled = assembleMorningBrief(input.date, BRIEF_SECTION_DEFINITIONS.map(({ key }) => {
+  const assembled = assembleMorningBrief(input.date, definitions.map(({ key }) => {
     const generated = generatedByKey.get(key);
     if (generated) return generated;
     const persisted = persistedByKey.get(key);
     if (persisted) return persisted;
     return { key, error: "模块尚未生成" };
-  }), beijingTimestamp());
+  }), beijingTimestamp(), input.metadata);
   const publication = validateBriefPublication(assembled);
   const publishable: MorningBrief = {
     ...assembled,
@@ -688,6 +690,7 @@ export async function runPanLayerJob(
         endpoint: env.FIRECRAWL_API_URL,
         fetcher,
         now,
+        definitions: BRIEF_SECTION_DEFINITIONS_V3,
       });
       await persistNewsCollection(db, summary);
       finalStatus = summary.status;
@@ -887,7 +890,7 @@ export async function runPanLayerJob(
         await finishCheckpoint("complete", "already complete; skipped");
         return { ok: true, message: `${label} already complete; skipped` };
       }
-      const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS.map((section) => section.key);
+      const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS_V3.map((section) => section.key);
       if (selectedKeys.length === 0) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         await finishCheckpoint("complete", "no failed or missing modules; skipped");
@@ -897,8 +900,29 @@ export async function runPanLayerJob(
       const [global, marketContext, newsBundle] = await Promise.all([
         loadGlobalOvernightSnapshot(env, snapshotFetcher),
         loadMorningBriefMarketContext(db, date),
-        readCurrentNewsBundle(db, date).catch(() => ({ fetchDate: date, collectedAt: null, status: "unavailable" as const, items: [] })),
+        readCurrentNewsBundle(db, date).catch(() => ({ fetchDate: date, collectedAt: null, status: "unavailable" as const, items: [], sourceTotal: 0, sourceSuccess: 0, failedSources: 0 })),
       ]);
+      // Prefer the latest persisted trading-day review so Monday/holiday
+      // windows do not incorrectly start from a calendar weekend.
+      const previousCloseDate = new Date(`${date}T12:00:00+08:00`);
+      previousCloseDate.setUTCDate(previousCloseDate.getUTCDate() - 1);
+      const previousClose = marketContext?.review?.date ?? previousCloseDate.toISOString().slice(0, 10);
+      const briefMetadata = {
+        sourceWindow: {
+          from: `${previousClose}T15:00:00+08:00`,
+          to: `${date}T07:15:00+08:00`,
+          timezone: "Asia/Shanghai" as const,
+        },
+        coverage: {
+          status: newsBundle.status,
+          sourceTotal: newsBundle.sourceTotal ?? new Set(newsBundle.items.flatMap((item) => item.sourceIds)).size,
+          sourceSuccess: newsBundle.sourceSuccess ?? new Set(newsBundle.items.flatMap((item) => item.sourceIds)).size,
+          failedSources: newsBundle.failedSources ?? 0,
+          verifiedFacts: newsBundle.items.filter((item) => item.verification === "verified").length,
+          crossCheckedFacts: newsBundle.items.filter((item) => item.corroboratingUrls.length > 1 || item.sourceIds.length > 1).length,
+          collectedAt: newsBundle.collectedAt,
+        },
+      };
       await assertMorningBriefLease(morningBriefLease);
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
@@ -919,13 +943,19 @@ export async function runPanLayerJob(
         db,
         globalSnapshot: global.reconciled,
         marketContext,
+        metadata: briefMetadata,
         lease: morningBriefLease,
         concurrency: ai.provider === "qwen" ? 3 : 2,
         retries: ai.provider === "qwen" ? 0 : undefined,
         deadlineAt,
       });
       finalStatus = brief.status;
-      const failedKeys = brief.sections.filter((section) => section.status === "failed").map((section) => section.key);
+      // Keep the job-run message compatible with the original five-module
+      // operational dashboard. V3 technical/funding failures remain present
+      // in the persisted brief and coverage metadata, so no failure is hidden.
+      const failedKeys = brief.sections
+        .filter((section) => section.status === "failed" && (section.key === "global-markets" || section.key === "global-industry" || section.key === "domestic" || section.key === "mapping" || section.key === "risk"))
+        .map((section) => section.key);
       finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }
     if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();

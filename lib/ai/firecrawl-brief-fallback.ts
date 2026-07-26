@@ -1,5 +1,5 @@
 import {
-  BRIEF_SECTION_DEFINITIONS,
+  BRIEF_SECTION_DEFINITIONS_V3,
   type BriefSectionKey,
 } from "./morning-brief-contract";
 
@@ -84,9 +84,12 @@ type FirecrawlPayload = {
 };
 
 export function buildFirecrawlBriefQuery(date: string, key: BriefSectionKey): string {
-  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
-  return `${date} ${definition.title} A股隔夜早参 ${definition.requiredTerms.join(" ")}`.slice(0, 500);
+  // Keep the former five-module alias in the query for search providers that
+  // have indexed older PanLayer briefs. The output contract remains V3.
+  const legacyAlias = key === "global-markets" ? "全球外围市场全景" : "";
+  return `${date} ${definition.title} ${legacyAlias} A股隔夜早参 ${definition.requiredTerms.join(" ")}`.replace(/\s+/g, " ").slice(0, 500);
 }
 
 function cleanText(value: unknown): string {

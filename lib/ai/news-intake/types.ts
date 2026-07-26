@@ -90,6 +90,9 @@ export interface NewsBundle {
   collectedAt: string | null;
   status: NewsCollectionStatus | "unavailable";
   items: NormalizedNewsItem[];
+  sourceTotal?: number;
+  sourceSuccess?: number;
+  failedSources?: number;
 }
 
 export interface Tier2Gap {

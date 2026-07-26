@@ -1,5 +1,6 @@
 import {
-  BRIEF_SECTION_DEFINITIONS,
+  BRIEF_SECTION_DEFINITIONS_V3,
+  LEGACY_BRIEF_SECTION_DEFINITIONS,
   type BriefBlock,
   type BriefSection,
   type BriefSectionKey,
@@ -39,6 +40,7 @@ function remapBlocks(blocks: BriefBlock[], sourceIdMap: Map<string, string>): Br
         items: block.items.map((item) => ({ ...item, sourceIds: remapSourceIds(item.sourceIds, sourceIdMap) })),
       };
     }
+    if (block.type === "news-item") return { ...block, sourceIds: remapSourceIds(block.sourceIds, sourceIdMap) };
     return { ...block, sourceIds: remapSourceIds(block.sourceIds, sourceIdMap) };
   });
 }
@@ -58,8 +60,8 @@ function briefStatus(sections: BriefSection[]): BriefStatus {
   return "partial";
 }
 
-export function failedBriefSection(key: BriefSectionKey, error: string, generatedAt: string): BriefSection {
-  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key);
+export function failedBriefSection(key: BriefSectionKey, error: string, generatedAt: string, definitions = (key === "technical" || key === "funding" ? BRIEF_SECTION_DEFINITIONS_V3 : LEGACY_BRIEF_SECTION_DEFINITIONS)): BriefSection {
+  const definition = definitions.find((item) => item.key === key);
   if (!definition) throw new Error(`Unknown brief section key: ${key}`);
   const detail = error.trim() || "未知错误";
   return {
@@ -78,6 +80,7 @@ export function assembleMorningBrief(
   date: string,
   results: Array<GeneratedBriefSection | RejectedBriefSection>,
   generatedAt: string,
+  metadata: Pick<MorningBrief, "sourceWindow" | "coverage"> = {},
 ): MorningBrief {
   const resultByKey = new Map<BriefSectionKey, GeneratedBriefSection | RejectedBriefSection>();
   for (const result of results) {
@@ -89,15 +92,21 @@ export function assembleMorningBrief(
   const sources: BriefSource[] = [];
   const sourceIdsByCanonicalUrl = new Map<string, string>();
   const sections: BriefSection[] = [];
+  const useV3 = Boolean(metadata.sourceWindow || metadata.coverage)
+    || results.some((result) => {
+      const key = isGeneratedResult(result) ? result.section.key : result.key;
+      return key === "technical" || key === "funding";
+    });
+  const definitions = useV3 ? BRIEF_SECTION_DEFINITIONS_V3 : LEGACY_BRIEF_SECTION_DEFINITIONS;
 
-  for (const definition of BRIEF_SECTION_DEFINITIONS) {
+  for (const definition of definitions) {
     const result = resultByKey.get(definition.key);
     if (!result) {
-      sections.push(failedBriefSection(definition.key, "未返回生成结果", generatedAt));
+      sections.push(failedBriefSection(definition.key, "未返回生成结果", generatedAt, definitions));
       continue;
     }
     if (!isGeneratedResult(result)) {
-      sections.push(failedBriefSection(result.key, result.error, generatedAt));
+      sections.push(failedBriefSection(result.key, result.error, generatedAt, definitions));
       continue;
     }
     if (result.section.key !== definition.key) {
@@ -117,6 +126,13 @@ export function assembleMorningBrief(
     }
     const section: BriefSection = {
       ...result.section,
+      // The server-owned definition keeps the public module labels stable;
+      // model output cannot silently invent a new label. A persisted V2
+      // title is retained during compatibility reads so older providers can
+      // still be assembled while their content is migrated.
+      title: LEGACY_BRIEF_SECTION_DEFINITIONS.some((legacy) => legacy.key === definition.key && legacy.title === result.section.title)
+        ? result.section.title
+        : definition.title,
       blocks: remapBlocks(result.section.blocks, localSourceIds),
       sourceIds: remapSourceIds(result.section.sourceIds, localSourceIds),
     };
@@ -125,13 +141,14 @@ export function assembleMorningBrief(
   }
 
   const brief: MorningBrief = {
-    schemaVersion: 2,
+    schemaVersion: useV3 ? 3 : 2,
     date,
     status: briefStatus(sections),
     generatedAt,
     sections,
     sources,
     disclaimer: DISCLAIMER,
+    ...metadata,
   };
   const validation = validateMorningBrief(brief);
   if (!validation.ok) throw new Error(`Invalid morning brief: ${validation.errors.join("；")}`);
@@ -172,7 +189,7 @@ function isBriefSection(value: unknown): value is BriefSection {
 export function isValidPersistedMorningBrief(value: unknown): value is MorningBrief {
   if (!value || typeof value !== "object") return false;
   const brief = value as Partial<MorningBrief>;
-  if (brief.schemaVersion !== 2 || !Array.isArray(brief.sections) || brief.sections.some((section) => !isBriefSection(section))) return false;
+  if ((brief.schemaVersion !== 2 && brief.schemaVersion !== 3) || !Array.isArray(brief.sections) || brief.sections.some((section) => !isBriefSection(section))) return false;
   return validateMorningBrief(brief as MorningBrief).ok;
 }
 
@@ -200,7 +217,7 @@ export async function readPersistedBriefSections(db: D1Database, date: string): 
   const result = await db.prepare("SELECT section_key, payload, status FROM morning_brief_sections WHERE trade_date = ? ORDER BY section_key")
     .bind(date)
     .all<{ section_key: BriefSectionKey; payload: string; status: BriefStatus }>();
-  const order = new Map(BRIEF_SECTION_DEFINITIONS.map((definition, index) => [definition.key, index]));
+  const order = new Map([...LEGACY_BRIEF_SECTION_DEFINITIONS, ...BRIEF_SECTION_DEFINITIONS_V3].map((definition, index) => [definition.key, index]));
 
   return (result.results ?? []).flatMap((row) => {
     try {
