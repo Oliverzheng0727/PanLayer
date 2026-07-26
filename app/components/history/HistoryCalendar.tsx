@@ -1,8 +1,21 @@
 "use client";
 
+import { CalendarDays, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useMemo, useState } from "react";
 
-export function HistoryCalendar({ dates, selected, onSelect }: { dates: string[]; selected: string; onSelect: (date: string) => void }) {
+export function HistoryCalendar({
+  dates,
+  selected,
+  collapsed,
+  onSelect,
+  onToggle,
+}: {
+  dates: string[];
+  selected: string;
+  collapsed: boolean;
+  onSelect: (date: string) => void;
+  onToggle: () => void;
+}) {
   const [month, setMonth] = useState(selected.slice(0, 7));
   const available = useMemo(() => new Set(dates), [dates]);
 
@@ -16,8 +29,23 @@ export function HistoryCalendar({ dates, selected, onSelect }: { dates: string[]
     setMonth(`${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}`);
   };
 
+  if (collapsed) {
+    return (
+      <aside className="history-calendar is-collapsed" aria-label="历史复盘日历（已收起）">
+        <button type="button" className="history-calendar-expand" onClick={onToggle} aria-label="展开历史日历" title="展开历史日历">
+          <PanelLeftOpen size={16} />
+          <CalendarDays size={15} />
+          <span>日历</span>
+        </button>
+      </aside>
+    );
+  }
+
   return (
     <aside className="history-calendar" aria-label="历史复盘日历">
+      <button type="button" className="history-calendar-collapse" onClick={onToggle} aria-label="收起历史日历" title="收起历史日历">
+        <PanelLeftClose size={15} />
+      </button>
       <div className="history-calendar-head">
         <button type="button" onClick={() => moveMonth(-1)} aria-label="上一个月">‹</button>
         <strong>{year}年 {monthNumber}月</strong>

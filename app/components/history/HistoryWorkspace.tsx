@@ -19,6 +19,7 @@ interface StoredHistoryView {
   visibleCount?: number;
   scrollTop?: number;
   scrollLeft?: number;
+  calendarCollapsed?: boolean;
 }
 
 interface HistoryWorkspaceProps {
@@ -47,6 +48,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
   const [newHighProgress, setNewHighProgress] = useState(initialNewHighProgress);
   const [restored, setRestored] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [calendarCollapsed, setCalendarCollapsed] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
 
@@ -70,6 +72,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
       if (stored.sort && HISTORY_SORT_FIELDS.includes(stored.sort)) setSort(stored.sort);
       if (stored.order === "asc" || stored.order === "desc") setOrder(stored.order);
       if (typeof stored.sector === "string") setSector(stored.sector);
+      if (typeof stored.calendarCollapsed === "boolean") setCalendarCollapsed(stored.calendarCollapsed);
       if (stored.selected) {
         const restoredRow = initialRows.find((row) => row.date === stored.selected);
         if (restoredRow) {
@@ -100,8 +103,9 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
       visibleCount,
       scrollTop: scrollPosition.current.top,
       scrollLeft: scrollPosition.current.left,
+      calendarCollapsed,
     } satisfies StoredHistoryView));
-  }, [order, restored, sector, selected, sort, visibleCount]);
+  }, [calendarCollapsed, order, restored, sector, selected, sort, visibleCount]);
 
   useEffect(() => {
     if (!isFullscreen) return;
@@ -253,8 +257,15 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
         {canManageHistory && <button type="button" className={`history-backfill ${newHighState}`} onClick={initializeNewHighs} disabled={newHighState === "running" || newHighProgress.complete} title={newHighState === "failed" ? newHighLabel : "每批最多初始化40只；后台每小时自动继续"}>{newHighState === "running" ? <LoaderCircle size={13} className="animate-spin" /> : <DatabaseZap size={13} />}{newHighLabel}</button>}
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
-      <div className="history-layout">
-        <HistoryCalendar key={selected.slice(0, 7)} dates={initialRows.map((row) => row.date)} selected={selected} onSelect={selectDate} />
+      <div className={`history-layout ${calendarCollapsed ? "calendar-collapsed" : ""}`}>
+        <HistoryCalendar
+          key={selected.slice(0, 7)}
+          dates={initialRows.map((row) => row.date)}
+          selected={selected}
+          collapsed={calendarCollapsed}
+          onSelect={selectDate}
+          onToggle={() => setCalendarCollapsed((current) => !current)}
+        />
         <HistoryTable
           rows={visible}
           selected={selected}
@@ -268,7 +279,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
             scrollPosition.current = { top, left };
             if (!restored) return;
             sessionStorage.setItem(HISTORY_VIEW_KEY, JSON.stringify({
-              sort, order, sector, selected, visibleCount, scrollTop: top, scrollLeft: left,
+              sort, order, sector, selected, visibleCount, scrollTop: top, scrollLeft: left, calendarCollapsed,
             } satisfies StoredHistoryView));
           }}
           onOpenEvidence={(row, kind) => setEvidenceDrawer({ row, kind })}
