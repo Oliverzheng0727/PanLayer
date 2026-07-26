@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { DatabaseZap, Filter, LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
@@ -28,7 +28,11 @@ interface HistoryWorkspaceProps {
   onSelectedRowChange?: (row: HistoryRow) => void;
 }
 
-export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, canManageHistory = false, onSelectedRowChange }: HistoryWorkspaceProps) {
+export interface HistoryWorkspaceHandle {
+  selectDate: (date: string) => void;
+}
+
+export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorkspaceProps>(function HistoryWorkspace({ initialRows = [], initialNewHighProgress, canManageHistory = false, onSelectedRowChange }, ref) {
   const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
@@ -65,7 +69,13 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
       if (stored.sort && HISTORY_SORT_FIELDS.includes(stored.sort)) setSort(stored.sort);
       if (stored.order === "asc" || stored.order === "desc") setOrder(stored.order);
       if (typeof stored.sector === "string") setSector(stored.sector);
-      if (stored.selected && initialRows.some((row) => row.date === stored.selected)) setSelected(stored.selected);
+      if (stored.selected) {
+        const restoredRow = initialRows.find((row) => row.date === stored.selected);
+        if (restoredRow) {
+          setSelected(restoredRow.date);
+          onSelectedRowChange?.(restoredRow);
+        }
+      }
       if (Number.isInteger(stored.visibleCount)) setVisibleCount(Math.min(2_000, Math.max(12, stored.visibleCount!)));
       scrollPosition.current = {
         top: typeof stored.scrollTop === "number" ? stored.scrollTop : 0,
@@ -77,7 +87,7 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
       setRestored(true);
     });
     return () => cancelAnimationFrame(frame);
-  }, [initialRows]);
+  }, [initialRows, onSelectedRowChange]);
 
   useEffect(() => {
     if (!restored) return;
@@ -91,11 +101,6 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
       scrollLeft: scrollPosition.current.left,
     } satisfies StoredHistoryView));
   }, [order, restored, sector, selected, sort, visibleCount]);
-
-  useEffect(() => {
-    const row = initialRows.find((item) => item.date === selected);
-    if (row) onSelectedRowChange?.(row);
-  }, [initialRows, onSelectedRowChange, selected]);
 
   const refreshNewHighProgress = useCallback(async () => {
     const response = await fetch("/api/v1/new-high/progress", { cache: "no-store" });
@@ -127,12 +132,26 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
     setSort("date"); setOrder("desc");
   };
 
-  const selectDate = (date: string) => {
+  const selectDate = useCallback((date: string) => {
     setSelected(date);
-    const index = sorted.findIndex((row) => row.date === date);
+    const row = initialRows.find((item) => item.date === date);
+    if (row) onSelectedRowChange?.(row);
+    let index = sorted.findIndex((row) => row.date === date);
+    if (index < 0 && sector) {
+      setSector("");
+      index = queryHistoryRows(initialRows, {
+        sort,
+        order,
+        sector: "",
+        cursor: 0,
+        limit: Math.max(1, initialRows.length),
+      }).items.findIndex((item) => item.date === date);
+    }
     if (index >= visibleCount) setVisibleCount(index + 1);
     requestAnimationFrame(() => document.querySelector(`[data-history-date="${date}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
-  };
+  }, [initialRows, onSelectedRowChange, order, sector, sort, sorted, visibleCount]);
+
+  useImperativeHandle(ref, () => ({ selectDate }), [selectDate]);
 
   const backfillHistory = async () => {
     if (backfillState === "running") return;
@@ -233,4 +252,4 @@ export function HistoryWorkspace({ initialRows = [], initialNewHighProgress, can
       {evidenceDrawer && <MarketEvidenceDrawer row={evidenceDrawer.row} kind={evidenceDrawer.kind} onClose={() => setEvidenceDrawer(null)} />}
     </div>
   );
-}
+});

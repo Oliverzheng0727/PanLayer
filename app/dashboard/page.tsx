@@ -3,7 +3,6 @@ import { isAdminUser, requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHistory, demoReview } from "../../lib/data/demo";
 import { readBrief, readDataHealth, readHistory, readLatestBrief, readLatestReview, readNewHighProgress } from "../../lib/data/repository";
-import { selectDashboardBrief } from "../../lib/data/brief-selection";
 import { createUnavailableReview } from "../../lib/data/unavailable";
 import { queryEtfs } from "../../lib/etf/catalog";
 import { loadPersistedEtfCatalogEnvelope } from "../../lib/etf/live-catalog";
@@ -33,7 +32,7 @@ export default async function DashboardPage() {
   const review = storedReview ?? (isDevelopment
     ? { ...demoReview, date: completedReviewDate }
     : createUnavailableReview(completedReviewDate));
-  const brief = selectDashboardBrief(storedBrief, latestBrief)
+  const brief = (storedBrief ?? latestBrief)
     ?? (process.env.NODE_ENV === "development" ? { ...demoBrief, date } : null);
   const history = storedHistory.length > 0 ? storedHistory : isDevelopment ? demoHistory : [];
   const etfs = queryEtfs(persistedEtfCatalog.items, {

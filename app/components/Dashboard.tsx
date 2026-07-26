@@ -14,11 +14,13 @@ import { historyRowToOverview } from "../../lib/history/overview";
 import type { HighDetail, HighDetailType } from "../../lib/history/high-details";
 import { formatNewHighProgress, type NewHighProgress } from "../../lib/history/new-high-progress";
 import type { HistoryRow } from "../../lib/history/query";
+import type { TrendMetricKey } from "../../lib/history/trends";
 import { shouldPoll } from "../../lib/live/polling";
 import { formatBeijingDateTime } from "../../lib/live/market-clock";
 import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
-import { HistoryWorkspace } from "./history/HistoryWorkspace";
+import { HistoryWorkspace, type HistoryWorkspaceHandle } from "./history/HistoryWorkspace";
 import { HighDetailDrawer } from "./history/HighDetailDrawer";
+import { MetricTrendDrawer } from "./history/MetricTrendDrawer";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
@@ -27,6 +29,8 @@ import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 import { DailyJobHealthPanel } from "./data/DailyJobHealth";
 import { SidebarDataProgressCard } from "./data/SidebarDataProgressCard";
 import type { DailyJobHealth } from "../../lib/data/repository";
+
+type HistoryHandle = HistoryWorkspaceHandle;
 
 const nav = [
   { id: "overview", label: "今日总览", icon: CircleGauge },
@@ -81,10 +85,12 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     type: HighDetailType;
     items: HighDetail[];
   } | null>(null);
+  const [trendMetric, setTrendMetric] = useState<TrendMetricKey | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState(
     () => history.find((row) => row.date === review.date)?.date ?? history[0]?.date ?? review.date,
   );
+  const historyWorkspaceRef = useRef<HistoryHandle>(null);
   const liveRequestInFlight = useRef(false);
   const closeBriefDrawer = useCallback(() => setBriefSectionIndex(null), []);
   const effectiveStatus: DailyReview["status"] = refreshError
@@ -150,6 +156,10 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     ? `20日新高 / 120日新高 / 历史新高暂缺 · ${formatNewHighProgress(newHighProgress)}`
     : `20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`;
   const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
+  const selectTrendDate = useCallback((date: string) => {
+    setSelectedHistoryDate(date);
+    historyWorkspaceRef.current?.selectDate(date);
+  }, []);
 
   const openHighDrawer = useCallback(async (type: HighDetailType) => {
     const types: HighDetailType[] = ["20d", "120d", "all-time"];
@@ -261,22 +271,22 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
             </div>
 
             <div className="metric-grid">
-              <Metric label="上涨家数" value={overviewRising === null ? "暂缺" : String(overviewRising)} note={overviewFalling === null ? "涨跌家数数据暂缺" : `下跌 ${overviewFalling}`} />
-              <Metric label="涨停数量" value={overviewLimitUp === null ? "暂缺" : String(overviewLimitUp)} note={overviewLimitDown === null ? "跌停数据暂缺" : `跌停 ${overviewLimitDown}`} />
-              <Metric label="连板家数" value={overviewConsecutive === null ? "暂缺" : String(overviewConsecutive)} note={overviewLadderNote} />
+              <Metric label="上涨家数" value={overviewRising === null ? "暂缺" : String(overviewRising)} note={overviewFalling === null ? "涨跌家数数据暂缺" : `下跌 ${overviewFalling}`} onClick={() => setTrendMetric("breadth")} />
+              <Metric label="涨停数量" value={overviewLimitUp === null ? "暂缺" : String(overviewLimitUp)} note={overviewLimitDown === null ? "跌停数据暂缺" : `跌停 ${overviewLimitDown}`} onClick={() => setTrendMetric("limits")} />
+              <Metric label="连板家数" value={overviewConsecutive === null ? "暂缺" : String(overviewConsecutive)} note={overviewLadderNote} onClick={() => setTrendMetric("consecutive")} />
               <Metric
                 label="历史新高"
                 value={overviewAllTimeHigh === null ? "暂缺" : String(overviewAllTimeHigh)}
                 note={overviewNewHighNote}
-                onClick={() => void openHighDrawer("all-time")}
+                onClick={() => setTrendMetric("highs")}
               />
-              <Metric label="连板收盘溢价" value={pct(overviewClosePremium)} note={`开盘 ${pct(overviewOpenPremium)}`} accent />
-              <Metric label="两融余额" value={overviewMarginBalanceValue} note="沪深京融资余额" />
+              <Metric label="连板收盘溢价" value={pct(overviewClosePremium)} note={`开盘 ${pct(overviewOpenPremium)}`} accent onClick={() => setTrendMetric("premium")} />
+              <Metric label="两融余额" value={overviewMarginBalanceValue} note="沪深京融资余额" onClick={() => setTrendMetric("margin")} />
             </div>
 
             <div id="history" className="integrated-history scroll-mt-24">
               <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="选择任一交易日，上方概览同步切换；表格可上下与横向滚动比较。" />
-              <HistoryWorkspace initialRows={history} initialNewHighProgress={newHighProgress} canManageHistory={canManageBrief} onSelectedRowChange={selectHistoryRow} />
+              <HistoryWorkspace ref={historyWorkspaceRef} initialRows={history} initialNewHighProgress={newHighProgress} canManageHistory={canManageBrief} onSelectedRowChange={selectHistoryRow} />
             </div>
           </section>
 
@@ -336,14 +346,27 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           onClose={() => setHighDrawer(null)}
         />
       )}
+      {trendMetric && (
+        <MetricTrendDrawer
+          metric={trendMetric}
+          rows={history}
+          currentDate={overviewDate}
+          onSelectDate={selectTrendDate}
+          onClose={() => setTrendMetric(null)}
+          onOpenHighDetails={() => {
+            setTrendMetric(null);
+            void openHighDrawer("all-time");
+          }}
+        />
+      )}
     </div>
   );
 }
 
 function Metric({ label, value, note, accent = false, onClick }: { label: string; value: string; note: string; accent?: boolean; onClick?: () => void }) {
-  const content = <><span className="text-xs text-white/35">{label}</span><div className="mt-5"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong></div><p className="mt-3 text-[11px] text-white/25">{note}</p></>;
+  const content = <><span className="flex items-center justify-between gap-3 text-xs text-white/35">{label}{onClick && <BarChart3 size={14} className="metric-trend-icon" aria-hidden="true" />}</span><div className="mt-5"><strong className="text-2xl font-medium tracking-[-0.04em]">{value}</strong></div><p className="mt-3 text-[11px] text-white/25">{note}</p></>;
   return onClick
-    ? <button type="button" className={`metric-card text-left transition hover:border-[#e8702a]/30 ${accent ? "metric-card-accent" : ""}`} onClick={onClick}>{content}</button>
+    ? <button type="button" className={`metric-card metric-card-button text-left transition hover:border-[#e8702a]/30 ${accent ? "metric-card-accent" : ""}`} onClick={onClick} aria-label={`查看${label}历史趋势`}>{content}</button>
     : <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}>{content}</div>;
 }
 function Panel({ title, eyebrow, id, children }: { title: string; eyebrow: string; id?: string; children: React.ReactNode }) { return <div id={id} className="panel scroll-mt-24 p-5 sm:p-6"><div className="flex items-center justify-between"><div><p className="text-[9px] font-semibold tracking-[0.2em] text-[#e8702a]">{eyebrow}</p><h3 className="mt-2 text-lg font-medium">{title}</h3></div><Table2 size={17} className="text-white/15"/></div>{children}</div> }
