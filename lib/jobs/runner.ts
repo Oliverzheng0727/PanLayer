@@ -96,8 +96,18 @@ export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_AP
   throw new Error("DASHSCOPE_API_KEY is not configured and OPENAI_API_KEY fallback is unavailable");
 }
 
-export function shouldSkipMorningBrief(existingStatus: string | null | undefined, force: boolean): boolean {
-  return existingStatus === "complete" && !force;
+export function shouldSkipMorningBrief(
+  existingStatus: string | null | undefined,
+  force: boolean,
+  existingSchemaVersion?: MorningBrief["schemaVersion"],
+  existingSectionCount?: number,
+): boolean {
+  if (existingStatus !== "complete" || force) return false;
+  // Keep the historical two-argument behavior for callers that do not have
+  // the payload available, while the scheduler explicitly opts into the
+  // V3 completeness check below.
+  if (existingSchemaVersion === undefined) return true;
+  return existingSchemaVersion === 3 && existingSectionCount === BRIEF_SECTION_DEFINITIONS_V3.length;
 }
 
 function createQwenBriefGenerator(input: {
@@ -884,8 +894,22 @@ export async function runPanLayerJob(
       finalMessage = `收盘复盘 ${review.status}；盘中快照 ${review.breadthMeta?.captured ?? review.breadth.length}/6`;
     } else {
       const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
-      const existing = await db.prepare("SELECT status FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string }>();
-      if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force))) {
+      const existing = await db.prepare("SELECT status, payload FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string; payload: string | null }>();
+      let existingSchemaVersion: MorningBrief["schemaVersion"] | undefined;
+      let existingSectionCount: number | undefined;
+      if (existing?.payload) {
+        try {
+          const persisted = JSON.parse(existing.payload) as Partial<MorningBrief>;
+          if (persisted.schemaVersion === 2 || persisted.schemaVersion === 3) {
+            existingSchemaVersion = persisted.schemaVersion;
+            existingSectionCount = Array.isArray(persisted.sections) ? persisted.sections.length : 0;
+          }
+        } catch {
+          // A malformed payload must be regenerated instead of being treated
+          // as a completed brief.
+        }
+      }
+      if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force), existingSchemaVersion, existingSectionCount)) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         await finishCheckpoint("complete", "already complete; skipped");
         return { ok: true, message: `${label} already complete; skipped` };

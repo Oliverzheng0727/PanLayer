@@ -17,6 +17,7 @@ export function DailyJobHealthPanel({
   health: DailyJobHealth;
   newHighProgress: NewHighProgress;
 }) {
+  const marketSession = health.marketSession ?? true;
   const breadthJobs = Object.entries(health.jobs).filter(([key]) => key.startsWith("breadth-"));
   const breadthComplete = breadthJobs.filter(([, job]) => job.status === "complete").length;
   const close = health.jobs["close-review"];
@@ -30,13 +31,17 @@ export function DailyJobHealthPanel({
   const items = [
     {
       label: "盘中快照",
-      value: `${breadthComplete}/6`,
-      detail: breadthComplete === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑",
+      value: marketSession ? `${breadthComplete}/6` : "非交易日",
+      detail: marketSession
+        ? breadthComplete === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑"
+        : "中国市场休市，今日无盘中节点",
     },
     {
       label: "收盘复盘",
-      value: close ? statusLabel[close.status] : "等待",
-      detail: closeStages.length > 0
+      value: marketSession ? close ? statusLabel[close.status] : "等待" : "不适用",
+      detail: !marketSession
+        ? "中国市场休市，等待下一个交易日"
+        : closeStages.length > 0
         ? `阶段 ${closeStagesComplete}/${closeStages.length} · ${close?.message || "自动补跑中"}`
         : close?.message || "等待 16:10",
     },

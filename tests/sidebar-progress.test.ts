@@ -83,4 +83,21 @@ describe("sidebar progress model", () => {
     const result = buildSidebarProgress(health, progress, "complete");
     expect(result.tasks.find((item) => item.key === "breadth")?.status).toBe("pending");
   });
+
+  it("marks market-session tasks as closed on weekends instead of showing zero snapshots", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-25",
+      generatedAt: "2026-07-25T02:00:00Z",
+      marketSession: false,
+      jobs: {
+        "morning-brief": job("pending", "2026-07-25T07:15:00+08:00"),
+      },
+    };
+
+    const result = buildSidebarProgress(health, progress, "partial");
+    expect(result.marketSession).toBe(false);
+    expect(result.tasks.find((item) => item.key === "breadth")).toMatchObject({ status: "closed", value: "非交易日" });
+    expect(result.tasks.find((item) => item.key === "close-review")).toMatchObject({ status: "closed", value: "不适用" });
+    expect(result.tasks.find((item) => item.key === "etf")).toMatchObject({ status: "closed", value: "不适用" });
+  });
 });

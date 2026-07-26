@@ -414,6 +414,9 @@ describe("close review aggregation", () => {
     expect(shouldSkipMorningBrief("complete", false)).toBe(true);
     expect(shouldSkipMorningBrief("complete", true)).toBe(false);
     expect(shouldSkipMorningBrief("failed", false)).toBe(false);
+    expect(shouldSkipMorningBrief("complete", false, 2, 5)).toBe(false);
+    expect(shouldSkipMorningBrief("complete", false, 3, 5)).toBe(false);
+    expect(shouldSkipMorningBrief("complete", false, 3, 7)).toBe(true);
   });
 
   it("prefers Qwen and keeps OpenAI as an optional fallback", () => {

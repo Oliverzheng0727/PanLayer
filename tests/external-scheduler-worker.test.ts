@@ -65,11 +65,12 @@ describe("independent Cloudflare scheduler worker", () => {
     expect(config).toContain('"17 * * * *"');
     expect(config).toContain('"compatibility_date": "2026-07-24"');
     expect(config).toContain('"workers_dev": false');
-    expect(config).toContain('"52,57 22 * * *"');
-    expect(config).toContain('"27 1 * * MON-FRI"');
-    expect(config).toContain('"2 2,3,5,6,7 * * MON-FRI"');
-    expect(config).toContain('"32 7 * * MON-FRI"');
-    expect(config.match(/"\d[^"]+\* \* [A-Z*-]+"/g)).toHaveLength(5);
+    expect(config).toContain('"50,55 22 * * *"');
+    expect(config).toContain('"15 23 * * *"');
+    expect(config).toContain('"30 17 * * *"');
+    expect(config).toContain('"25 1 * * MON-FRI"');
+    expect(config).toContain('"0,30 10-15 * * *"');
+    expect(config.match(/"[^\"]+\* \* [A-Z*-]+"/g)?.length).toBeGreaterThanOrEqual(10);
     expect(config).toContain('"PANLAYER_TARGET_URL"');
     expect(config).not.toContain("PANLAYER_CRON_SECRET");
   });

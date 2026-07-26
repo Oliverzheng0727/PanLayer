@@ -7,7 +7,8 @@ export type SidebarProgressStatus =
   | "running"
   | "partial"
   | "complete"
-  | "failed";
+  | "failed"
+  | "closed";
 
 export interface SidebarProgressTask {
   key: "breadth" | "close-review" | "new-high" | "morning-brief" | "etf";
@@ -28,6 +29,7 @@ export interface SidebarProgressModel {
   newHighCompleted: number;
   newHighTarget: number;
   newHighCoveragePct: number;
+  marketSession: boolean;
   tasks: SidebarProgressTask[];
 }
 
@@ -38,6 +40,7 @@ const STATUS_VALUE: Record<SidebarProgressStatus, string> = {
   partial: "部分",
   complete: "完成",
   failed: "失败",
+  closed: "休市",
 };
 
 function normalizeStatus(status: string | undefined): SidebarProgressStatus {
@@ -62,7 +65,9 @@ function latestFinishedAt(
 function aggregateBreadthStatus(
   jobs: Array<[string, DailyJobHealth["jobs"][string]]>,
   now: number,
+  marketSession: boolean,
 ): SidebarProgressStatus {
+  if (!marketSession) return "closed";
   const due = jobs.filter(([, item]) => new Date(item.expectedAt).getTime() <= now);
   if (due.length === 0) return "pending";
   if (due.some(([, item]) => item.status === "failed")) return "failed";
@@ -77,6 +82,7 @@ export function buildSidebarProgress(
   reviewStatus: DailyReview["status"],
 ): SidebarProgressModel {
   const now = new Date(health.generatedAt).getTime();
+  const marketSession = health.marketSession ?? true;
   const dueJobs = Object.entries(health.jobs).filter(([key, item]) =>
     !CONTINUOUS_KEYS.has(key) && new Date(item.expectedAt).getTime() <= now
   );
@@ -100,10 +106,10 @@ export function buildSidebarProgress(
         : dueJobs.length > 0 && completedDue === dueJobs.length
           ? "complete"
           : "pending";
-  const breadthStatus = aggregateBreadthStatus(breadthJobs, now);
-  const closeStatus = normalizeStatus(close?.status);
+  const breadthStatus = aggregateBreadthStatus(breadthJobs, now, marketSession);
+  const closeStatus = marketSession ? normalizeStatus(close?.status) : "closed";
   const briefStatus = normalizeStatus(brief?.status);
-  const etfStatus = normalizeStatus(etf?.status);
+  const etfStatus = marketSession ? normalizeStatus(etf?.status) : "closed";
   const newHighStatus: SidebarProgressStatus = newHighProgress.complete
     ? "complete"
     : newHighProgress.completed > 0
@@ -122,23 +128,28 @@ export function buildSidebarProgress(
     newHighCompleted: newHighProgress.completed,
     newHighTarget: newHighProgress.target,
     newHighCoveragePct: newHighProgress.coveragePct,
+    marketSession,
     tasks: [
       {
         key: "breadth",
         label: "盘中快照",
         status: breadthStatus,
-        value: `${breadthCompleted}/6`,
-        detail: breadthCompleted === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑",
+        value: marketSession ? `${breadthCompleted}/6` : "非交易日",
+        detail: marketSession
+          ? breadthCompleted === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑"
+          : "中国市场休市，今日无盘中节点",
         updatedAt: latestFinishedAt(breadthJobs),
       },
       {
         key: "close-review",
         label: "收盘复盘",
         status: closeStatus,
-        value: closeStages.length > 0
+        value: !marketSession
+          ? "不适用"
+          : closeStages.length > 0
           ? `${closeStagesComplete}/${closeStages.length}`
           : STATUS_VALUE[closeStatus],
-        detail: close?.message || "等待 16:10",
+        detail: !marketSession ? "中国市场休市，等待下一个交易日" : close?.message || "等待 16:10",
         updatedAt: close?.finishedAt ?? null,
       },
       {
@@ -161,8 +172,8 @@ export function buildSidebarProgress(
         key: "etf",
         label: "ETF 指标",
         status: etfStatus,
-        value: STATUS_VALUE[etfStatus],
-        detail: etf?.message || "等待 15:30",
+        value: marketSession ? STATUS_VALUE[etfStatus] : "不适用",
+        detail: marketSession ? etf?.message || "等待 15:30" : "中国市场休市，等待下一个交易日",
         updatedAt: etf?.finishedAt ?? null,
       },
     ],

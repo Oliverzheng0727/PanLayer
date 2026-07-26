@@ -1,7 +1,7 @@
 "use client";
 
 import { Maximize2, Minimize2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BriefSection, MorningBrief } from "../../../lib/ai/morning-brief";
 import { briefBlockId, BriefBlockRenderer } from "./BriefBlockRenderer";
 
@@ -17,10 +17,10 @@ export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { b
     fullscreenRef.current = value;
     setIsFullscreen(value);
   };
-
-  useEffect(() => {
-    if (!isOpen) setFullscreen(false);
-  }, [isOpen]);
+  const handleClose = useCallback(() => {
+    setFullscreen(false);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -31,7 +31,7 @@ export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { b
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (fullscreenRef.current) setFullscreen(false);
-        else onClose();
+        else handleClose();
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
@@ -43,18 +43,18 @@ export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { b
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => { document.body.style.overflow = oldOverflow; window.removeEventListener("keydown", handleKeyDown); previouslyFocused?.focus(); };
-  }, [isOpen, onClose]);
+  }, [isOpen, handleClose]);
 
   if (!section) return null;
 
   return (
-    <div className="brief-drawer-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="brief-drawer-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
       <aside ref={dialogRef} className={`brief-drawer ${isFullscreen ? "is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-labelledby="brief-drawer-title" aria-describedby="brief-drawer-summary">
         <header className="brief-drawer-header">
           <div><p>AI MORNING BRIEF · {String(sectionIndex + 1).padStart(2, "0")}</p><h3 id="brief-drawer-title">{section.title}</h3><span id="brief-drawer-summary">{brief.date} · {section.status === "complete" ? "内容已完成" : "部分内容暂缺"}</span></div>
           <div className="brief-drawer-actions">
             <button type="button" className="brief-drawer-expand" onClick={() => setFullscreen(!isFullscreen)} aria-label={isFullscreen ? "退出全屏早参详情" : "全屏查看早参详情"} aria-pressed={isFullscreen} title={isFullscreen ? "退出全屏" : "放大全屏"}>{isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</button>
-            <button ref={closeButtonRef} type="button" className="brief-drawer-close" onClick={onClose} aria-label="关闭早参详情"><X size={18} /></button>
+            <button ref={closeButtonRef} type="button" className="brief-drawer-close" onClick={handleClose} aria-label="关闭早参详情"><X size={18} /></button>
           </div>
         </header>
         <div className="brief-drawer-layout">

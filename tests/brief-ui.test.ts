@@ -45,7 +45,9 @@ describe("full morning brief reader", () => {
     expect(dashboard).toMatch(/const closeBriefDrawer = useCallback\(\(\) => setBriefSectionIndex\(null\), \[\]\)/);
     expect(dashboard).toContain("onClose={closeBriefDrawer}");
     expect(drawer).toContain("const isOpen = section !== null");
-    expect(drawer).toContain("}, [isOpen, onClose]);");
+    expect(drawer).toContain("}, [isOpen, handleClose]);");
+    expect(drawer).toContain("const handleClose = useCallback");
+    expect(drawer).not.toContain("if (!isOpen) setFullscreen(false)");
   });
 
   it("shows manual full regeneration only to administrators without exposing credentials", async () => {

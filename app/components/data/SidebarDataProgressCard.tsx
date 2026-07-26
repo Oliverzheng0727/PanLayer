@@ -41,6 +41,11 @@ const statusView: Record<SidebarProgressStatus, {
     dot: "bg-red-400 shadow-[0_0_8px_#f87171]",
     text: "text-red-300",
   },
+  closed: {
+    label: "休市",
+    dot: "bg-white/25",
+    text: "text-white/40",
+  },
 };
 
 export function SidebarDataProgressCard({
@@ -109,7 +114,7 @@ export function SidebarDataProgressCard({
           />
         </span>
         <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-white/35">
-          <span>盘中 {model.breadthCompleted}/{model.breadthExpected}</span>
+          <span>{model.marketSession ? `盘中 ${model.breadthCompleted}/${model.breadthExpected}` : "盘中 非交易日"}</span>
           <span>
             新高 {model.newHighCompleted}/{model.newHighTarget}
             {model.newHighTarget > 0 ? ` · ${model.newHighCoveragePct.toFixed(1)}%` : ""}

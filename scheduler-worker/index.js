@@ -15,7 +15,7 @@ export async function triggerPanLayerScheduler(env, fetcher = fetch) {
   return { status: response.status, body };
 }
 
-export default {
+const worker = {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
@@ -31,3 +31,5 @@ export default {
     ctx.waitUntil(triggerPanLayerScheduler(env));
   },
 };
+
+export default worker;

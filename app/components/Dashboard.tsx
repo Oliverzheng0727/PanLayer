@@ -76,9 +76,10 @@ function briefSourceCount(section: BriefSection) {
 
 function briefCoverageLabel(brief: MorningBrief) {
   const coverage = brief.coverage;
-  if (!coverage) return "旧版早参记录，未保存采集覆盖统计";
+  const versionLabel = brief.schemaVersion === 3 && brief.sections.length === 7 ? "V3 七模块" : "V2 兼容记录";
+  if (!coverage) return `${versionLabel} · 未保存采集覆盖统计`;
   const status = coverage.status === "complete" ? "完整" : coverage.status === "partial" ? "部分" : coverage.status === "failed" ? "失败" : "暂缺";
-  return `采集${status} · 来源 ${coverage.sourceSuccess}/${coverage.sourceTotal} · 失败 ${coverage.failedSources} · 已核验事实 ${coverage.verifiedFacts} · 交叉核验 ${coverage.crossCheckedFacts}`;
+  return `${versionLabel} · 采集${status} · 来源 ${coverage.sourceSuccess}/${coverage.sourceTotal} · 失败 ${coverage.failedSources} · 已核验事实 ${coverage.verifiedFacts} · 交叉核验 ${coverage.crossCheckedFacts}`;
 }
 
 export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; userName: string; canManageBrief: boolean }) {

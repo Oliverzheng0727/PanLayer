@@ -40,6 +40,8 @@ const healthSection = (status: string, message: string, updatedAt: string | null
 export interface DailyJobHealth {
   tradeDate: string;
   generatedAt: string;
+  /** Whether the current Beijing date is a regular A-share trading weekday. */
+  marketSession?: boolean;
   heartbeat?: SchedulerHeartbeatHealth | null;
   jobs: Record<string, {
     status: "pending" | "running" | "partial" | "complete" | "failed";
@@ -213,7 +215,13 @@ export function buildDailyJobHealth({
       overdue: false,
     };
   }
-  return { tradeDate, generatedAt: now.toISOString(), jobs, stages };
+  return {
+    tradeDate,
+    generatedAt: now.toISOString(),
+    marketSession: isChinaTradingWeekday(now),
+    jobs,
+    stages,
+  };
 }
 
 export function summarizeDataHealth({

@@ -202,6 +202,19 @@ async function persistBackfilledReview(db: D1Database, review: DailyReview) {
   ).bind(review.date, JSON.stringify(review), review.source, review.status, review.updatedAt).run();
 }
 
+function hasCompleteStructureEvidence(review: DailyReview | null): boolean {
+  const comparison = review?.comparison;
+  if (!review || review.structure?.status !== "complete" || !comparison) return false;
+  const requiredEvidence = ["brokenCount", "sealRate", "yesterdaySuccessRate", "continuation", "brokenBoard", "maxBoard", "cycleLeader", "recognition"];
+  return requiredEvidence.every((key) => {
+    const item = comparison.evidence?.[key];
+    return Boolean(item && item.status !== "failed");
+  })
+    && Array.isArray(review.ladder?.first)
+    && Array.isArray(review.sectors)
+    && Array.isArray(review.leaders);
+}
+
 function normalizeMarginBalance(value: number | null): number | null {
   if (value === null || !Number.isFinite(value) || value <= 0) return null;
   return value > 1_000_000 ? Number((value / 100_000_000).toFixed(2)) : value;
@@ -229,7 +242,10 @@ export async function runHistoryBackfillBatch({
     const pair = pending.slice(offset, offset + 2);
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
-      if (existing?.structure?.status === "complete") return { date, completed: true };
+      // Older records may have been marked structurally complete before the
+      // historical comparison payload existed. Re-run those dates once; a
+      // fully evidenced record remains idempotently skipped.
+      if (hasCompleteStructureEvidence(existing)) return { date, completed: true };
       try {
         const [pools, marginBalance, indices] = await Promise.all([
           fetchHistoricalBoardPools(date, fetcher),
