@@ -72,6 +72,63 @@ export interface MetricEvidence {
   message: string;
 }
 
+export interface StructuredSignalEvidence {
+  source: string;
+  requestId: string | null;
+  marketTime: string | null;
+  receivedAt: string;
+  rawCount: number;
+  validCount: number;
+  coveragePct: number | null;
+  status: "complete" | "partial" | "failed";
+  message: string;
+}
+
+export interface StructuredMarketSignals {
+  schemaVersion: 1;
+  provider: "扶摇 Fuyao";
+  referenceDate: string;
+  marketTime: string;
+  receivedAt: string;
+  status: "complete" | "partial" | "failed";
+  datasetTotal: number;
+  datasetSuccess: number;
+  requestIds: string[];
+  hotStocks: Array<{
+    symbol: string;
+    name: string;
+    rank: number;
+    rankChange: number;
+    heat: number | null;
+  }>;
+  skyrocket: Array<{
+    symbol: string;
+    name: string;
+    rank: number;
+    rankChange: number;
+    heat: number | null;
+    analysis: string | null;
+  }>;
+  dragonTiger: Array<{
+    symbol: string;
+    name: string;
+    netValue: number | null;
+    organizationNetValue: number | null;
+    hotMoneyNetValue: number | null;
+    concepts: string[];
+  }>;
+  anomalies: Array<{
+    symbol: string;
+    name: string;
+    title: string | null;
+    analysis: string | null;
+    keywords: string[];
+  }>;
+  sectors: SectorMetric[];
+  evidence: Record<string, StructuredSignalEvidence>;
+  errors: string[];
+}
+
 export interface DailyComparison {
   brokenCount: number | null;
   largeDownCount: number | null;
@@ -133,4 +190,5 @@ export interface DailyReview {
     backfilled: boolean;
     receivedAt: string;
   };
+  structuredSignals?: StructuredMarketSignals;
 }

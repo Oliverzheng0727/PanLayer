@@ -29,6 +29,7 @@ export async function GET(request: Request) {
     const catalog = await loadLiveEtfCatalogEnvelope();
     let items = catalog.items;
     let source = catalog.source;
+    let receivedAt = catalog.receivedAt;
     if (query.query) {
       const fuyaoOptions = await resolveFuyaoRuntimeOptions();
       if (fuyaoOptions) {
@@ -41,7 +42,38 @@ export async function GET(request: Request) {
         }
       }
     }
-    return Response.json({ ...queryEtfs(items, query), source, status: catalog.status, receivedAt: catalog.receivedAt, marketTime: catalog.marketTime, isStale: catalog.isStale });
+    let page = queryEtfs(items, query);
+    const fuyaoOptions = await resolveFuyaoRuntimeOptions();
+    if (fuyaoOptions && page.items.length > 0) {
+      const live = await createFuyaoMcpClient(fuyaoOptions)
+        .fetchEtfSnapshots(page.items.slice(0, 20).map((item) => item.symbol))
+        .catch(() => []);
+      if (live.length > 0) {
+        const liveBySymbol = new Map(live.map((item) => [item.symbol, item]));
+        page = {
+          ...page,
+          items: page.items.map((item) => {
+            const primary = liveBySymbol.get(item.symbol);
+            return primary
+              ? {
+                  ...item,
+                  name: primary.name,
+                  category: primary.category,
+                  tags: primary.tags,
+                  exchange: primary.exchange,
+                  price: primary.price,
+                  pctChange: primary.pctChange,
+                  amount: primary.amount,
+                  updatedAt: primary.updatedAt,
+                }
+              : item;
+          }),
+        };
+        source = `扶摇 Fuyao / ${source}`;
+        receivedAt = live.map((item) => item.updatedAt).sort().at(-1) ?? receivedAt;
+      }
+    }
+    return Response.json({ ...page, source, status: catalog.status, receivedAt, marketTime: catalog.marketTime, isStale: catalog.isStale });
   } catch (error) {
     if (process.env.NODE_ENV === "development") {
       return Response.json({ ...queryEtfs(demoEtfs, query), source: "本机演示数据", status: "partial", receivedAt: new Date().toISOString(), marketTime: null, isStale: true });

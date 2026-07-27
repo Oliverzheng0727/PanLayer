@@ -58,6 +58,27 @@ describe("domestic market pipeline", () => {
     expect(result.quotes).toHaveLength(100);
   });
 
+  it("keeps Fuyao prices while merging verified security metadata from the cross source", async () => {
+    const primary = [{ ...quote(0), name: "600000", sector: "未分类", isNoLimitDay: false, price: 10.2 }];
+    const cross = [{ ...quote(0), name: "浦发银行", sector: "银行", isNoLimitDay: true, price: 10.2 }];
+    const result = await runDomesticPipeline({
+      at: "15:00",
+      expectedSymbols: [primary[0].symbol],
+      now: new Date(),
+      retryDelayMs: 0,
+      mergeSecondaryMetadata: true,
+      primary: { name: "扶摇 Fuyao", getQuotes: async () => primary },
+      secondary: { name: "东方财富", getQuotes: async () => cross },
+    });
+
+    expect(result.quotes[0]).toMatchObject({
+      price: 10.2,
+      name: "浦发银行",
+      sector: "银行",
+      isNoLimitDay: true,
+    });
+  });
+
   it("falls back to Tencent with a partial status when primary fails", async () => {
     const quotes = Array.from({ length: 100 }, (_, index) => quote(index));
     const result = await runDomesticPipeline({

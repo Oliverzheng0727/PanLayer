@@ -218,6 +218,7 @@ export function buildDailyFieldHealth(
   const highStatus = (value: number | null | undefined): DailyFieldHealth["status"] =>
     value !== null && value !== undefined ? "complete" : progress.ready ? "missing" : "initializing";
   const evidence = review.comparison?.evidence ?? {};
+  const structuredEvidence = review.structuredSignals?.evidence ?? {};
   const evidenceField = (key: string, available: boolean, missingMessage: string) => {
     const item = evidence[key];
     return field(
@@ -228,12 +229,28 @@ export function buildDailyFieldHealth(
       item?.receivedAt ?? review.updatedAt,
     );
   };
+  const structuredField = (key: string, label: string) => {
+    const item = structuredEvidence[key];
+    return field(
+      item?.status === "complete" ? "complete" : item?.status === "partial" ? "partial" : "missing",
+      item?.message || `${label}暂缺`,
+      item?.source || "扶摇 Fuyao",
+      item?.marketTime ?? null,
+      item?.receivedAt ?? review.updatedAt,
+    );
+  };
   return {
     breadth: field(
       review.breadthMeta?.status === "complete" ? "complete" : "partial",
       review.breadthMeta
         ? `已采集 ${review.breadthMeta.captured}/${review.breadthMeta.expected}`
         : `已采集 ${review.breadth.length}/6`,
+    ),
+    fuyaoQuotes: field(
+      review.source.includes("扶摇 Fuyao") ? "complete" : "partial",
+      review.source.includes("扶摇 Fuyao") ? "扶摇全 A 行情为主源，原有行情源交叉验证" : "扶摇行情未成为本次主源，已使用降级行情",
+      review.source,
+      `${review.date}T15:00:00+08:00`,
     ),
     high20: field(highStatus(review.metrics.high20), review.metrics.high20 === null ? `${progress.completed}/${progress.target}` : "已核验"),
     high120: field(highStatus(review.metrics.high120), review.metrics.high120 === null ? `${progress.completed}/${progress.target}` : "已核验"),
@@ -249,6 +266,13 @@ export function buildDailyFieldHealth(
       review.structure?.receivedAt ?? review.updatedAt,
     ),
     closePremium: field(review.premium.closePct === null ? "missing" : "complete", review.premium.closePct === null ? "连板溢价样本暂缺" : `样本 ${review.premium.sampleSize}`),
+    fuyaoLimitUp: structuredField("limitUpPool", "扶摇涨停池"),
+    fuyaoLadder: structuredField("ladder", "扶摇连板梯队"),
+    fuyaoHotStocks: structuredField("hotStocks", "扶摇热股榜"),
+    fuyaoSkyrocket: structuredField("skyrocket", "扶摇飙升榜"),
+    fuyaoDragonTiger: structuredField("dragonTiger", "扶摇龙虎榜"),
+    fuyaoAnomalies: structuredField("anomalies", "扶摇异动原因"),
+    fuyaoSectors: structuredField("sectors", "扶摇板块指数"),
   };
 }
 
@@ -588,7 +612,7 @@ export async function readDataHealth() {
     ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
     daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
   };
-  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow, etfCatalogRow] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -603,6 +627,8 @@ export async function readDataHealth() {
       .first<{ value: string }>().catch(() => null),
     db.prepare("SELECT payload, updated_at FROM morning_briefs WHERE trade_date = ?")
       .bind(tradeDate).first<{ payload: string; updated_at: string }>().catch(() => null),
+    db.prepare("SELECT source, status, received_at FROM etf_catalog_cache WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1")
+      .bind(tradeDate).first<{ source: string; status: string; received_at: string }>().catch(() => null),
   ]);
   let latestReview: DailyReview | null = null;
   try {
@@ -633,6 +659,19 @@ export async function readDataHealth() {
   });
   daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
   daily.fields = buildDailyFieldHealth(latestReview, progress);
+  daily.fields.fuyaoEtf = {
+    status: etfCatalogRow?.source.includes("扶摇 Fuyao")
+      ? etfCatalogRow.status === "complete" ? "complete" : "partial"
+      : etfCatalogRow ? "partial" : "missing",
+    source: etfCatalogRow?.source ?? "扶摇 Fuyao",
+    marketTime: latestReview ? `${latestReview.date}T15:30:00+08:00` : null,
+    receivedAt: etfCatalogRow?.received_at ?? null,
+    message: etfCatalogRow
+      ? etfCatalogRow.source.includes("扶摇 Fuyao")
+        ? "扶摇 ETF 行情与日 K 为主源，原有来源补充衍生指标"
+        : "ETF 已使用原有来源降级，等待扶摇重试"
+      : "ETF 快照暂缺",
+  };
   return {
     ...summarizeDataHealth({
     jobs: jobResult.results ?? [],

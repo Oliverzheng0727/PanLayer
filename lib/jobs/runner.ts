@@ -18,6 +18,10 @@ import {
   readFuyaoMarketEvidence,
 } from "../ai/news-intake/market-evidence";
 import {
+  STRUCTURED_MARKET_SIGNALS_SCHEMA_STATEMENT,
+  persistStructuredMarketSignals,
+} from "../data/market-signals";
+import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
   QWEN_BRIEF_SECTION_MODEL,
@@ -27,9 +31,12 @@ import {
 } from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, calculateOpeningBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import { buildMarketComparison } from "../domain/comparison";
-import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
+import type { Breadth, DailyReview, Quote, SectorMetric, StructuredMarketSignals } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
-import { createFuyaoMcpClient, mergeVerifiedIndexSnapshots } from "../data/fuyao-mcp";
+import {
+  createFuyaoMcpClient,
+  mergeVerifiedIndexSnapshots,
+} from "../data/fuyao-mcp";
 import type { BoardPools, IndexSnapshot, MarketAggregate } from "../data/provider";
 import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
@@ -436,7 +443,7 @@ export async function persistGlobalPoints(db: D1Database, date: string, points: 
 
 export function buildDailyReview({
   date, quotes, limitPool, breadth, marginBalance, high20 = null, high120, allTimeHigh, source,
-  boardPools, marketAggregate, indices = [], receivedAt = new Date().toISOString(),
+  boardPools, marketAggregate, indices = [], structuredSignals, receivedAt = new Date().toISOString(),
 }: {
   date: string;
   quotes: Quote[];
@@ -450,6 +457,7 @@ export function buildDailyReview({
   boardPools?: BoardPools | null;
   marketAggregate?: MarketAggregate | null;
   indices?: IndexSnapshot[];
+  structuredSignals?: StructuredMarketSignals;
   receivedAt?: string;
 }): DailyReview {
   const pool = new Map(limitPool.map((item) => [item.symbol, item]));
@@ -470,11 +478,16 @@ export function buildDailyReview({
         }];
       })
     : limitPool;
+  const fuyaoPoolEvidence = structuredSignals?.evidence.limitUpPool;
   const structure = boardPools
     ? {
-        status: "complete" as const,
-        source: "东方财富四池",
-        message: `涨停池 ${boardPools.limitUp.length} 只，已校验连板高度、行业与首次封板时间`,
+        status: fuyaoPoolEvidence?.status === "failed" ? "partial" as const : "complete" as const,
+        source: fuyaoPoolEvidence
+          ? "扶摇 Fuyao 涨停池 / 东方财富炸板、跌停及昨日涨停池"
+          : "东方财富四池",
+        message: fuyaoPoolEvidence
+          ? `扶摇涨停池 ${boardPools.limitUp.length} 只；东方财富补充炸板、跌停和昨日涨停`
+          : `涨停池 ${boardPools.limitUp.length} 只，已校验连板高度、行业与首次封板时间`,
         receivedAt,
       }
     : limitPool.length > 0
@@ -502,7 +515,9 @@ export function buildDailyReview({
   const quoteLimitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
   const limitUps = structure.status === "failed" ? [] : poolLimitUps;
   const resolvedBreadth = breadth;
-  const rankedSectorMetrics = rankSectors(sectorMetrics).slice(0, 20);
+  const rankedSectorMetrics = structuredSignals?.sectors.length
+    ? rankSectors(structuredSignals.sectors).slice(0, 20)
+    : rankSectors(sectorMetrics).slice(0, 20);
   const comparison = boardPools ? buildMarketComparison({
     date,
     quotes,
@@ -550,6 +565,7 @@ export function buildDailyReview({
     leaders: rankLeaders(limitUps).slice(0, 20),
     structure,
     comparison,
+    structuredSignals,
   };
 }
 
@@ -571,6 +587,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
   FUYAO_MARKET_EVIDENCE_SCHEMA_STATEMENT,
+  STRUCTURED_MARKET_SIGNALS_SCHEMA_STATEMENT,
   ...NEWS_INTAKE_SCHEMA_STATEMENTS,
 ];
 
@@ -801,15 +818,21 @@ export async function runPanLayerJob(
         fetcher,
       })
       : null;
+    const quotePrimary = fuyao
+      ? {
+          name: "扶摇 Fuyao",
+          getQuotes: () => fuyao.fetchAShareQuotes([]),
+        }
+      : provider;
     const quoteCrossSource = fuyao
       ? {
-        name: "扶摇 Fuyao",
-        getQuotes: (symbols: string[]) => fuyao.fetchAShareQuotes(symbols),
-      }
+          name: provider.name,
+          getQuotes: () => provider.getQuotes("cross-check"),
+        }
       : {
-        name: "腾讯",
-        getQuotes: (symbols: string[]) => fetchTencentQuotes(symbols, fetcher),
-      };
+          name: "腾讯",
+          getQuotes: (symbols: string[]) => fetchTencentQuotes(symbols, fetcher),
+        };
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
     if (job.type === "tier1-rss-prefetch") {
@@ -908,7 +931,21 @@ export async function runPanLayerJob(
       }
       const progress = await runNewHighBootstrapBatch({
         store,
-        provider,
+        provider: fuyao
+          ? {
+              getAdjustedBars: async (symbol: string) => {
+                const [fuyaoBars, eastmoneyBars] = await Promise.all([
+                  fuyao.fetchAShareAdjustedBars(symbol, now).catch(() => []),
+                  provider.getAdjustedBars(symbol).catch(() => []),
+                ]);
+                if (fuyaoBars.length === 0) return eastmoneyBars;
+                if (eastmoneyBars.length === 0) return fuyaoBars;
+                const merged = new Map(eastmoneyBars.map((bar) => [bar.date, bar]));
+                fuyaoBars.forEach((bar) => merged.set(bar.date, bar));
+                return [...merged.values()].toSorted((left, right) => left.date.localeCompare(right.date));
+              },
+            }
+          : provider,
         targetDate,
         batchSize: 40,
         concurrency: 3,
@@ -951,11 +988,12 @@ export async function runPanLayerJob(
       const market = await runDomesticPipeline({
         at: job.time,
         expectedSymbols,
-        primary: provider,
+        primary: quotePrimary,
         secondary: quoteCrossSource,
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
         secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
+        mergeSecondaryMetadata: Boolean(fuyao),
       });
       await persistSourceAudits(db, date, job.time, market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -1022,11 +1060,12 @@ export async function runPanLayerJob(
       const market = await runDomesticPipeline({
         at: "16:10",
         expectedSymbols,
-        primary: provider,
+        primary: quotePrimary,
         secondary: quoteCrossSource,
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
         secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
+        mergeSecondaryMetadata: Boolean(fuyao),
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -1037,13 +1076,80 @@ export async function runPanLayerJob(
         market.message,
         { quoteCount: market.quotes.length, source: market.source },
       );
-      const [limitPool, marginBalance, boardPools, marketAggregate, existingIndices] = await Promise.all([
+      const [limitPool, marginBalance, boardPools, eastmoneyAggregate, existingIndices, fuyaoPool] = await Promise.all([
         withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
         provider.getMarginBalance(date).catch(() => null),
         withRetry(() => provider.getBoardPools(date), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
+        fuyao
+          ? withRetry(
+              () => fuyao.fetchLimitUpPoolSnapshot(date, now),
+              { retries: 2, delayMs: 250 },
+            ).catch(() => null)
+          : Promise.resolve(null),
       ]);
+      const [structuredSignals, fuyaoAggregate] = fuyao
+        ? await Promise.all([
+            fuyao.fetchStructuredMarketSignals(date, now, fuyaoPool ?? undefined).catch(() => undefined),
+            withRetry(
+              () => fuyao.fetchMarketAggregate([], "15:00", now),
+              { retries: 2, delayMs: 250 },
+            ).catch(() => null),
+          ])
+        : [undefined, null] as const;
+      const effectiveBoardPools: BoardPools | null = boardPools
+        ? {
+            ...boardPools,
+            limitUp: fuyaoPool?.items.length ? fuyaoPool.items : boardPools.limitUp,
+          }
+        : null;
+      if (structuredSignals && fuyaoPool?.items.length && boardPools?.limitUp.length) {
+        const primaryCodes = new Set(fuyaoPool.items.map((item) => item.code));
+        const crossCodes = new Set(boardPools.limitUp.map((item) => item.code));
+        const difference = [
+          ...[...primaryCodes].filter((code) => !crossCodes.has(code)),
+          ...[...crossCodes].filter((code) => !primaryCodes.has(code)),
+        ];
+        const union = new Set([...primaryCodes, ...crossCodes]).size;
+        if (difference.length >= 2 && difference.length / Math.max(1, union) >= .1) {
+          const evidence = structuredSignals.evidence.limitUpPool;
+          structuredSignals.evidence.limitUpPool = {
+            ...evidence,
+            status: "partial",
+            message: `${evidence?.message ?? "扶摇涨停池"}；与东方财富差异 ${difference.length}/${union}`,
+          };
+          structuredSignals.status = "partial";
+          structuredSignals.errors.push(`涨停池交叉差异：${difference.slice(0, 20).join("、")}`);
+        }
+      }
+      if (structuredSignals) {
+        await persistStructuredMarketSignals(db, structuredSignals);
+      }
+      let marketAggregate = fuyaoAggregate?.status === "complete"
+        ? fuyaoAggregate
+        : eastmoneyAggregate;
+      if (
+        fuyaoAggregate?.status === "complete"
+        && eastmoneyAggregate?.status === "complete"
+        && fuyaoAggregate.amount !== null
+        && eastmoneyAggregate.amount !== null
+      ) {
+        const differencePct = Math.abs(fuyaoAggregate.amount - eastmoneyAggregate.amount)
+          / Math.max(1, eastmoneyAggregate.amount) * 100;
+        marketAggregate = differencePct > 2
+          ? {
+              ...fuyaoAggregate,
+              status: "partial",
+              source: "扶摇 Fuyao / 东方财富",
+              message: `扶摇主值；与东方财富成交额差异 ${differencePct.toFixed(2)}%`,
+            }
+          : {
+              ...fuyaoAggregate,
+              source: "扶摇 Fuyao / 东方财富",
+              message: `扶摇主值；东方财富交叉差异 ${differencePct.toFixed(2)}%`,
+            };
+      }
       const indices = fuyao
         ? mergeVerifiedIndexSnapshots(
           await withRetry(() => fuyao.fetchIndexSnapshots(date, now), { retries: 1, delayMs: 250 }).catch(() => []),
@@ -1053,13 +1159,29 @@ export async function runPanLayerJob(
       await Promise.all([
         finishCloseStage(
           "board-pools",
-          boardPools ? "complete" : limitPool.length > 0 ? "partial" : "failed",
-          boardPools ? "四池数据完整" : limitPool.length > 0 ? "仅涨停池可用" : "涨跌停池不可用",
+          effectiveBoardPools ? structuredSignals?.evidence.limitUpPool?.status === "partial" ? "partial" : "complete" : limitPool.length > 0 ? "partial" : "failed",
+          effectiveBoardPools
+            ? fuyaoPool?.items.length
+              ? "扶摇涨停池主源；东方财富补充炸板、跌停和昨日涨停池"
+              : "东方财富四池降级可用"
+            : limitPool.length > 0 ? "仅涨停池可用" : "涨跌停池不可用",
           {
-            limitUp: boardPools?.limitUp.length ?? limitPool.length,
-            broken: boardPools?.broken.length ?? null,
-            limitDown: boardPools?.limitDown.length ?? null,
-            yesterdayLimitUp: boardPools?.yesterdayLimitUp.length ?? null,
+            limitUp: effectiveBoardPools?.limitUp.length ?? limitPool.length,
+            broken: effectiveBoardPools?.broken.length ?? null,
+            limitDown: effectiveBoardPools?.limitDown.length ?? null,
+            yesterdayLimitUp: effectiveBoardPools?.yesterdayLimitUp.length ?? null,
+          },
+        ),
+        finishCloseStage(
+          "signals",
+          structuredSignals?.status ?? (fuyao ? "failed" : "partial"),
+          structuredSignals
+            ? `扶摇结构化信号 ${structuredSignals.datasetSuccess}/${structuredSignals.datasetTotal}`
+            : fuyao ? "扶摇结构化信号采集失败" : "扶摇未配置",
+          {
+            datasetSuccess: structuredSignals?.datasetSuccess ?? 0,
+            datasetTotal: structuredSignals?.datasetTotal ?? 7,
+            requestIds: structuredSignals?.requestIds ?? [],
           },
         ),
         finishCloseStage(
@@ -1103,9 +1225,10 @@ export async function runPanLayerJob(
         high120: highSnapshot.high120,
         allTimeHigh: highSnapshot.allTimeHigh,
         source: market.source,
-        boardPools,
+        boardPools: effectiveBoardPools,
         marketAggregate,
         indices,
+        structuredSignals,
         receivedAt: new Date().toISOString(),
       });
       const previousRow = await db.prepare(

@@ -88,6 +88,7 @@ export function buildBackfilledReview(
   marginBalance: number | null,
   receivedAt: string,
   indices: IndexSnapshot[] = [],
+  poolSource = "东方财富历史四池",
 ): DailyReview {
   const validPools = withoutStBoardPools(pools);
   const limitUps = validPools.limitUp.map(poolItemToQuote);
@@ -95,7 +96,7 @@ export function buildBackfilledReview(
   return {
     date,
     status: "partial",
-    source: "历史回补 · 东方财富涨跌停池 / 新浪交易日历",
+    source: `历史回补 · ${poolSource} / 新浪交易日历`,
     updatedAt: receivedAt,
     breadth: [],
     metrics: {
@@ -113,7 +114,7 @@ export function buildBackfilledReview(
     leaders: rankLeaders(limitUps).slice(0, 20),
     structure: {
       status: "complete",
-      source: "东方财富历史四池",
+      source: poolSource,
       message: `历史涨停池 ${validPools.limitUp.length} 只，已修复连板高度、行业与首次封板时间`,
       receivedAt,
     },
@@ -124,7 +125,7 @@ export function buildBackfilledReview(
       marketAggregate: null,
       indices,
       sectors,
-      source: "东方财富历史涨跌停池",
+      source: poolSource,
       receivedAt,
     }),
     historyMeta: { backfilled: true, receivedAt },
@@ -137,7 +138,7 @@ export function mergeBackfilledStructure(
 ): DailyReview {
   const sources = [...new Set([
     ...existing.source.split(" / ").filter(Boolean),
-    "东方财富历史四池",
+    ...backfilled.source.split(" / ").filter(Boolean),
   ])].join(" / ");
   const existingComparison = existing.comparison;
   const backfilledComparison = backfilled.comparison;
@@ -279,13 +280,14 @@ export async function runHistoryBackfillBatch({
   const fuyao = fuyaoApiKey
     ? createFuyaoMcpClient({ apiKey: fuyaoApiKey, baseUrl: fuyaoBaseUrl, fetcher })
     : null;
+  const fuyaoRecentDates = new Set(progress.dates.slice(0, 30));
 
   for (let offset = 0; offset < pending.length; offset += 2) {
     const pair = pending.slice(offset, offset + 2);
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
       try {
-        const [pools, marginBalance, existingIndices] = await Promise.all([
+        const [eastmoneyPools, marginBalance, existingIndices, fuyaoPool] = await Promise.all([
           withRetry(
             () => fetchHistoricalBoardPools(date, fetcher),
             { retries: 2, delayMs: 180 },
@@ -298,7 +300,16 @@ export async function runHistoryBackfillBatch({
             () => provider.getIndexSnapshots(date),
             { retries: 1, delayMs: 180 },
           ).catch(() => []),
+          fuyao && fuyaoRecentDates.has(date)
+            ? withRetry(
+                () => fuyao.fetchLimitUpPoolSnapshot(date),
+                { retries: 1, delayMs: 180 },
+              ).catch(() => null)
+            : Promise.resolve(null),
         ]);
+        const pools: HistoricalBoardPools = fuyaoPool?.items.length
+          ? { ...eastmoneyPools, limitUp: fuyaoPool.items }
+          : eastmoneyPools;
         const indices = fuyao
           ? mergeVerifiedIndexSnapshots(
             await withRetry(
@@ -309,7 +320,17 @@ export async function runHistoryBackfillBatch({
           )
           : existingIndices;
         const receivedAt = new Date().toISOString();
-        const backfilled = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);
+        const poolSource = fuyaoPool?.items.length
+          ? "扶摇 Fuyao 历史涨停池 / 东方财富炸板、跌停及昨日涨停池"
+          : "东方财富历史四池";
+        const backfilled = buildBackfilledReview(
+          date,
+          pools,
+          normalizeMarginBalance(marginBalance),
+          receivedAt,
+          indices,
+          poolSource,
+        );
         const review = existing ? mergeBackfilledStructure(existing, backfilled) : backfilled;
         await persistBackfilledReview(db, review);
         return { date, completed: true };

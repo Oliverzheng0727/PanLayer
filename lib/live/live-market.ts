@@ -55,19 +55,24 @@ export function createLiveMarketLoader(fetcher: typeof fetch = fetch, fuyaoOptio
       const market = await runDomesticPipeline({
         at: time,
         expectedSymbols,
-        primary: provider,
+        primary: fuyao
+          ? { name: "扶摇 Fuyao", getQuotes: () => fuyao.fetchAShareQuotes([]) }
+          : provider,
         secondary: fuyao
-          ? { name: "扶摇 Fuyao", getQuotes: (symbols) => fuyao.fetchAShareQuotes(symbols) }
+          ? { name: provider.name, getQuotes: () => provider.getQuotes(time) }
           : { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
         retryDelayMs: 200,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
         secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
+        mergeSecondaryMetadata: Boolean(fuyao),
       });
       if (market.status === "failed" || market.quotes.length === 0) {
         throw new Error(market.message || "实时行情源返回空数据");
       }
-      const selectedAudit = market.source === "腾讯" ? market.audits[1] : market.audits[0];
+      const selectedAudit = market.source === "腾讯" || (fuyao && market.source === provider.name)
+        ? market.audits[1]
+        : market.audits[0];
       return {
         breadth: calculateBreadth(market.quotes),
         source: market.source,

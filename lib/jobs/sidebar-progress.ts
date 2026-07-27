@@ -11,7 +11,7 @@ export type SidebarProgressStatus =
   | "closed";
 
 export interface SidebarProgressTask {
-  key: "tier1-rss" | "tier2-firecrawl" | "breadth" | "close-review" | "new-high" | "morning-brief" | "etf";
+  key: "tier1-rss" | "tier2-firecrawl" | "fuyao" | "breadth" | "close-review" | "new-high" | "morning-brief" | "etf";
   label: string;
   status: SidebarProgressStatus;
   value: string;
@@ -142,7 +142,22 @@ export function buildSidebarProgress(
       ? "running"
       : newHighProgress.failed > 0
         ? "partial"
-        : "pending";
+      : "pending";
+  const fuyaoFields = Object.entries(health.fields ?? {})
+    .filter(([key]) => key.startsWith("fuyao"));
+  const fuyaoComplete = fuyaoFields.filter(([, item]) => item.status === "complete").length;
+  const fuyaoStatus: SidebarProgressStatus = fuyaoFields.length === 0
+    ? "pending"
+    : fuyaoComplete === fuyaoFields.length
+      ? "complete"
+      : fuyaoComplete > 0 || fuyaoFields.some(([, item]) => item.status === "partial")
+        ? "partial"
+        : "failed";
+  const fuyaoUpdatedAt = fuyaoFields
+    .map(([, item]) => item.receivedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null;
 
   return {
     completedDue,
@@ -171,6 +186,16 @@ export function buildSidebarProgress(
         value: STATUS_VALUE[normalizeStatus(health.jobs["tier2-news-prefetch"]?.status)],
         detail: health.jobs["tier2-news-prefetch"]?.message || "等待 06:55",
         updatedAt: health.jobs["tier2-news-prefetch"]?.finishedAt ?? null,
+      },
+      {
+        key: "fuyao",
+        label: "扶摇结构化行情",
+        status: fuyaoStatus,
+        value: fuyaoFields.length > 0 ? `${fuyaoComplete}/${fuyaoFields.length}` : STATUS_VALUE[fuyaoStatus],
+        detail: fuyaoFields.length > 0
+          ? fuyaoFields.filter(([, item]) => item.status !== "complete").map(([, item]) => item.message).slice(0, 2).join("；") || "行情、梯队、热点与龙虎榜已核验"
+          : "等待收盘结构化采集",
+        updatedAt: fuyaoUpdatedAt,
       },
       {
         key: "breadth",

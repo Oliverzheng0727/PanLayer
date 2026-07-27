@@ -29,6 +29,7 @@ export async function runDomesticPipeline({
   retryDelayMs = 1_000,
   minimumExpectedCount = 0,
   secondarySampleSize = Number.POSITIVE_INFINITY,
+  mergeSecondaryMetadata = false,
 }: {
   at: string;
   expectedSymbols: string[];
@@ -38,6 +39,7 @@ export async function runDomesticPipeline({
   retryDelayMs?: number;
   minimumExpectedCount?: number;
   secondarySampleSize?: number;
+  mergeSecondaryMetadata?: boolean;
 }): Promise<MarketPipelineResult> {
   let primaryQuotes: Quote[] = [];
   let secondaryQuotes: Quote[] = [];
@@ -72,8 +74,31 @@ export async function runDomesticPipeline({
     marketTime: `${now.toISOString().slice(0, 10)}T${at}:00+08:00`,
   }));
   if (primaryQuotes.length > 0) {
+    const secondaryBySymbol = mergeSecondaryMetadata
+      ? new Map(secondaryQuotes.map((quote) => [quote.symbol, quote]))
+      : null;
+    const resolvedPrimary = secondaryBySymbol
+      ? primaryQuotes.map((quote) => {
+          const metadata = secondaryBySymbol.get(quote.symbol);
+          return metadata
+            ? {
+                ...quote,
+                name: metadata.name,
+                exchange: metadata.exchange,
+                board: metadata.board,
+                isST: metadata.isST,
+                isNoLimitDay: metadata.isNoLimitDay,
+                limitUpPrice: metadata.limitUpPrice,
+                limitDownPrice: metadata.limitDownPrice,
+                sector: metadata.sector || quote.sector,
+                firstLimitTime: metadata.firstLimitTime,
+                limitStreak: metadata.limitStreak,
+              }
+            : quote;
+        })
+      : primaryQuotes;
     return {
-      quotes: primaryQuotes,
+      quotes: resolvedPrimary,
       source: quality.summary.status === "complete" ? `${primary.name} / ${secondary.name}` : primary.name,
       status: quality.summary.status === "failed" ? "partial" : quality.summary.status,
       message: quality.summary.message || secondaryError,

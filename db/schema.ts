@@ -207,6 +207,18 @@ export const briefMarketEvidence = sqliteTable("brief_market_evidence", {
   receivedAt: text("received_at").notNull(),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.provider] })]);
 
+export const structuredMarketSignals = sqliteTable("structured_market_signals", {
+  tradeDate: text("trade_date").notNull(),
+  dataset: text("dataset").notNull(),
+  provider: text("provider").notNull(),
+  payload: text("payload").notNull(),
+  status: text("status").notNull(),
+  marketTime: text("market_time"),
+  receivedAt: text("received_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.tradeDate, table.dataset, table.provider] }),
+]);
+
 export const briefSources = sqliteTable("brief_sources", {
   sourceId: text("source_id").primaryKey(),
   name: text("name").notNull(),

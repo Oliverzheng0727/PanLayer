@@ -82,6 +82,61 @@ describe("Fuyao MCP adapter", () => {
     expect(fetcher.mock.calls.some((call) => String(call[1]?.body).includes("secret"))).toBe(false);
   });
 
+  it("keeps ST only for the all-market aggregate and reports amount in 亿元", async () => {
+    const fetcher = createFetcher((tool) => {
+      if (tool === "get_meta_tickers_list") {
+        return mcpResult({
+          item: [
+            { thscode: "600000.SH", ticker: "600000", name: "浦发银行", exchange: "SH", asset_type: "a-share" },
+            { thscode: "600001.SH", ticker: "600001", name: "*ST测试", exchange: "SH", asset_type: "a-share" },
+          ],
+        });
+      }
+      if (tool === "get_a_share_prices_snapshot") {
+        return mcpResult({
+          item: [
+            { thscode: "600000.SH", last_price: 10, prev_price: 9, turnover: 100_000_000 },
+            { thscode: "600001.SH", last_price: 5, prev_price: 5.1, turnover: 50_000_000 },
+          ],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareQuotes([])).resolves.toHaveLength(1);
+    await expect(client.fetchMarketAggregate([], "15:00", new Date("2026-07-27T07:00:00Z")))
+      .resolves.toMatchObject({
+        amount: 1.5,
+        rawCount: 2,
+        validCount: 2,
+        coveragePct: 100,
+        status: "complete",
+        source: "扶摇 Fuyao",
+      });
+  });
+
+  it("maps forward-adjusted A-share bars for the new-high initializer", async () => {
+    const fetcher = createFetcher((tool, args) => {
+      if (tool === "get_a_share_prices_historical") {
+        expect(args.adjust).toBe("forward");
+        return mcpResult({
+          item: [
+            { date_ms: Date.parse("2026-07-23T00:00:00+08:00"), close_price: 9, turnover: 90 },
+            { date_ms: Date.parse("2026-07-24T00:00:00+08:00"), close_price: 10, turnover: 100 },
+          ],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareAdjustedBars("600000.SH")).resolves.toEqual([
+      { date: "2026-07-23", close: 9, amount: 90, pctChange: undefined },
+      { date: "2026-07-24", close: 10, amount: 100, pctChange: 11.111111 },
+    ]);
+  });
+
   it("uses the ETF master catalog and only exposes matches with a live snapshot", async () => {
     const fetcher = createFetcher((tool) => {
       if (tool === "get_meta_tickers_search") {
@@ -225,6 +280,66 @@ describe("Fuyao MCP adapter", () => {
     expect(evidence.hotStocks[0]).toMatchObject({ symbol: "600001.SH", rank: 1 });
     expect(evidence.dragonTiger[0]).toMatchObject({ netValue: 10_000, concepts: ["算力"] });
     expect(evidence.requestIds).toEqual(["request-1"]);
+  });
+
+  it("collects close signals while keeping rankings as evidence only", async () => {
+    const date = "2026-07-24";
+    const fetcher = createFetcher((tool) => {
+      if (tool === "get_a_share_special_data_limit_up_pool") {
+        return mcpResult({
+          pagination: { total: 1, pages: 1 },
+          item: [{
+            thscode: "600001.SH",
+            name: "测试股份",
+            continue_day_cnt: 3,
+            price_change_ratio_pct: 10,
+            limit_up_time: "09:35",
+            limit_up_reason: "机器人",
+            is_st: false,
+          }],
+        });
+      }
+      if (tool === "get_a_share_special_data_limit_up_ladder") {
+        return mcpResult({ item: [{ date, boards: { three_board: [{ thscode: "600001.SH", name: "测试股份", board_num: 3 }] } }] });
+      }
+      if (tool === "get_a_share_special_data_hot_stock_list") {
+        return mcpResult({ item: [{ thscode: "600001.SH", name: "测试股份", rank: 1, rank_change: 2, heat: "100" }] });
+      }
+      if (tool === "get_a_share_special_data_skyrocket_list") {
+        return mcpResult({ item: [{ thscode: "600001.SH", name: "测试股份", rank: 2, rank_change: 5, heat: "80", analyse: "异动标签" }] });
+      }
+      if (tool === "get_a_share_special_data_dragon_tiger_list") {
+        return mcpResult({ stock_items: [{ thscode: "600001.SH", name: "测试股份", net_value: 20, concept_list: [{ name: "机器人" }] }] });
+      }
+      if (tool === "get_a_share_special_data_anomal_17ac564c9ba3") {
+        return mcpResult({ item: [{ thscode: "600001.SH", stock_name: "测试股份", tag_name: "涨停", analysis_content: "公开异动原因", keyword_list: ["机器人"] }] });
+      }
+      if (tool === "get_a_share_index_catalog_e220748f341b") {
+        return mcpResult({ item: [{ thscode: "884218.TI", name: "机器人" }] });
+      }
+      if (tool === "get_a_share_index_prices_snapshot") {
+        return mcpResult({ item: [{ thscode: "884218.TI", price_change_ratio_pct: 2.5, turnover: 100 }] });
+      }
+      if (tool === "get_a_share_index_constit_d27621e4aae9") {
+        return mcpResult({ item: [{ thscode: "600001.SH", ticker: "600001", name: "测试股份" }] });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const signals = await client.fetchStructuredMarketSignals(date, new Date("2026-07-24T08:00:00Z"));
+
+    expect(signals).toMatchObject({
+      provider: "扶摇 Fuyao",
+      referenceDate: date,
+      status: "complete",
+      datasetSuccess: 7,
+      datasetTotal: 7,
+    });
+    expect(signals.hotStocks[0]).toMatchObject({ symbol: "600001.SH", rank: 1 });
+    expect(signals.skyrocket[0]).toMatchObject({ analysis: "异动标签" });
+    expect(signals.dragonTiger[0]).toMatchObject({ netValue: 20 });
+    expect(signals.anomalies[0]).toMatchObject({ title: "涨停", keywords: ["机器人"] });
+    expect(signals.sectors[0]).toMatchObject({ name: "机器人", limitUpCount: 1, averagePct: 2.5, maxStreak: 3 });
   });
 
   it("marks disagreeing index sources as partial and keeps both source names", () => {

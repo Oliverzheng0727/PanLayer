@@ -3,6 +3,7 @@ import type { DailyComparison, DailyReview } from "../domain/types";
 export type CloseReviewStage =
   | "quotes"
   | "board-pools"
+  | "signals"
   | "aggregate"
   | "indices"
   | "new-highs"
@@ -54,7 +55,9 @@ export function mergeCloseReviewWithExisting(
 
   return {
     ...current,
-    status: previous.status === "complete" && current.status !== "failed" ? "complete" : current.status,
+    status: current.structuredSignals
+      ? current.status
+      : previous.status === "complete" && current.status !== "failed" ? "complete" : current.status,
     source: [...new Set([...previous.source.split(" / "), ...current.source.split(" / ")].filter(Boolean))].join(" / "),
     breadth,
     breadthMeta: current.breadthMeta,

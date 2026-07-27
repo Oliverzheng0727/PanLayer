@@ -1,6 +1,9 @@
 import { authorizeApi } from "../../../../auth-guard";
 import { getChatGPTUser } from "../../../../chatgpt-auth";
 import { demoEtfs } from "../../../../../lib/data/demo";
+import { createFuyaoMcpClient } from "../../../../../lib/data/fuyao-mcp";
+import { resolveFuyaoRuntimeOptions } from "../../../../../lib/data/fuyao-runtime";
+import type { EtfSnapshot } from "../../../../../lib/data/provider";
 import { ETF_CATEGORIES } from "../../../../../lib/etf/catalog";
 import { loadLiveEtfCatalog, loadLiveEtfCatalogEnvelope } from "../../../../../lib/etf/live-catalog";
 import {
@@ -45,7 +48,7 @@ export async function GET() {
   const context = await requestContext();
   if (context instanceof Response) return context;
   const saved = await listWatchlistItems(context.db, context.userEmail);
-  let live = [];
+  let live: EtfSnapshot[] = [];
   let status: "complete" | "partial" = "complete";
   let receivedAt: string | null = null;
   let marketTime: string | null = null;
@@ -59,7 +62,28 @@ export async function GET() {
   } catch {
     status = "partial";
   }
-  return Response.json({ items: mergeWatchlistEtfs(live, saved), status, source: "东方财富 · 用户自选", receivedAt, marketTime, isStale });
+  let items = mergeWatchlistEtfs(live, saved);
+  const fuyaoOptions = await resolveFuyaoRuntimeOptions();
+  if (fuyaoOptions && saved.length > 0) {
+    const primary = await createFuyaoMcpClient(fuyaoOptions)
+      .fetchEtfSnapshots(saved.map((item) => item.symbol))
+      .catch(() => []);
+    const primaryBySymbol = new Map(primary.map((item) => [item.symbol, item]));
+    items = items.map((item) => {
+      const quote = primaryBySymbol.get(item.symbol);
+      return quote
+        ? { ...item, ...quote, category: item.category }
+        : item;
+    });
+  }
+  return Response.json({
+    items,
+    status,
+    source: fuyaoOptions ? "扶摇 Fuyao / 东方财富 · 用户自选" : "东方财富 · 用户自选",
+    receivedAt,
+    marketTime,
+    isStale,
+  });
 }
 
 export async function POST(request: Request) {
@@ -68,8 +92,12 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({})) as { symbol?: string };
   const symbol = normalizeEtfSymbol(body.symbol ?? "");
   if (!symbol) return Response.json({ error: "请输入有效的六位 ETF 代码" }, { status: 400 });
-  const catalog = await liveCatalog().catch(() => []);
-  const item = catalog.find((candidate) => candidate.symbol === symbol);
+  const fuyaoOptions = await resolveFuyaoRuntimeOptions();
+  const primary = fuyaoOptions
+    ? await createFuyaoMcpClient(fuyaoOptions).fetchEtfSnapshot(symbol).catch(() => null)
+    : null;
+  const catalog = primary ? [] : await liveCatalog().catch(() => []);
+  const item = primary ?? catalog.find((candidate) => candidate.symbol === symbol);
   if (!item) return Response.json({ error: "未查询到该 ETF，请确认代码后重试" }, { status: 404 });
   const now = new Date().toISOString();
   await saveWatchlistItem(context.db, {
@@ -81,7 +109,7 @@ export async function POST(request: Request) {
     createdAt: now,
     updatedAt: now,
   });
-  return Response.json({ item, source: "东方财富" }, { status: 201 });
+  return Response.json({ item, source: primary ? "扶摇 Fuyao" : "东方财富" }, { status: 201 });
 }
 
 export async function PATCH(request: Request) {

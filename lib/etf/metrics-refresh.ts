@@ -1,4 +1,5 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { createFuyaoMcpClient } from "../data/fuyao-mcp";
 import type { EtfSnapshot } from "../data/provider";
 import { loadEtfBarsWithFallback, type MarketBar } from "./bars";
 import { loadLatestEtfCatalogSnapshot, saveEtfCatalogSnapshot } from "./catalog-repository";
@@ -36,6 +37,7 @@ export async function enrichEtfMetricsBatch({
   attempted: number;
   completed: number;
   failed: number;
+  errors: Array<{ symbol: string; message: string }>;
   nextCursor: number;
   remaining: number;
 }> {
@@ -105,10 +107,40 @@ export async function runEtfMetricsRefreshBatch({
     db.prepare("SELECT value FROM bootstrap_state WHERE key = ?").bind(stateKey).first<{ value: string }>(),
   ]);
   const live = await createEastmoneyProvider(fetcher).getEtfs(date).catch(() => []);
-  const items = live.length > 0
+  let items = live.length > 0
     ? mergeEtfDerivedMetrics(live, persisted?.items ?? [])
     : persisted?.items ?? [];
   if (items.length === 0) throw new Error("ETF catalog unavailable for metrics refresh");
+  if (fuyaoApiKey) {
+    const selectedSymbols = items
+      .toSorted((left, right) => right.amount - left.amount)
+      .slice(0, Math.max(12, batchSize))
+      .map((item) => item.symbol);
+    const primary = await createFuyaoMcpClient({
+      apiKey: fuyaoApiKey,
+      baseUrl: fuyaoBaseUrl,
+      fetcher,
+    }).fetchEtfSnapshots(selectedSymbols).catch(() => []);
+    if (primary.length > 0) {
+      const primaryBySymbol = new Map(primary.map((item) => [item.symbol, item]));
+      items = items.map((item) => {
+        const quote = primaryBySymbol.get(item.symbol);
+        return quote
+          ? {
+              ...item,
+              name: quote.name,
+              category: quote.category,
+              tags: quote.tags,
+              exchange: quote.exchange,
+              price: quote.price,
+              pctChange: quote.pctChange,
+              amount: quote.amount,
+              updatedAt: quote.updatedAt,
+            }
+          : item;
+      });
+    }
+  }
 
   const result = await enrichEtfMetricsBatch({
     items,
@@ -127,7 +159,9 @@ export async function runEtfMetricsRefreshBatch({
   await saveEtfCatalogSnapshot(db, {
     tradeDate: date,
     items: result.items,
-    source: persisted?.source ?? "东方财富",
+    source: fuyaoApiKey
+      ? `扶摇 Fuyao / ${persisted?.source ?? "东方财富"}`
+      : persisted?.source ?? "东方财富",
     status: result.remaining === 0 ? "complete" : "partial",
     receivedAt,
   });
