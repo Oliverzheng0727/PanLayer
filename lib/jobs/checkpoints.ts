@@ -12,6 +12,17 @@ export type DailyJobKey =
   | "history-backfill";
 
 export type CheckpointStatus = "pending" | "running" | "partial" | "complete" | "failed";
+export type JobExecutionTrigger = "cron" | "reconcile" | "manual";
+
+export interface JobExecutionMetadata {
+  trigger: JobExecutionTrigger;
+  scheduledAt: string;
+  lastStartedAt: string;
+  lastCompletedAt: string | null;
+  firstAutomaticCompletedAt: string | null;
+  lastAutomaticCompletedAt: string | null;
+  lastManualCompletedAt: string | null;
+}
 
 export interface JobCheckpoint {
   tradeDate: string;
@@ -25,6 +36,67 @@ export interface JobCheckpoint {
   nextRetryAt: string | null;
   message: string;
   resultJson: string;
+}
+
+export function readJobExecutionMetadata(
+  resultJson: string | null | undefined,
+): JobExecutionMetadata | null {
+  if (!resultJson) return null;
+  try {
+    const parsed = JSON.parse(resultJson) as { execution?: Partial<JobExecutionMetadata> };
+    const execution = parsed.execution;
+    if (
+      !execution
+      || (execution.trigger !== "cron" && execution.trigger !== "reconcile" && execution.trigger !== "manual")
+      || typeof execution.scheduledAt !== "string"
+      || typeof execution.lastStartedAt !== "string"
+    ) return null;
+    return {
+      trigger: execution.trigger,
+      scheduledAt: execution.scheduledAt,
+      lastStartedAt: execution.lastStartedAt,
+      lastCompletedAt: typeof execution.lastCompletedAt === "string" ? execution.lastCompletedAt : null,
+      firstAutomaticCompletedAt: typeof execution.firstAutomaticCompletedAt === "string"
+        ? execution.firstAutomaticCompletedAt
+        : null,
+      lastAutomaticCompletedAt: typeof execution.lastAutomaticCompletedAt === "string"
+        ? execution.lastAutomaticCompletedAt
+        : null,
+      lastManualCompletedAt: typeof execution.lastManualCompletedAt === "string"
+        ? execution.lastManualCompletedAt
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildJobExecutionMetadata(input: {
+  previous?: JobExecutionMetadata | null;
+  trigger: JobExecutionTrigger;
+  scheduledAt: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  completed?: boolean;
+}): JobExecutionMetadata {
+  const attemptFinishedAt = input.finishedAt ?? null;
+  const finishedAt = input.completed ? attemptFinishedAt : null;
+  const automatic = input.trigger === "cron" || input.trigger === "reconcile";
+  return {
+    trigger: input.trigger,
+    scheduledAt: input.scheduledAt,
+    lastStartedAt: input.startedAt,
+    lastCompletedAt: finishedAt ?? input.previous?.lastCompletedAt ?? null,
+    firstAutomaticCompletedAt: automatic && finishedAt
+      ? input.previous?.firstAutomaticCompletedAt ?? finishedAt
+      : input.previous?.firstAutomaticCompletedAt ?? null,
+    lastAutomaticCompletedAt: automatic && finishedAt
+      ? finishedAt
+      : input.previous?.lastAutomaticCompletedAt ?? null,
+    lastManualCompletedAt: input.trigger === "manual" && attemptFinishedAt
+      ? attemptFinishedAt
+      : input.previous?.lastManualCompletedAt ?? null,
+  };
 }
 
 interface CheckpointRow {
@@ -139,9 +211,7 @@ export async function recordJobCheckpoint(db: D1Database, checkpoint: JobCheckpo
       message=CASE
         WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
         THEN job_checkpoints.message ELSE excluded.message END,
-      result_json=CASE
-        WHEN job_checkpoints.status = 'complete' AND excluded.status <> 'complete'
-        THEN job_checkpoints.result_json ELSE excluded.result_json END,
+      result_json=excluded.result_json,
       updated_at=excluded.updated_at`,
   ).bind(
     checkpoint.tradeDate,

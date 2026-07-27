@@ -87,7 +87,9 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
       ? `入围${recognitionRanking.items.length}只 · ${recognitionLeader.name} · ${recognitionLeader.scores.total.toFixed(1)}分`
       : "入围0只 · 当日无共振入围"
     : structureAvailable
-      ? comparison?.recognition.map((item) => item.name).join(" / ") || "新口径暂缺"
+      ? comparison?.recognition.length
+        ? `旧口径记录 · ${comparison.recognition.map((item) => item.name).join(" / ")}`
+        : "新口径暂缺"
       : "新口径暂缺";
   return {
     date: review.date,

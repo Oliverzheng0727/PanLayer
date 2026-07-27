@@ -17,7 +17,7 @@ export function formatEtfMetricsProgress(progress: {
     .slice(0, 2)
     .map((error) => `${error.symbol} ${error.message}`)
     .join("；");
-  return `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}; sample-insufficient ${progress.inapplicable ?? 0}`
+  return `ETF历史指标 本批完成 ${progress.completed}/${progress.attempted}；待处理 ${progress.remaining}；失败 ${progress.failed}；样本不足 ${progress.inapplicable ?? 0}`
     + (failures ? `; ${failures}` : "");
 }
 
@@ -205,5 +205,9 @@ export async function runEtfMetricsRefreshBatch({
         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
     ).bind(inapplicableStateKey, JSON.stringify(result.inapplicableSymbols), receivedAt),
   ]);
-  return { ...result, total: items.length };
+  return {
+    ...result,
+    inapplicable: result.inapplicableSymbols.length,
+    total: items.length,
+  };
 }

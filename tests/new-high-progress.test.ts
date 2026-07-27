@@ -18,6 +18,7 @@ describe("new-high initialization progress", () => {
 
     expect(progress).toMatchObject({
       completed: 1_860,
+      currentCursor: 1_860,
       target: 5_324,
       failed: 2,
       remaining: 3_464,

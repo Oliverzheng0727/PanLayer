@@ -75,6 +75,14 @@ export function SidebarDataProgressCard({
     [health, newHighProgress, reviewStatus],
   );
   const current = statusView[model.overallStatus];
+  const automaticCompletedAt = Object.values(health.jobs)
+    .flatMap((job) => job.lastAutomaticCompletedAt ? [job.lastAutomaticCompletedAt] : [])
+    .sort()
+    .at(-1) ?? null;
+  const manualCompletedAt = Object.values(health.jobs)
+    .flatMap((job) => job.lastManualCompletedAt ? [job.lastManualCompletedAt] : [])
+    .sort()
+    .at(-1) ?? null;
   const dueProgress = model.dueTotal === 0
     ? "尚未开始"
     : `${model.completedDue}/${model.dueTotal}`;
@@ -132,7 +140,7 @@ export function SidebarDataProgressCard({
           <span>调度心跳{health.heartbeat?.provider ? ` · ${health.heartbeat.provider}` : ""}</span>
           <span className={health.heartbeat?.status === "failed" ? "text-red-300" : health.heartbeat?.status === "running" ? "text-sky-300" : health.heartbeat?.status === "partial" ? "text-amber-300" : "text-emerald-300"}>
             {health.heartbeat
-              ? `${health.heartbeat.stale ? "中断" : health.heartbeat.status === "running" ? "运行中" : health.heartbeat.status === "failed" ? "异常" : health.heartbeat.status === "partial" ? "部分任务待补跑" : "正常"} · ${formatBeijingDateTime(health.heartbeat.receivedAt)}`
+              ? `${health.heartbeat.stale ? "过期" : health.heartbeat.status === "running" ? "运行中" : health.heartbeat.status === "failed" ? "异常" : health.heartbeat.status === "partial" ? "部分任务待补跑" : "正常"} · ${formatBeijingDateTime(health.heartbeat.receivedAt)}`
               : "尚未收到"}
           </span>
         </span>
@@ -143,6 +151,14 @@ export function SidebarDataProgressCard({
         {health.latestCompletedTradeDate && <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
           <span>最新完整复盘</span>
           <span>{health.latestCompletedTradeDate}</span>
+        </span>}
+        <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>最近自动完成</span>
+          <span>{automaticCompletedAt ? formatBeijingDateTime(automaticCompletedAt) : "尚无记录"}</span>
+        </span>
+        {manualCompletedAt && <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>最近手动重跑</span>
+          <span>{formatBeijingDateTime(manualCompletedAt)}</span>
         </span>}
       </button>
 
@@ -157,6 +173,18 @@ export function SidebarDataProgressCard({
           <div className="max-h-52 space-y-2 overflow-y-auto border-t border-white/[0.06] pt-3">
             {model.tasks.map((task) => {
               const view = statusView[task.status];
+              const checkpointKey = task.key === "tier1-rss"
+                ? "tier1-rss-prefetch"
+                : task.key === "tier2-firecrawl"
+                  ? "tier2-news-prefetch"
+                  : task.key === "morning-brief"
+                    ? "morning-brief"
+                    : task.key === "close-review"
+                      ? "close-review"
+                      : task.key === "etf"
+                        ? "etf-metrics-refresh"
+                        : null;
+              const executionTrigger = checkpointKey ? health.jobs[checkpointKey]?.trigger : null;
               const taskTime = task.updatedAt
                 ? formatBeijingDateTime(task.updatedAt)
                 : null;
@@ -167,7 +195,16 @@ export function SidebarDataProgressCard({
                       <span className={`size-1 rounded-full ${view.dot}`} />
                       {task.label}
                     </span>
-                    <strong className={view.text}>{task.value}</strong>
+                    <span className="flex items-center gap-1.5">
+                      {executionTrigger && (
+                        <small className="rounded bg-white/[0.05] px-1 py-0.5 text-[8px] text-white/30">
+                          {executionTrigger === "manual"
+                            ? "手动"
+                            : executionTrigger === "reconcile" ? "补跑" : "自动"}
+                        </small>
+                      )}
+                      <strong className={view.text}>{task.value}</strong>
+                    </span>
                   </div>
                   <p
                     className="mt-1 truncate text-[9px] text-white/25"

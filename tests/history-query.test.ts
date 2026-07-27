@@ -131,7 +131,7 @@ describe("history table query", () => {
       brokenBoardRate: 50,
       topSector: "机器人 / 算力",
       cycleLeader: "周期甲 · 6板",
-      recognition: "周期甲 / 辨识乙",
+      recognition: "旧口径记录 · 周期甲 / 辨识乙",
       indexSummary: "上证指数 +0.52%",
     });
     expect(row.comparison?.brokenCount).toBe(6);

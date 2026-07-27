@@ -69,7 +69,12 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   const { env } = await import("cloudflare:workers");
   try {
     const force = forceParam === "true";
-    return Response.json(await runPanLayerJob(mapped, new Date(), env, { force, sectionKeys, mode: mode === "failed" ? "failed" : undefined }));
+    return Response.json(await runPanLayerJob(mapped, new Date(), env, {
+      force,
+      sectionKeys,
+      mode: mode === "failed" ? "failed" : undefined,
+      trigger: "manual",
+    }));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 });
   }

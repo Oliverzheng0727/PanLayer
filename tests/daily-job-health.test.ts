@@ -42,7 +42,7 @@ describe("daily job health panel", () => {
     expect(html).toContain("早参");
   });
 
-  it("labels a late forced rerun as regenerated instead of a scheduler delay", () => {
+  it("labels a late manual rerun separately instead of calling the scheduler delayed", () => {
     const html = renderToStaticMarkup(React.createElement(DailyJobHealthPanel, {
       health: {
         tradeDate: "2026-07-26",
@@ -53,13 +53,16 @@ describe("daily job health panel", () => {
             status: "complete", expectedAt: "2026-07-26T07:15:00+08:00",
             finishedAt: "2026-07-26T08:19:00Z", nextRetryAt: null,
             message: "早参已重新生成", attempt: 2, overdue: false,
+            trigger: "manual",
+            lastManualCompletedAt: "2026-07-26T08:19:00Z",
           },
         },
       },
       newHighProgress: { targetDate: "2026-07-24", completed: 2560, target: 5317, failed: 0, remaining: 2757, coveragePct: 48.15, minimumTarget: 5000, universeComplete: true, ready: false, complete: false, updatedAt: null },
     }));
 
-    expect(html).toContain("重新生成");
+    expect(html).toContain("手动重跑");
+    expect(html).toContain("尚无自动完成记录");
     expect(html).not.toContain("· 延迟");
     expect(html).toContain("非交易日");
   });

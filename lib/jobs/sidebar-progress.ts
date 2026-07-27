@@ -164,6 +164,8 @@ export function buildSidebarProgress(
   const fuyaoFields = Object.entries(health.fields ?? {})
     .filter(([key]) => key.startsWith("fuyao"));
   const fuyaoComplete = fuyaoFields.filter(([, item]) => item.status === "complete").length;
+  const fuyaoFallback = fuyaoFields.filter(([, item]) => item.availability === "fallback").length;
+  const fuyaoPermissionDenied = fuyaoFields.filter(([, item]) => item.availability === "permission-denied").length;
   const fuyaoStatus: SidebarProgressStatus = fuyaoFields.length === 0
     ? "pending"
     : fuyaoComplete === fuyaoFields.length
@@ -213,7 +215,12 @@ export function buildSidebarProgress(
         status: fuyaoStatus,
         value: fuyaoFields.length > 0 ? `${fuyaoComplete}/${fuyaoFields.length}` : STATUS_VALUE[fuyaoStatus],
         detail: fuyaoFields.length > 0
-          ? fuyaoFields.filter(([, item]) => item.status !== "complete").map(([, item]) => item.message).slice(0, 2).join("；") || "行情、梯队、热点与龙虎榜已核验"
+          ? fuyaoFields.filter(([, item]) => item.status !== "complete").map(([, item]) => item.message).slice(0, 2).join("；")
+            || (fuyaoFallback > 0
+              ? `${fuyaoFallback} 项已由备用源完成`
+              : fuyaoPermissionDenied > 0
+                ? `${fuyaoPermissionDenied} 项接口无权限`
+                : "行情、梯队、热点与龙虎榜已核验")
           : "等待收盘结构化采集",
         updatedAt: fuyaoUpdatedAt,
       },

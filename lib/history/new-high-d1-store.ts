@@ -3,6 +3,17 @@ import type { HighDetail } from "./high-details";
 import type { NewHighStateStore } from "./new-high-pipeline";
 import type { DailyReview } from "../domain/types";
 
+export interface PersistedNewHighProgressSnapshot {
+  targetDate: string;
+  completed: number;
+  currentCursor: number;
+  target: number;
+  failed: number;
+  updatedAt: string;
+}
+
+const NEW_HIGH_PROGRESS_KEY = "new-high-progress-snapshot";
+
 export interface NewHighStateRow {
   symbol: string;
   name: string;
@@ -264,6 +275,63 @@ export async function newHighBootstrapTargetDate(
   const fallback = new Date(`${currentDate}T12:00:00Z`);
   fallback.setUTCDate(fallback.getUTCDate() - 1);
   return fallback.toISOString().slice(0, 10);
+}
+
+export async function refreshNewHighProgressSnapshot(
+  db: D1Database,
+  currentDate: string,
+): Promise<PersistedNewHighProgressSnapshot> {
+  const targetDate = await newHighBootstrapTargetDate(db, currentDate);
+  const [target, completed, failed] = await Promise.all([
+    db.prepare(
+      "SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'",
+    ).first<{ count: number }>(),
+    db.prepare(
+      "SELECT COUNT(*) AS count FROM new_high_states WHERE status = 'active' AND initialized_through >= ?",
+    ).bind(targetDate).first<{ count: number }>(),
+    db.prepare(
+      "SELECT COUNT(*) AS count FROM new_high_bootstrap_failures",
+    ).first<{ count: number }>(),
+  ]);
+  const completedCount = Number(completed?.count ?? 0);
+  const updatedAt = new Date().toISOString();
+  const snapshot: PersistedNewHighProgressSnapshot = {
+    targetDate,
+    completed: completedCount,
+    currentCursor: completedCount,
+    target: Number(target?.count ?? 0),
+    failed: Number(failed?.count ?? 0),
+    updatedAt,
+  };
+  await db.prepare(
+    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+  ).bind(NEW_HIGH_PROGRESS_KEY, JSON.stringify(snapshot), updatedAt).run();
+  return snapshot;
+}
+
+export async function readNewHighProgressSnapshot(
+  db: D1Database,
+  currentDate: string,
+): Promise<PersistedNewHighProgressSnapshot> {
+  const targetDate = await newHighBootstrapTargetDate(db, currentDate);
+  const row = await db.prepare(
+    "SELECT value FROM bootstrap_state WHERE key = ?",
+  ).bind(NEW_HIGH_PROGRESS_KEY).first<{ value: string }>();
+  if (row?.value) {
+    try {
+      const snapshot = JSON.parse(row.value) as PersistedNewHighProgressSnapshot;
+      if (
+        snapshot.targetDate === targetDate
+        && Number.isFinite(snapshot.completed)
+        && Number.isFinite(snapshot.target)
+        && Number.isFinite(snapshot.failed)
+      ) return snapshot;
+    } catch {
+      // Rebuild malformed or stale snapshots from normalized state.
+    }
+  }
+  return refreshNewHighProgressSnapshot(db, currentDate);
 }
 
 export async function patchBackfilledReviewHighCounts(

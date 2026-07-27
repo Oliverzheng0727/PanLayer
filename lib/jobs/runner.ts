@@ -44,6 +44,12 @@ import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import { fetchThsPopularitySnapshot } from "../data/ths-popularity";
 import { applyStructuredSignalFallbacks } from "../data/structured-signal-fallback";
+import {
+  closeProviderCircuit,
+  isProviderPermissionFailure,
+  openProviderCircuit,
+  readProviderCircuit,
+} from "../data/provider-circuit";
 import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { withRetry } from "../data/resilience";
@@ -54,16 +60,21 @@ import {
   createD1NewHighStateStore,
   newHighBootstrapTargetDate,
   patchBackfilledReviewHighCounts,
+  refreshNewHighProgressSnapshot,
 } from "../history/new-high-d1-store";
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 import { mergeCloseReviewWithExisting, type CloseReviewStage } from "./close-review-stages";
 import {
+  buildJobExecutionMetadata,
   expectedAtForJob,
   nextRetryAtForCheckpoint,
+  readJobExecutionMetadata,
   recordJobCheckpoint,
   retryAtForAttempt,
   scheduledJobKey,
+  type JobExecutionMetadata,
+  type JobExecutionTrigger,
 } from "./checkpoints";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
@@ -778,7 +789,13 @@ export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
   env: PanLayerEnv,
-  options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[]; mode?: "failed" } = {},
+  options: {
+    force?: boolean;
+    fetcher?: typeof fetch;
+    sectionKeys?: BriefSectionKey[];
+    mode?: "failed";
+    trigger?: JobExecutionTrigger;
+  } = {},
 ): Promise<{ ok: boolean; status: "running" | "partial" | "complete" | "failed"; message: string }> {
   if (!env.DB) throw new Error("DB binding is unavailable");
   const db = env.DB;
@@ -793,8 +810,25 @@ export async function runPanLayerJob(
   let run: { id: number } | null = null;
   const checkpointKey = scheduledJobKey(job);
   const checkpointExpectedAt = expectedAtForJob(date, checkpointKey);
+  const executionTrigger = options.trigger ?? "manual";
   let checkpointAttempt = 1;
   let checkpointStartedAt: string | null = null;
+  let previousExecution: JobExecutionMetadata | null = null;
+  const checkpointResult = (
+    result: Record<string, unknown>,
+    finishedAt: string | null,
+    completed: boolean,
+  ) => ({
+    ...result,
+    execution: buildJobExecutionMetadata({
+      previous: previousExecution,
+      trigger: executionTrigger,
+      scheduledAt: checkpointExpectedAt,
+      startedAt: checkpointStartedAt ?? now.toISOString(),
+      finishedAt,
+      completed,
+    }),
+  });
   const finishCheckpoint = async (
     status: "partial" | "complete" | "failed",
     message: string,
@@ -817,7 +851,7 @@ export async function runPanLayerJob(
         checkpointAttempt,
       ),
       message,
-      resultJson: JSON.stringify(result),
+      resultJson: JSON.stringify(checkpointResult(result, finishedAt, status === "complete")),
     });
   };
   const finishCloseStage = async (
@@ -838,16 +872,17 @@ export async function runPanLayerJob(
       finishedAt,
       nextRetryAt: status === "complete" ? null : retryAtForAttempt(new Date(), checkpointAttempt),
       message,
-      resultJson: JSON.stringify(result),
+      resultJson: JSON.stringify(checkpointResult(result, finishedAt, status === "complete")),
     });
   };
   try {
     const startedAt = new Date().toISOString();
     checkpointStartedAt = startedAt;
     const previousCheckpoint = await db.prepare(
-      "SELECT attempt FROM job_checkpoints WHERE trade_date = ? AND job_key = ? AND stage = 'main'",
-    ).bind(date, checkpointKey).first<{ attempt: number }>();
+      "SELECT attempt, result_json FROM job_checkpoints WHERE trade_date = ? AND job_key = ? AND stage = 'main'",
+    ).bind(date, checkpointKey).first<{ attempt: number; result_json: string }>();
     checkpointAttempt = Number(previousCheckpoint?.attempt ?? 0) + 1;
+    previousExecution = readJobExecutionMetadata(previousCheckpoint?.result_json);
     await recordJobCheckpoint(db, {
       tradeDate: date,
       key: checkpointKey,
@@ -859,7 +894,7 @@ export async function runPanLayerJob(
       finishedAt: null,
       nextRetryAt: null,
       message: "",
-      resultJson: "{}",
+      resultJson: JSON.stringify(checkpointResult({}, null, false)),
     });
     const label = job.type === "breadth" ? `breadth-${job.time}` : job.type;
     run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
@@ -1004,20 +1039,33 @@ export async function runPanLayerJob(
         batchSize: 40,
         concurrency: 3,
       });
-      if (progress.coveragePct >= 95 && progress.target > 0) {
+      const snapshot = await refreshNewHighProgressSnapshot(db, targetDate);
+      const coveragePct = snapshot.target > 0
+        ? Number((snapshot.completed / snapshot.target * 100).toFixed(2))
+        : 0;
+      const remaining = Math.max(0, snapshot.target - snapshot.completed);
+      if (coveragePct >= 95 && snapshot.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
       const message =
-        `new-high-bootstrap ${progress.completed}/${progress.target}; ` +
-        `remaining ${progress.remaining}; failed ${progress.failed}; ` +
-        `coverage ${progress.coveragePct}%`;
-      const status = newHighBootstrapRunStatus(progress);
+        `new-high-bootstrap ${snapshot.completed}/${snapshot.target}; ` +
+        `remaining ${remaining}; failed ${snapshot.failed}; ` +
+        `coverage ${coveragePct}%`;
+      const status = newHighBootstrapRunStatus({
+        remaining,
+        failed: snapshot.failed,
+      });
       if (run?.id) {
         await db.prepare(
           "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
         ).bind(status, message, new Date().toISOString(), run.id).run();
       }
-      await finishCheckpoint(status, message, progress);
+      await finishCheckpoint(status, message, {
+        ...progress,
+        ...snapshot,
+        remaining,
+        coveragePct,
+      });
       return { ok: true, status, message };
     } else if (job.type === "etf-metrics-refresh") {
       const progress = await runEtfMetricsRefreshBatch({
@@ -1131,6 +1179,37 @@ export async function runPanLayerJob(
         market.message,
       ].filter(Boolean).join("；");
     } else if (job.type === "close-review") {
+      const [existingReviewRow, existingStageRows] = await Promise.all([
+        db.prepare("SELECT payload FROM daily_reviews WHERE trade_date = ?")
+          .bind(date)
+          .first<{ payload: string }>(),
+        db.prepare(
+          "SELECT stage, status FROM job_checkpoints WHERE trade_date = ? AND job_key = 'close-review' AND stage <> 'main'",
+        ).bind(date).all<{ stage: string; status: string }>(),
+      ]);
+      let existingReview: DailyReview | null = null;
+      try {
+        existingReview = existingReviewRow?.payload
+          ? JSON.parse(existingReviewRow.payload) as DailyReview
+          : null;
+      } catch {
+        existingReview = null;
+      }
+      const completedStages = new Set(
+        (existingStageRows.results ?? [])
+          .filter((item) => item.status === "complete")
+          .map((item) => item.stage),
+      );
+      const canReuseStage = (stage: CloseReviewStage) =>
+        !options.force && Boolean(existingReview) && completedStages.has(stage);
+      const reuseSignals = canReuseStage("signals") && Boolean(existingReview?.structuredSignals);
+      const reuseRecognition = canReuseStage("recognition") && Boolean(existingReview?.recognitionRanking);
+      const reuseIndices = canReuseStage("indices") && Boolean(existingReview?.comparison?.indices.length);
+      const reuseNewHighs = canReuseStage("new-highs")
+        && existingReview?.metrics.high20 !== null
+        && existingReview?.metrics.high20 !== undefined
+        && existingReview.metrics.high120 !== null
+        && existingReview.metrics.allTimeHigh !== null;
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
         at: "16:10",
@@ -1165,32 +1244,81 @@ export async function runPanLayerJob(
         provider.getMarginBalance(date).catch(() => null),
         withRetry(() => provider.getBoardPools(date), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
-        withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
+        reuseIndices
+          ? Promise.resolve(existingReview?.comparison?.indices ?? [])
+          : withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
         fuyao
           ? withRetry(
               () => fuyao.fetchLimitUpPoolSnapshot(date, now),
               { retries: 2, delayMs: 250 },
             ).catch(() => null)
           : Promise.resolve(null),
-        fetchThsPopularitySnapshot(date, now, fetcher),
-        provider.getSectors(date).catch(() => []),
+        reuseSignals && reuseRecognition
+          ? Promise.resolve({
+              source: "已完成阶段复用",
+              status: "complete" as const,
+              marketTime: `${date}T15:00:00+08:00`,
+              receivedAt: existingReview?.updatedAt ?? now.toISOString(),
+              rawCount: 0,
+              items: [],
+              message: "结构化信号与辨识度榜已完成，跳过重复热榜请求",
+            })
+          : fetchThsPopularitySnapshot(date, now, fetcher),
+        reuseSignals ? Promise.resolve([]) : provider.getSectors(date).catch(() => []),
       ]);
-      const [rawStructuredSignals, fuyaoAggregate] = fuyao
+      const [anomalyCircuit, sectorCircuit] = fuyao
         ? await Promise.all([
-            fuyao.fetchStructuredMarketSignals(date, now, fuyaoPool ?? undefined).catch(() => undefined),
+            readProviderCircuit(db, "fuyao:anomalies", now),
+            readProviderCircuit(db, "fuyao:sectors", now),
+          ])
+        : [null, null] as const;
+      const disabledFuyaoDatasets = new Set<"anomalies" | "sectors">();
+      if (anomalyCircuit) disabledFuyaoDatasets.add("anomalies");
+      if (sectorCircuit) disabledFuyaoDatasets.add("sectors");
+      const [freshStructuredSignals, fuyaoAggregate] = fuyao
+        ? await Promise.all([
+            reuseSignals
+              ? Promise.resolve(existingReview?.structuredSignals)
+              : fuyao.fetchStructuredMarketSignals(
+                  date,
+                  now,
+                  fuyaoPool ?? undefined,
+                  { disabledDatasets: disabledFuyaoDatasets },
+                ).catch(() => undefined),
             withRetry(
               () => fuyao.fetchMarketAggregate([], "15:00", now),
               { retries: 2, delayMs: 250 },
             ).catch(() => null),
-          ])
-        : [undefined, null] as const;
-      const structuredSignals = applyStructuredSignalFallbacks({
-        signals: rawStructuredSignals,
-        popularity: thsPopularity,
-        sectors: fallbackSectors,
-        referenceDate: date,
-        receivedAt: new Date().toISOString(),
-      });
+        ])
+        : [reuseSignals ? existingReview?.structuredSignals : undefined, null] as const;
+      if (freshStructuredSignals && !reuseSignals) {
+        const updateCircuit = async (
+          dataset: "anomalies" | "sectors",
+          key: "fuyao:anomalies" | "fuyao:sectors",
+          wasDisabled: boolean,
+        ) => {
+          if (wasDisabled) return;
+          const evidence = freshStructuredSignals.evidence[dataset];
+          if (isProviderPermissionFailure(evidence?.message)) {
+            await openProviderCircuit(db, key, evidence?.message ?? "Fuyao 403", now);
+          } else if (evidence?.status === "complete") {
+            await closeProviderCircuit(db, key);
+          }
+        };
+        await Promise.all([
+          updateCircuit("anomalies", "fuyao:anomalies", Boolean(anomalyCircuit)),
+          updateCircuit("sectors", "fuyao:sectors", Boolean(sectorCircuit)),
+        ]);
+      }
+      const structuredSignals = reuseSignals
+        ? existingReview?.structuredSignals
+        : applyStructuredSignalFallbacks({
+            signals: freshStructuredSignals,
+            popularity: thsPopularity,
+            sectors: fallbackSectors,
+            referenceDate: date,
+            receivedAt: new Date().toISOString(),
+          });
       const effectiveBoardPools: BoardPools | null = boardPools
         ? {
             ...boardPools,
@@ -1219,10 +1347,12 @@ export async function runPanLayerJob(
             return [quote.symbol];
           }))]
         : [];
-      const recognitionBars = await mapWithConcurrency(
-        recognitionSymbols,
-        4,
-        async (symbol): Promise<RecognitionBars> => {
+      const recognitionBars = reuseRecognition
+        ? []
+        : await mapWithConcurrency(
+          recognitionSymbols,
+          4,
+          async (symbol): Promise<RecognitionBars> => {
           if (fuyao) {
             const primary = await fuyao
               .fetchAShareAdjustedBars(symbol, now, { lookbackDays: 75 })
@@ -1237,9 +1367,11 @@ export async function runPanLayerJob(
             bars: fallback,
             source: fallback.length > 0 ? "东方财富 / 腾讯前复权日K（降级）" : "暂缺",
           };
-        },
-      );
-      const recognitionRanking = effectiveBoardPools
+          },
+        );
+      const recognitionRanking = reuseRecognition
+        ? existingReview?.recognitionRanking
+        : effectiveBoardPools
         ? buildRecognitionRanking({
             date,
             quotes: market.quotes,
@@ -1254,7 +1386,7 @@ export async function runPanLayerJob(
             receivedAt: new Date().toISOString(),
           })
         : undefined;
-      if (structuredSignals && fuyaoPool?.items.length && boardPools?.limitUp.length) {
+      if (!reuseSignals && structuredSignals && fuyaoPool?.items.length && boardPools?.limitUp.length) {
         const primaryCodes = new Set(fuyaoPool.items.map((item) => item.code));
         const crossCodes = new Set(boardPools.limitUp.map((item) => item.code));
         const difference = [
@@ -1273,7 +1405,7 @@ export async function runPanLayerJob(
           structuredSignals.errors.push(`涨停池交叉差异：${difference.slice(0, 20).join("、")}`);
         }
       }
-      if (structuredSignals) {
+      if (structuredSignals && !reuseSignals) {
         await persistStructuredMarketSignals(db, structuredSignals);
       }
       let marketAggregate = fuyaoAggregate?.status === "complete"
@@ -1300,7 +1432,9 @@ export async function runPanLayerJob(
               message: `扶摇主值；东方财富交叉差异 ${differencePct.toFixed(2)}%`,
             };
       }
-      const indices = fuyao
+      const indices = reuseIndices
+        ? existingReview?.comparison?.indices ?? []
+        : fuyao
         ? mergeVerifiedIndexSnapshots(
           await withRetry(() => fuyao.fetchIndexSnapshots(date, now), { retries: 1, delayMs: 250 }).catch(() => []),
           existingIndices,
@@ -1360,17 +1494,25 @@ export async function runPanLayerJob(
           { count: indices.length },
         ),
       ]);
-      const highSnapshot = await updateDailyNewHighSnapshot({
-        store: createD1NewHighStateStore(db),
-        tradeDate: date,
-        quotes: market.quotes,
-      }).catch(() => ({
-        high20: null,
-        high120: null,
-        allTimeHigh: null,
-        coveragePct: 0,
-        status: "partial" as const,
-      }));
+      const highSnapshot = reuseNewHighs
+        ? {
+            high20: existingReview!.metrics.high20 ?? null,
+            high120: existingReview!.metrics.high120,
+            allTimeHigh: existingReview!.metrics.allTimeHigh,
+            coveragePct: 100,
+            status: "complete" as const,
+          }
+        : await updateDailyNewHighSnapshot({
+            store: createD1NewHighStateStore(db),
+            tradeDate: date,
+            quotes: market.quotes,
+          }).catch(() => ({
+            high20: null,
+            high120: null,
+            allTimeHigh: null,
+            coveragePct: 0,
+            status: "partial" as const,
+          }));
       await finishCloseStage(
         "new-highs",
         highSnapshot.status,
@@ -1395,16 +1537,7 @@ export async function runPanLayerJob(
         recognitionRanking,
         receivedAt: new Date().toISOString(),
       });
-      const previousRow = await db.prepare(
-        "SELECT payload FROM daily_reviews WHERE trade_date = ?",
-      ).bind(date).first<{ payload: string }>();
-      let previousReview: DailyReview | null = null;
-      try {
-        previousReview = previousRow?.payload ? JSON.parse(previousRow.payload) as DailyReview : null;
-      } catch {
-        previousReview = null;
-      }
-      const review = mergeCloseReviewWithExisting(previousReview, nextReview);
+      const review = mergeCloseReviewWithExisting(existingReview, nextReview);
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), review.source, review.status, new Date().toISOString()).run();
       await finishCloseStage(
         "assemble",

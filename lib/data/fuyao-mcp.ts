@@ -795,6 +795,7 @@ export class FuyaoMcpClient {
     date: string,
     now = new Date(),
     limitUpSnapshot?: FuyaoLimitUpSnapshot,
+    options: { disabledDatasets?: ReadonlySet<"anomalies" | "sectors"> } = {},
   ): Promise<StructuredMarketSignals> {
     const receivedAt = now.toISOString();
     const marketTime = `${date}T15:00:00+08:00`;
@@ -940,7 +941,18 @@ export class FuyaoMcpClient {
       }) ?? []),
     ])].slice(0, 50);
     let anomalies: StructuredMarketSignals["anomalies"] = [];
-    if (anomalySymbols.length > 0) {
+    if (options.disabledDatasets?.has("anomalies")) {
+      const message = "扶摇异动原因接口无权限/不可用，已启动24小时熔断";
+      errors.push(`异动原因：${message}`);
+      evidence.anomalies = signalEvidence({
+        marketTime,
+        receivedAt,
+        rawCount: anomalySymbols.length,
+        validCount: 0,
+        status: "failed",
+        message,
+      });
+    } else if (anomalySymbols.length > 0) {
       try {
         const anomaly = await this.callEnvelope<FuyaoAnomalyData>(
           "a-share",
@@ -976,7 +988,18 @@ export class FuyaoMcpClient {
     }
 
     let sectors: SectorMetric[] = [];
-    try {
+    if (options.disabledDatasets?.has("sectors")) {
+      const message = "扶摇指数目录接口无权限/不可用，已启动24小时熔断";
+      errors.push(`板块：${message}`);
+      evidence.sectors = signalEvidence({
+        marketTime,
+        receivedAt,
+        rawCount: 0,
+        validCount: 0,
+        status: "failed",
+        message,
+      });
+    } else try {
       const sectorResult = await this.fetchFuyaoSectorMetrics(pool?.items ?? [], date, now);
       sectors = sectorResult.sectors;
       evidence.sectors = sectorResult.evidence;

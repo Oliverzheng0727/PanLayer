@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { delayMinutes, formatBeijingClock, nextRefreshSeconds } from "../../../lib/live/market-clock";
-import { isBeijingMarketSession } from "../../../lib/live/refresh-policy";
+import { beijingMarketPhase } from "../../../lib/live/refresh-policy";
 import type { LiveDataState } from "./LiveDataStatus";
 
 function countdown(seconds: number): string {
@@ -45,13 +45,20 @@ export function GlobalMarketClock({
 
   const failed = status === "failed" || Boolean(error);
   const delayedBy = now ? delayMinutes(receivedAt, now) : null;
-  const inSession = now ? isBeijingMarketSession(now) : false;
+  const phase = now ? beijingMarketPhase(now, marketSession) : "preopen";
+  const inSession = phase === "morning" || phase === "afternoon";
   const delayed = failed || (marketSession && inSession && delayedBy !== null && delayedBy > 5);
   const seconds = now ? nextRefreshSeconds(receivedAt, now) : 0;
   const statusLabel = failed
     ? "更新失败 · 旧数据"
-    : !marketSession
+    : phase === "non-trading"
       ? "最近交易日数据"
+    : phase === "closed"
+      ? `最新收盘数据 · ${marketClock(marketTime)}`
+    : phase === "lunch"
+      ? "午间休市 · 等待下午开盘"
+    : phase === "preopen"
+      ? "盘前 · 等待开盘"
     : delayed
       ? `数据已延迟 ${delayedBy} 分钟`
       : status === "complete"
@@ -61,11 +68,13 @@ export function GlobalMarketClock({
           : "部分";
   const refreshLabel = now === null
     ? "同步中"
-    : !marketSession
+    : phase === "non-trading"
       ? "非交易日"
-      : inSession
+    : inSession
     ? seconds > 0 ? `下次刷新 ${countdown(seconds)}` : "正在刷新"
-    : "已收盘";
+    : phase === "lunch"
+      ? "午间休市"
+      : phase === "preopen" ? "盘前" : "已收盘";
 
   return (
     <div className={`global-market-clock ${delayed ? "is-delayed" : ""}`}>

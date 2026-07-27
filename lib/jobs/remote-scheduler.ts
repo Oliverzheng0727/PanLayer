@@ -1,4 +1,5 @@
 import {
+  expectedDailyJobs,
   isCheckpointRetryable,
   readDailyJobCheckpoints,
   scheduledJobKey,
@@ -20,6 +21,12 @@ export interface SchedulerHeartbeat {
 }
 
 export type SchedulerJobStatus = "running" | "partial" | "complete" | "failed";
+export type SchedulerExecutionTrigger = "cron" | "reconcile";
+
+export interface SchedulerRunContext {
+  trigger: SchedulerExecutionTrigger;
+  scheduledAt: string;
+}
 
 export function isCriticalSchedulerJob(job: ScheduledJob): boolean {
   return job.type !== "new-high-bootstrap"
@@ -50,14 +57,17 @@ export async function executeRemoteSchedulerTick({
 }: {
   db: D1Database;
   now: Date;
-  runJob: (job: ScheduledJob) => Promise<{ ok: boolean; status?: SchedulerJobStatus; message: string }>;
+  runJob: (
+    job: ScheduledJob,
+    context: SchedulerRunContext,
+  ) => Promise<{ ok: boolean; status?: SchedulerJobStatus; message: string }>;
   loadCheckpoints?: (db: D1Database, date: string) => Promise<JobCheckpoint[]>;
   provider?: SchedulerHeartbeat["provider"];
 }): Promise<{
   date: string;
-  jobs: Array<{ job: string; ok: boolean; status: SchedulerJobStatus; critical: boolean; message: string }>;
+  jobs: Array<{ job: string; trigger: SchedulerExecutionTrigger; ok: boolean; status: SchedulerJobStatus; critical: boolean; message: string }>;
 }> {
-  const { date } = beijingDateParts(now);
+  const { date, time } = beijingDateParts(now);
   await recordSchedulerHeartbeat(db, {
     receivedAt: now.toISOString(),
     provider,
@@ -66,12 +76,28 @@ export async function executeRemoteSchedulerTick({
   }).catch(() => undefined);
   const checkpoints = await loadCheckpoints(db, date).catch(() => []);
   const planned = planRemoteSchedulerJobs({ now, checkpoints });
-  const results: Array<{ job: string; ok: boolean; status: SchedulerJobStatus; critical: boolean; message: string }> = [];
+  const [hour, minute] = time.split(":").map(Number);
+  const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
+  const exactJob = jobForBeijingTime(scheduledTime);
+  const exactKey = exactJob ? scheduledJobKey(exactJob) : null;
+  const results: Array<{
+    job: string;
+    trigger: SchedulerExecutionTrigger;
+    ok: boolean;
+    status: SchedulerJobStatus;
+    critical: boolean;
+    message: string;
+  }> = [];
   for (const job of planned) {
+    const jobKey = scheduledJobKey(job);
+    const trigger: SchedulerExecutionTrigger = exactKey === jobKey ? "cron" : "reconcile";
+    const scheduledAt = expectedDailyJobs(date).find((item) => item.key === jobKey)?.expectedAt
+      ?? now.toISOString();
     try {
-      const result = await runJob(job);
+      const result = await runJob(job, { trigger, scheduledAt });
       results.push({
-        job: scheduledJobKey(job),
+        job: jobKey,
+        trigger,
         ok: result.ok,
         status: result.status ?? (result.ok ? "complete" : "failed"),
         critical: isCriticalSchedulerJob(job),
@@ -79,7 +105,8 @@ export async function executeRemoteSchedulerTick({
       });
     } catch (error) {
       results.push({
-        job: scheduledJobKey(job),
+        job: jobKey,
+        trigger,
         ok: false,
         status: "failed",
         critical: isCriticalSchedulerJob(job),

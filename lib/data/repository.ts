@@ -5,16 +5,17 @@ import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
 import {
   buildNewHighProgress,
-  parseNewHighBootstrapFailureCount,
-  resolveNewHighProgressTargetDate,
   type NewHighProgress,
 } from "../history/new-high-progress";
+import { readNewHighProgressSnapshot } from "../history/new-high-d1-store";
 import { reconcileGlobalPoints } from "./global/reconcile";
 import type { GlobalPoint } from "./global/types";
 import {
   BREADTH_CHECKPOINT_TIMES,
   expectedDailyJobs,
   readDailyJobCheckpoints,
+  readJobExecutionMetadata,
+  type JobExecutionTrigger,
   type JobCheckpoint,
 } from "../jobs/checkpoints";
 import { beijingDateParts, isChinaTradingWeekday } from "../jobs/schedule";
@@ -141,6 +142,10 @@ export interface DailyJobHealth {
     overdue: boolean;
     delayMinutes: number | null;
     timeliness: "not-due" | "on-time" | "delayed";
+    trigger?: JobExecutionTrigger | null;
+    firstAutomaticCompletedAt?: string | null;
+    lastAutomaticCompletedAt?: string | null;
+    lastManualCompletedAt?: string | null;
   }>;
   stages?: Record<string, {
     status: string;
@@ -159,10 +164,8 @@ export interface SchedulerHeartbeatHealth {
   stale: boolean;
 }
 
-// The background Worker currently uses an hourly reconciliation cron. A ten
-// minute stale window therefore labels a healthy scheduler as "interrupted"
-// for most of every hour. Keep a little room for a long-running data batch
-// and only mark the heartbeat stale after one missed hourly window.
+// A task can legitimately run for several minutes. Mark the scheduler stale
+// only after the agreed 90-minute operational threshold.
 export const SCHEDULER_HEARTBEAT_STALE_MS = 90 * 60_000;
 
 export function buildSchedulerHeartbeat(
@@ -197,6 +200,7 @@ export function buildSchedulerHeartbeat(
 
 export interface DailyFieldHealth {
   status: "complete" | "partial" | "missing" | "initializing";
+  availability?: "primary" | "fallback" | "permission-denied" | "sample-insufficient" | "unavailable";
   source: string;
   marketTime: string | null;
   receivedAt: string | null;
@@ -213,7 +217,8 @@ export function buildDailyFieldHealth(
     source = review?.source ?? "",
     marketTime: string | null = null,
     receivedAt: string | null = review?.updatedAt ?? null,
-  ): DailyFieldHealth => ({ status, source, marketTime, receivedAt, message });
+    availability: DailyFieldHealth["availability"] = status === "missing" ? "unavailable" : "primary",
+  ): DailyFieldHealth => ({ status, availability, source, marketTime, receivedAt, message });
   if (!review) {
     return {
       closeReview: field("missing", "尚无收盘复盘"),
@@ -238,12 +243,15 @@ export function buildDailyFieldHealth(
   };
   const structuredField = (key: string, label: string) => {
     const item = structuredEvidence[key];
+    const permissionDenied = /(?:^|\s)403(?:\s|$)|无权限|forbidden|permission/i.test(item?.message ?? "");
+    const fallback = Boolean(item?.source && !item.source.includes("扶摇"));
     return field(
       item?.status === "complete" ? "complete" : item?.status === "partial" ? "partial" : "missing",
       item?.message || `${label}暂缺`,
       item?.source || "扶摇 Fuyao",
       item?.marketTime ?? null,
       item?.receivedAt ?? review.updatedAt,
+      permissionDenied ? "permission-denied" : fallback ? "fallback" : item ? "primary" : "unavailable",
     );
   };
   return {
@@ -308,6 +316,7 @@ export function buildDailyJobHealth({
     marketSession: isChinaTradingWeekday(now),
   }).map((expected) => {
     const checkpoint = checkpointByKey.get(expected.key);
+    const execution = readJobExecutionMetadata(checkpoint?.resultJson);
     const expectedTime = new Date(expected.expectedAt).getTime();
     const graceMs = expected.key.startsWith("breadth-")
       ? breadthRecoveryWindowMs(expected.key.replace("breadth-", ""))
@@ -318,7 +327,9 @@ export function buildDailyJobHealth({
     const delayMinutes = finishedTime !== null && Number.isFinite(finishedTime)
       ? Math.max(0, Math.round((finishedTime - expectedTime) / 60_000))
       : overdue ? Math.max(0, Math.round((now.getTime() - expectedTime) / 60_000)) : null;
-    const timeliness = now.getTime() < expectedTime && !checkpoint
+    const timeliness = execution?.trigger === "manual"
+      ? "on-time" as const
+      : now.getTime() < expectedTime && !checkpoint
       ? "not-due" as const
       : overdue || (delayMinutes !== null && delayMinutes > graceMs / 60_000)
         ? "delayed" as const
@@ -338,6 +349,10 @@ export function buildDailyJobHealth({
       overdue,
       delayMinutes,
       timeliness,
+      trigger: execution?.trigger ?? null,
+      firstAutomaticCompletedAt: execution?.firstAutomaticCompletedAt ?? null,
+      lastAutomaticCompletedAt: execution?.lastAutomaticCompletedAt ?? null,
+      lastManualCompletedAt: execution?.lastManualCompletedAt ?? null,
     }];
   }));
   const stages = Object.fromEntries(checkpoints
@@ -364,6 +379,10 @@ export function buildDailyJobHealth({
         && new Date(persistedBrief.updatedAt).getTime() > new Date(jobs["morning-brief"].expectedAt).getTime() + 15 * 60_000
           ? "delayed"
           : "on-time",
+      trigger: jobs["morning-brief"].trigger ?? null,
+      firstAutomaticCompletedAt: jobs["morning-brief"].firstAutomaticCompletedAt ?? null,
+      lastAutomaticCompletedAt: jobs["morning-brief"].lastAutomaticCompletedAt ?? null,
+      lastManualCompletedAt: jobs["morning-brief"].lastManualCompletedAt ?? null,
     };
   }
   return {
@@ -577,28 +596,14 @@ export async function readNewHighProgress(targetDate: string): Promise<NewHighPr
     });
   }
   try {
-    const latestReview = await db.prepare(
-      "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date <= ?",
-    ).bind(targetDate).first<{ trade_date: string | null }>();
-    const resolvedTargetDate = resolveNewHighProgressTargetDate(
-      targetDate,
-      latestReview?.trade_date,
-    );
-    const [targetRow, completedRow, jobRow] = await Promise.all([
-      db.prepare("SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'").first<{ count: number }>(),
-      db.prepare(
-        "SELECT COUNT(*) AS count FROM new_high_states WHERE status = 'active' AND initialized_through >= ?",
-      ).bind(resolvedTargetDate).first<{ count: number }>(),
-      db.prepare(
-        "SELECT message, finished_at, started_at FROM job_runs WHERE job = 'new-high-bootstrap' ORDER BY id DESC LIMIT 1",
-      ).first<{ message: string; finished_at: string | null; started_at: string }>(),
-    ]);
+    const snapshot = await readNewHighProgressSnapshot(db, targetDate);
     return buildNewHighProgress({
-      targetDate: resolvedTargetDate,
-      completed: Number(completedRow?.count ?? 0),
-      target: Number(targetRow?.count ?? 0),
-      failed: parseNewHighBootstrapFailureCount(jobRow?.message),
-      updatedAt: jobRow?.finished_at ?? jobRow?.started_at ?? null,
+      targetDate: snapshot.targetDate,
+      completed: snapshot.completed,
+      currentCursor: snapshot.currentCursor,
+      target: snapshot.target,
+      failed: snapshot.failed,
+      updatedAt: snapshot.updatedAt,
       minimumTarget: 5_000,
     });
   } catch {
@@ -697,6 +702,9 @@ export async function readDataHealth() {
         ? "扶摇 ETF 行情与日 K 为主源，原有来源补充衍生指标"
         : "ETF 已使用原有来源降级，等待扶摇重试"
       : "ETF 快照暂缺",
+    availability: etfCatalogRow?.source.includes("扶摇 Fuyao")
+      ? "primary"
+      : etfCatalogRow ? "fallback" : "unavailable",
   };
   return {
     ...summarizeDataHealth({
@@ -705,6 +713,7 @@ export async function readDataHealth() {
     globalPoints: globalResult.results ?? [],
     newsRuns: newsResult.results ?? [],
     }),
+    newHighProgress: progress,
     daily,
   };
 }

@@ -226,7 +226,12 @@ export function MarketEvidenceDrawer({ row, kind, onClose }: {
               </div>
             </>
           ) : kind === "recognition" ? (
-            <div className="market-evidence-empty"><strong>新口径历史数据暂缺</strong><p>该日期没有保存同花顺热榜、量能K线与连板数据，不使用当前热度反推历史。</p></div>
+            <div className="market-evidence-empty">
+              <strong>{stocks.length > 0 ? "旧口径记录" : "新口径历史数据暂缺"}</strong>
+              <p>{stocks.length > 0
+                ? `旧记录仅保存了名称：${stocks.map((item) => item.name).join("、")}。缺少当日热榜、换手率和量能证据，不能按新版公式重算。`
+                : "该日期没有保存同花顺热榜、量能K线与连板数据，不使用当前热度反推历史。"}</p>
+            </div>
           ) : kind === "continuation" && comparison?.continuation && (
             <div className="market-evidence-kpis">
               <div><span>今日收红率</span><strong>{pct(comparison.continuation.positiveRate)}</strong></div>

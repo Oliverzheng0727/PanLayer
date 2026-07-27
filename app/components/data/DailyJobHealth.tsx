@@ -29,10 +29,26 @@ export function DailyJobHealthPanel({
   );
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
   const brief = health.jobs["morning-brief"];
-  const briefLate = brief?.finishedAt
+  const automaticBriefTime = brief?.lastAutomaticCompletedAt ?? (
+    brief?.trigger === "cron" || brief?.trigger === "reconcile" ? brief.finishedAt : null
+  );
+  const manualBriefTime = brief?.lastManualCompletedAt ?? (
+    brief?.trigger === "manual" ? brief.finishedAt : null
+  );
+  const legacyBriefLate = !brief?.trigger && brief?.finishedAt
     ? new Date(brief.finishedAt).getTime() > new Date(brief.expectedAt).getTime() + 15 * 60_000
     : false;
-  const briefRegenerated = briefLate && (brief?.attempt ?? 0) > 1;
+  const briefLate = automaticBriefTime
+    ? new Date(automaticBriefTime).getTime() > new Date(brief.expectedAt).getTime() + 15 * 60_000
+    : legacyBriefLate;
+  const legacyRegenerated = !brief?.trigger && briefLate && (brief?.attempt ?? 0) > 1;
+  const briefDetail = automaticBriefTime
+    ? `${clockTime(automaticBriefTime)} · 自动${briefLate ? "延迟" : "准时"}${manualBriefTime ? ` · 最近手动 ${clockTime(manualBriefTime)}` : ""}`
+    : manualBriefTime
+      ? `${clockTime(manualBriefTime)} · 手动重跑 · 尚无自动完成记录`
+      : brief?.finishedAt
+        ? `${clockTime(brief.finishedAt)}${legacyRegenerated ? " · 重新生成" : briefLate ? " · 延迟" : " · 准时"}`
+        : brief?.message || "等待 07:15";
 
   const items = [
     {
@@ -57,9 +73,7 @@ export function DailyJobHealthPanel({
     {
       label: "早参",
       value: brief ? statusLabel[brief.status] : "等待",
-      detail: brief?.finishedAt
-        ? `${clockTime(brief.finishedAt)}${briefRegenerated ? " · 重新生成" : briefLate ? " · 延迟" : " · 准时"}`
-        : brief?.message || "等待 07:15",
+      detail: briefDetail,
     },
   ];
 

@@ -1,6 +1,7 @@
 export interface NewHighProgress {
   targetDate: string;
   completed: number;
+  currentCursor?: number;
   target: number;
   failed: number;
   remaining: number;
@@ -18,6 +19,7 @@ export function buildNewHighProgress(input: {
   target: number;
   failed: number;
   updatedAt: string | null;
+  currentCursor?: number;
   minimumTarget?: number;
 }): NewHighProgress {
   const target = Math.max(0, Math.trunc(input.target));
@@ -31,6 +33,7 @@ export function buildNewHighProgress(input: {
   return {
     targetDate: input.targetDate,
     completed,
+    currentCursor: Math.max(0, Math.trunc(input.currentCursor ?? completed)),
     target,
     failed,
     remaining: Math.max(0, target - completed),

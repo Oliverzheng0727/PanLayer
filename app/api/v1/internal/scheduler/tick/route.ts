@@ -39,7 +39,7 @@ export async function POST(request: Request) {
   const result = await executeRemoteSchedulerTick({
     db: runtimeEnv.DB,
     now,
-    runJob: (job) => runPanLayerJob(job, now, runtimeEnv),
+    runJob: (job, context) => runPanLayerJob(job, now, runtimeEnv, { trigger: context.trigger }),
     provider,
   });
 

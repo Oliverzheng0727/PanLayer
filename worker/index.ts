@@ -55,7 +55,7 @@ const worker = {
     ctx.waitUntil(executeRemoteSchedulerTick({
       db: env.DB,
       now,
-      runJob: (job) => runPanLayerJob(job, now, env),
+      runJob: (job, context) => runPanLayerJob(job, now, env, { trigger: context.trigger }),
       provider: "worker",
     }));
   },

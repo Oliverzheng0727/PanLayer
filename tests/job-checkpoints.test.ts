@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildJobExecutionMetadata,
   expectedDailyJobs,
   isCheckpointRetryable,
   nextRetryAtForCheckpoint,
+  readJobExecutionMetadata,
   recordJobCheckpoint,
   type JobCheckpoint,
 } from "../lib/jobs/checkpoints";
@@ -118,5 +120,28 @@ describe("daily job checkpoints", () => {
 
     expect(sql).toContain("job_checkpoints.status = 'complete'");
     expect(sql).toContain("excluded.status <> 'complete'");
+  });
+
+  it("keeps automatic completion separate from later manual reruns", () => {
+    const automatic = buildJobExecutionMetadata({
+      trigger: "cron",
+      scheduledAt: "2026-07-24T07:15:00+08:00",
+      startedAt: "2026-07-23T23:15:00.000Z",
+      finishedAt: "2026-07-23T23:16:00.000Z",
+      completed: true,
+    });
+    const manual = buildJobExecutionMetadata({
+      previous: automatic,
+      trigger: "manual",
+      scheduledAt: "2026-07-24T07:15:00+08:00",
+      startedAt: "2026-07-24T10:19:00.000Z",
+      finishedAt: "2026-07-24T10:20:00.000Z",
+      completed: false,
+    });
+
+    expect(manual.firstAutomaticCompletedAt).toBe("2026-07-23T23:16:00.000Z");
+    expect(manual.lastAutomaticCompletedAt).toBe("2026-07-23T23:16:00.000Z");
+    expect(manual.lastManualCompletedAt).toBe("2026-07-24T10:20:00.000Z");
+    expect(readJobExecutionMetadata(JSON.stringify({ execution: manual }))).toEqual(manual);
   });
 });

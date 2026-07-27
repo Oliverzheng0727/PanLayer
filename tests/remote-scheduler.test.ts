@@ -225,6 +225,7 @@ describe("remote scheduler", () => {
     expect(result.jobs).toEqual([
       {
         job: "morning-brief",
+        trigger: "reconcile",
         ok: true,
         status: "complete",
         critical: true,
@@ -232,6 +233,7 @@ describe("remote scheduler", () => {
       },
       {
         job: "new-high-bootstrap",
+        trigger: "reconcile",
         ok: true,
         status: "complete",
         critical: false,
@@ -240,5 +242,36 @@ describe("remote scheduler", () => {
     ]);
     expect(writes.some((values) => String(values[1]).includes("scheduler tick started"))).toBe(true);
     expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:complete"))).toBe(true);
+  });
+
+  it("marks an on-slot scheduled job as cron and passes its planned time", async () => {
+    const contexts: Array<{ trigger: string; scheduledAt: string }> = [];
+    const db = {
+      prepare() {
+        return {
+          bind() { return this; },
+          async run() { return {}; },
+        };
+      },
+    } as unknown as D1Database;
+
+    const result = await executeRemoteSchedulerTick({
+      db,
+      now: new Date("2026-07-23T22:50:00.000Z"),
+      loadCheckpoints: async () => [],
+      runJob: async (_job, context) => {
+        contexts.push(context);
+        return { ok: true, message: "done" };
+      },
+    });
+
+    expect(result.jobs[0]).toMatchObject({
+      job: "tier1-rss-prefetch",
+      trigger: "cron",
+    });
+    expect(contexts[0]).toEqual({
+      trigger: "cron",
+      scheduledAt: "2026-07-24T06:50:00+08:00",
+    });
   });
 });

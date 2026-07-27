@@ -54,6 +54,10 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
   const marketTime = currentPayload?.marketTime ?? null;
   const receivedAt = currentPayload?.receivedAt ?? null;
   const chartError = currentPayload?.error ?? "";
+  const adjustmentMismatch = Boolean(
+    currentPayload
+    && currentPayload.requestedAdjustment !== currentPayload.appliedAdjustment,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -141,12 +145,19 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
         </div>
       </div>
       <LiveDataStatus label="K线" source={source} status={status} marketTime={marketTime} receivedAt={receivedAt} isStale={Boolean(chartError) || status === "demo"} error={chartError} hasData={bars.length > 0} />
-      {currentPayload && <div className="etf-chart-data-meta">
+      {currentPayload && <div className={`etf-chart-data-meta ${adjustmentMismatch ? "adjustment-mismatch" : ""}`}>
         <span>请求 {periodLabel(currentPayload.requestedPeriod)} · {adjustmentLabel(currentPayload.requestedAdjustment)}</span>
         <span>实际 {periodLabel(currentPayload.appliedPeriod)} · {adjustmentLabel(currentPayload.appliedAdjustment)}</span>
+        <span>状态 {currentPayload.status === "complete" ? "完整" : currentPayload.status === "partial" ? "部分" : "失败"}</span>
         {currentPayload.fallbackSource && <span>降级源 {currentPayload.fallbackSource}</span>}
+        {currentPayload.marketTime && <span>市场时间 {currentPayload.marketTime}</span>}
       </div>}
-      {currentPayload?.message && (currentPayload.status !== "complete" || currentPayload.fallbackSource) && <div className={`etf-chart-notice ${currentPayload.status}`}>{currentPayload.message}</div>}
+      {currentPayload && (adjustmentMismatch || (currentPayload.message && (currentPayload.status !== "complete" || currentPayload.fallbackSource))) && (
+        <div className={`etf-chart-notice ${currentPayload.status} ${adjustmentMismatch ? "adjustment-mismatch" : ""}`}>
+          {adjustmentMismatch && <strong>复权口径已降级：</strong>}
+          {currentPayload.message || "请求前复权，但当前仅取得不复权数据；图表已按实际口径展示。"}
+        </div>
+      )}
       <div ref={container} className="etf-chart-canvas" />
       {!bars.length && <div className="etf-chart-empty">数据暂缺 · 更新失败</div>}
       <div className="etf-chart-foot"><span>十字光标 · 缩放浏览</span><span>{source} · 成交量同步显示</span></div>

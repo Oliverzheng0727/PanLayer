@@ -24,7 +24,7 @@ describe("admin morning brief regeneration API", () => {
     const runner = await readFile(new URL("../lib/jobs/runner.ts", import.meta.url), "utf8");
     expect(runner).toContain("provider.getUniverse()");
     expect(runner).toContain("batchSize: 40");
-    expect(runner).toContain("coverage ${progress.coveragePct}%");
+    expect(runner).toContain("coverage ${coveragePct}%");
     expect(runner).toContain('job.type === "new-high-bootstrap"');
     expect(runner).toContain("acquireJobLease(db, leaseJob, date)");
   });
