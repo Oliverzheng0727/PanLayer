@@ -27,7 +27,7 @@ function keyToJob(key: DailyJobKey): ScheduledJob | null {
   if (key.startsWith("breadth-")) {
     return { type: "breadth", time: key.slice("breadth-".length) };
   }
-  if (key === "history-backfill") return { type: "history-backfill", days: 20 };
+  if (key === "history-backfill") return { type: "history-backfill", days: 120 };
   if (
     key === "tier1-rss-prefetch"
     || key === "tier2-news-prefetch"

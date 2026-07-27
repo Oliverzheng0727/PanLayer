@@ -223,7 +223,29 @@ async function loadProgress(db: D1Database, endDate: string, days: number, fetch
   if (stored) return stored;
   const dates = await fetchRecentTradingDates(endDate, days, fetcher);
   if (dates.length !== days) throw new Error(`history backfill trading dates ${dates.length}/${days}`);
-  return { endDate, days, dates, completed: [] };
+  const dateSet = new Set(dates);
+  let existingCompleted: string[] = [];
+  try {
+    const result = await db.prepare(
+      "SELECT trade_date, payload FROM daily_reviews WHERE trade_date BETWEEN ? AND ?",
+    ).bind(dates.at(-1), dates[0]).all<{ trade_date: string; payload: string }>();
+    existingCompleted = (result.results ?? []).flatMap((item) => {
+      if (!dateSet.has(item.trade_date)) return [];
+      try {
+        const review = JSON.parse(item.payload) as DailyReview;
+        const alreadyBackfilled = review.historyMeta?.backfilled === true;
+        const verifiedCloseReview = review.status !== "demo"
+          && review.structure?.status === "complete"
+          && Boolean(review.comparison);
+        return alreadyBackfilled || verifiedCloseReview ? [item.trade_date] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    existingCompleted = [];
+  }
+  return { endDate, days, dates, completed: existingCompleted };
 }
 
 async function saveProgress(db: D1Database, progress: StoredProgress) {

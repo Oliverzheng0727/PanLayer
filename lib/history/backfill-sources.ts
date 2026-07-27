@@ -1,7 +1,7 @@
 const SOURCE_TIMEOUT_MS = 4_500;
 const SINA_TRADING_DATES =
   "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/" +
-  "CN_MarketData.getKLineData?symbol=sh000001&scale=240&ma=no&datalen=90";
+  "CN_MarketData.getKLineData?symbol=sh000001&scale=240&ma=no&datalen=320";
 const EASTMONEY_TOKEN = "7eea3edcaed734bea9cbfc24409ed989";
 
 const POOLS = {

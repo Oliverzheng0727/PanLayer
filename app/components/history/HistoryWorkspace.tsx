@@ -42,7 +42,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
   const [visibleCount, setVisibleCount] = useState(12);
   const [evidenceDrawer, setEvidenceDrawer] = useState<{ row: HistoryRow; kind: MarketEvidenceKind } | null>(null);
   const [backfillState, setBackfillState] = useState<"idle" | "running" | "complete" | "failed">("idle");
-  const [backfillLabel, setBackfillLabel] = useState("回补近20日");
+  const [backfillLabel, setBackfillLabel] = useState("回补近120日");
   const [newHighState, setNewHighState] = useState<"idle" | "running" | "complete" | "failed">("idle");
   const [newHighLabel, setNewHighLabel] = useState("初始化新高");
   const [newHighProgress, setNewHighProgress] = useState(initialNewHighProgress);
@@ -179,8 +179,8 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
     let previousRemaining = Number.POSITIVE_INFINITY;
     let stalledRuns = 0;
     try {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const response = await fetch("/api/v1/admin/jobs/history-backfill/run?days=20", { method: "POST" });
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        const response = await fetch("/api/v1/admin/jobs/history-backfill/run?days=120", { method: "POST" });
         const payload = await response.json().catch(() => ({})) as { error?: string; message?: string };
         if (!response.ok) throw new Error(payload.error ?? "历史回补失败");
         const message = payload.message ?? "";

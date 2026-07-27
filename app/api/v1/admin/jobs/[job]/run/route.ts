@@ -10,8 +10,8 @@ export async function POST(request: Request, context: { params: Promise<{ job: s
   const searchParams = new URL(request.url).searchParams;
   const daysParam = searchParams.get("days");
   const days = daysParam === null ? 20 : Number(daysParam);
-  if (daysParam !== null && (!Number.isInteger(days) || days < 1 || days > 20)) {
-    return Response.json({ error: "days must be an integer from 1 to 20" }, { status: 400 });
+  if (daysParam !== null && (!Number.isInteger(days) || days < 1 || days > 120)) {
+    return Response.json({ error: "days must be an integer from 1 to 120" }, { status: 400 });
   }
   const mapped: ScheduledJob | null = job === "morning-brief"
     ? { type: "morning-brief" }

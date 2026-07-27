@@ -16,6 +16,24 @@ describe("history backfill sources", () => {
     expect(dates.at(-1)).toBe("2026-07-04");
   });
 
+  it("requests enough calendar history for a 120-trading-day backfill", async () => {
+    let requestedUrl = "";
+    const rows = Array.from({ length: 130 }, (_, index) => {
+      const day = new Date("2026-01-01T00:00:00Z");
+      day.setUTCDate(day.getUTCDate() + index);
+      return { day: day.toISOString().slice(0, 10), close: "3500" };
+    });
+    const fetcher = async (input: RequestInfo | URL) => {
+      requestedUrl = String(input);
+      return new Response(JSON.stringify(rows));
+    };
+
+    const dates = await fetchRecentTradingDates("2026-12-31", 120, fetcher as typeof fetch);
+
+    expect(requestedUrl).toContain("datalen=320");
+    expect(dates).toHaveLength(120);
+  });
+
   it("maps Eastmoney four-pool fields without inventing values", async () => {
     const fetcher = async (input: RequestInfo | URL) => {
       const endpoint = String(input);

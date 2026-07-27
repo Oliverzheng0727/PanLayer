@@ -131,7 +131,7 @@ describe("close review aggregation", () => {
   it("assigns every scheduled job a stable lease label", () => {
     expect(leaseLabelForJob({ type: "breadth", time: "10:00" })).toBe("breadth-10:00");
     expect(leaseLabelForJob({ type: "close-review" })).toBe("close-review");
-    expect(leaseLabelForJob({ type: "history-backfill", days: 20 })).toBe("history-backfill");
+    expect(leaseLabelForJob({ type: "history-backfill", days: 120 })).toBe("history-backfill");
   });
 
   it("runs one resumable history-backfill batch and reports progress", async () => {
@@ -154,25 +154,25 @@ describe("close review aggregation", () => {
       async batch() { return []; },
     } as unknown as D1Database;
     vi.mocked(runHistoryBackfillBatch).mockResolvedValueOnce({
-      target: 20,
+      target: 120,
       completed: 5,
-      remaining: 15,
+      remaining: 115,
       dates: [],
     });
 
     await expect(runPanLayerJob(
-      { type: "history-backfill", days: 20 },
+      { type: "history-backfill", days: 120 },
       new Date("2026-07-23T08:00:00Z"),
       { DB: db },
-    )).resolves.toEqual({ ok: true, message: "history-backfill 5/20; remaining 15" });
+    )).resolves.toEqual({ ok: true, message: "history-backfill 5/120; remaining 115" });
 
     expect(runHistoryBackfillBatch).toHaveBeenCalledWith(expect.objectContaining({
       db,
       endDate: "2026-07-23",
-      days: 20,
+      days: 120,
       batchSize: 5,
     }));
-    expect(jobUpdates.at(-1)).toBe("history-backfill 5/20; remaining 15");
+    expect(jobUpdates.at(-1)).toBe("history-backfill 5/120; remaining 115");
   });
 
   it("bounds a completely hung global snapshot request and clears its timer", async () => {

@@ -36,6 +36,18 @@ function createBackfillDb(existing: Record<string, DailyReview> = {}) {
               }
               return null as T;
             },
+            async all<T>() {
+              if (sql.includes("FROM daily_reviews") && sql.includes("BETWEEN")) {
+                const from = String(args[0]);
+                const to = String(args[1]);
+                return {
+                  results: [...reviews.entries()]
+                    .filter(([date]) => date >= from && date <= to)
+                    .map(([trade_date, payload]) => ({ trade_date, payload })),
+                } as T;
+              }
+              return { results: [] } as T;
+            },
             async run() {
               if (sql.includes("INSERT INTO bootstrap_state")) {
                 progressValue = String(args[1]);
@@ -150,6 +162,26 @@ describe("history review backfill", () => {
     expect(repaired.leaders[0].name).toBe("电子甲");
     expect(repaired.structure).toMatchObject({ status: "complete", source: "东方财富历史四池" });
     expect(JSON.parse(fixture.getProgress()!).completed).toHaveLength(6);
+  });
+
+  it("seeds a larger target from already backfilled dates instead of downloading them again", async () => {
+    const existing = buildBackfilledReview(
+      "2026-07-22",
+      pools,
+      26978.8,
+      "2026-07-22T08:00:00.000Z",
+    );
+    const fixture = createBackfillDb({ "2026-07-22": existing });
+
+    const progress = await runHistoryBackfillBatch({
+      db: fixture.db,
+      endDate: "2026-07-22",
+      days: 6,
+      batchSize: 5,
+      fetcher: createBackfillFetcher() as typeof fetch,
+    });
+
+    expect(progress).toMatchObject({ target: 6, completed: 6, remaining: 0 });
   });
 
   it("preserves verified aggregate and index evidence while replacing historical pool structure", () => {

@@ -6,7 +6,7 @@ describe("admin morning brief regeneration API", () => {
     const adminRouteSource = await readFile(new URL("../app/api/v1/admin/jobs/[job]/run/route.ts", import.meta.url), "utf8");
     expect(adminRouteSource).toContain('job === "history-backfill"');
     expect(adminRouteSource).toContain('searchParams.get("days")');
-    expect(adminRouteSource).toMatch(/days[\s\S]*1[\s\S]*20/);
+    expect(adminRouteSource).toMatch(/days[\s\S]*1[\s\S]*120/);
   });
 
   it("exposes the resumable new-high initialization job", async () => {
