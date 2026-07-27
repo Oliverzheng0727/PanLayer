@@ -76,6 +76,26 @@ function aggregateBreadthStatus(
   return "partial";
 }
 
+export function breadthProgressDetail(
+  health: Pick<DailyJobHealth, "generatedAt" | "jobs" | "marketSession">,
+): string {
+  if (health.marketSession === false) return "中国市场休市，今日无盘中节点";
+  const now = new Date(health.generatedAt).getTime();
+  const jobs = Object.entries(health.jobs).filter(([key]) => key.startsWith("breadth-"));
+  const captured = jobs.filter(([, item]) => item.status === "complete" || item.status === "partial");
+  const outstanding = jobs.filter(([, item]) => item.status !== "complete" && item.status !== "partial");
+  const pending = outstanding.filter(([, item]) => new Date(item.expectedAt).getTime() > now);
+  const recovering = outstanding.filter(([, item]) => (
+    new Date(item.expectedAt).getTime() <= now && !item.overdue && item.status !== "failed"
+  ));
+  const missing = outstanding.filter(([, item]) => item.overdue || item.status === "failed");
+  const labels: string[] = [`已采集 ${captured.length}/6`];
+  if (recovering.length > 0) labels.push(`补采中 ${recovering.map(([key]) => key.replace("breadth-", "")).join("、")}`);
+  if (pending.length > 0) labels.push(`待采集 ${pending.length} 个节点`);
+  if (missing.length > 0) labels.push(`缺失 ${missing.map(([key]) => key.replace("breadth-", "")).join("、")}`);
+  return labels.join(" · ");
+}
+
 export function buildSidebarProgress(
   health: DailyJobHealth,
   newHighProgress: NewHighProgress,
@@ -88,7 +108,9 @@ export function buildSidebarProgress(
   );
   const completedDue = dueJobs.filter(([, item]) => item.status === "complete").length;
   const breadthJobs = Object.entries(health.jobs).filter(([key]) => key.startsWith("breadth-"));
-  const breadthCompleted = breadthJobs.filter(([, item]) => item.status === "complete").length;
+  const breadthCompleted = breadthJobs.filter(([, item]) => (
+    item.status === "complete" || item.status === "partial"
+  )).length;
   const close = health.jobs["close-review"];
   const closeStages = Object.entries(health.stages ?? {}).filter(([key]) => key.startsWith("close-review:"));
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
@@ -155,9 +177,7 @@ export function buildSidebarProgress(
         label: "盘中快照",
         status: breadthStatus,
         value: marketSession ? `${breadthCompleted}/6` : "非交易日",
-        detail: marketSession
-          ? breadthCompleted === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑"
-          : "中国市场休市，今日无盘中节点",
+        detail: breadthProgressDetail(health),
         updatedAt: latestFinishedAt(breadthJobs),
       },
       {

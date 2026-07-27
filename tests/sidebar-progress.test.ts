@@ -84,6 +84,23 @@ describe("sidebar progress model", () => {
     expect(result.tasks.find((item) => item.key === "breadth")?.status).toBe("pending");
   });
 
+  it("counts a persisted partial-quality breadth snapshot as captured", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-24",
+      generatedAt: "2026-07-24T02:05:00Z",
+      jobs: {
+        "breadth-09:25": job("partial", "2026-07-24T09:25:00+08:00", "数据质量 partial"),
+        "breadth-10:00": job("partial", "2026-07-24T10:00:00+08:00", "数据质量 partial"),
+        "breadth-11:00": job("pending", "2026-07-24T11:00:00+08:00"),
+      },
+    };
+
+    const result = buildSidebarProgress(health, progress, "partial");
+    expect(result.breadthCompleted).toBe(2);
+    expect(result.tasks.find((item) => item.key === "breadth")?.detail).toContain("已采集 2/6");
+    expect(result.tasks.find((item) => item.key === "breadth")?.detail).toContain("待采集");
+  });
+
   it("marks market-session tasks as closed on weekends instead of showing zero snapshots", () => {
     const health: DailyJobHealth = {
       tradeDate: "2026-07-25",

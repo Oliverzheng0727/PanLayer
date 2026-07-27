@@ -791,8 +791,12 @@ export async function runPanLayerJob(
       await persistStockUniverse(db, market.quotes, updatedAt);
       const metric = calculateBreadth(market.quotes);
       await db.prepare(`INSERT INTO breadth_snapshots (trade_date, snapshot_time, rising, falling, flat, source, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, snapshot_time) DO UPDATE SET rising=excluded.rising, falling=excluded.falling, flat=excluded.flat, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, job.time, metric.rising, metric.falling, metric.flat, market.source, market.status, updatedAt).run();
-      finalStatus = market.status;
-      finalMessage = `${market.quotes.length}只；${market.message}`;
+      // A non-empty snapshot is a completed scheduled capture even when the
+      // underlying quote cross-check is only partial. Data quality remains on
+      // the persisted snapshot and source audit instead of keeping the job in
+      // an endless retry loop.
+      finalStatus = "complete";
+      finalMessage = `${market.quotes.length}只；数据质量 ${market.status}；${market.message}`;
     } else if (job.type === "close-review") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({

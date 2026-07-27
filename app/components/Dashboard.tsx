@@ -28,7 +28,7 @@ import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 import { DailyJobHealthPanel } from "./data/DailyJobHealth";
 import { SidebarDataProgressCard } from "./data/SidebarDataProgressCard";
-import type { DailyJobHealth } from "../../lib/data/repository";
+import type { DailyJobHealth, IntradayBreadthTimeline } from "../../lib/data/repository";
 
 type HistoryHandle = HistoryWorkspaceHandle;
 
@@ -54,6 +54,7 @@ interface LiveMarketPayload {
   marketTime: string | null;
   receivedAt: string;
   isStale: boolean;
+  intraday: IntradayBreadthTimeline;
 }
 
 const statusViews: Record<DailyReview["status"], { label: string; detail: string; dot: string; pill: string }> = {
@@ -82,7 +83,7 @@ function briefCoverageLabel(brief: MorningBrief) {
   return `${versionLabel} · 采集${status} · 来源 ${coverage.sourceSuccess}/${coverage.sourceTotal} · 失败 ${coverage.failedSources} · 已核验事实 ${coverage.verifiedFacts} · 交叉核验 ${coverage.crossCheckedFacts}`;
 }
 
-export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; userName: string; canManageBrief: boolean }) {
+export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, intradayBreadth, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; intradayBreadth: IntradayBreadthTimeline; userName: string; canManageBrief: boolean }) {
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -95,6 +96,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
   } | null>(null);
   const [trendMetric, setTrendMetric] = useState<TrendMetricKey | null>(null);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
+  const [currentIntradayBreadth, setCurrentIntradayBreadth] = useState(intradayBreadth);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState(
     () => history.find((row) => row.date === review.date)?.date ?? history[0]?.date ?? review.date,
   );
@@ -117,6 +119,8 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     ? isLiveBreadthUsable ? liveMarket.breadth : null
     : persistedTotal;
   const maxBreadth = Math.max(1, total?.rising ?? 0, total?.falling ?? 0, ...review.breadth.flatMap((item) => [item.rising, item.falling]));
+  const marketSession = dataHealth.marketSession ?? true;
+  const breadthChartData = marketSession ? currentIntradayBreadth.snapshots : review.breadth;
   const ladder = [
     ["五板+", review.ladder.fivePlus], ["四板", review.ladder.fourth], ["三板", review.ladder.third], ["二板", review.ladder.second], ["首板", review.ladder.first],
   ] as Array<[string, Quote[]]>;
@@ -189,6 +193,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     try {
       const response = await fetch("/api/v1/market/live", { cache: "no-store" });
       const payload = await response.json() as Partial<LiveMarketPayload> & { error?: string };
+      if (payload.intraday) setCurrentIntradayBreadth(payload.intraday);
       if (!response.ok || !payload.breadth || !payload.receivedAt) throw new Error(payload.error ?? payload.message ?? "实时市场数据更新失败");
       setLiveMarket(payload as LiveMarketPayload);
       setRefreshError("");
@@ -302,15 +307,19 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
 
           <section className="dashboard-section grid gap-5 xl:grid-cols-[1.5fr_1fr]">
             <Panel title="盘中涨跌家数" eyebrow="MARKET BREADTH" id="breadth">
-              {review.breadthMeta?.status === "partial" && (
-                <p className="mb-2 text-xs text-amber-300/70">
-                  已采集 {review.breadthMeta.captured}/{review.breadthMeta.expected}
-                  {review.breadthMeta.missing.length > 0 ? ` · 缺少 ${review.breadthMeta.missing.join("、")}` : ""}
-                </p>
+              {marketSession ? (
+                <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                  <span className="text-white/45">{currentIntradayBreadth.date} · 已采集 {currentIntradayBreadth.meta.captured}/{currentIntradayBreadth.meta.expected}</span>
+                  {currentIntradayBreadth.meta.recovering.length > 0 && <span className="text-sky-300/70">补采中 {currentIntradayBreadth.meta.recovering.join("、")}</span>}
+                  {currentIntradayBreadth.meta.pending.length > 0 && <span className="text-white/28">待采集 {currentIntradayBreadth.meta.pending.join("、")}</span>}
+                  {currentIntradayBreadth.meta.missing.length > 0 && <span className="text-amber-300/75">缺失 {currentIntradayBreadth.meta.missing.join("、")}</span>}
+                </div>
+              ) : (
+                <p className="mb-2 text-xs text-white/35">今日非交易日 · 展示最近交易日 {review.date}</p>
               )}
-              {review.breadth.length === 0
-                ? <div className="grid h-[270px] place-items-center text-sm text-white/30">盘中涨跌家数暂缺</div>
-                : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={review.breadth}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}
+              {breadthChartData.length === 0
+                ? <div className="grid h-[270px] place-items-center text-sm text-white/30">{currentIntradayBreadth.meta.recovering.length > 0 ? "节点正在补采，请稍后刷新" : currentIntradayBreadth.meta.pending.length > 0 ? `等待 ${currentIntradayBreadth.meta.pending[0]} 节点` : "盘中涨跌家数暂缺"}</div>
+                : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={breadthChartData}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}
             </Panel>
             <Panel title="市场温度" eyebrow="CLOSE SNAPSHOT">
               {total === null

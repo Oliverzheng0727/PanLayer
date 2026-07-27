@@ -1,6 +1,6 @@
 import { isValidPersistedMorningBrief } from "../ai/morning-brief-assembly";
 import type { MorningBrief } from "../ai/morning-brief-contract";
-import type { DailyReview } from "../domain/types";
+import type { Breadth, DailyReview } from "../domain/types";
 import { reviewToHistoryRow, type HistoryRow } from "../history/query";
 import type { HighDetail } from "../history/high-details";
 import {
@@ -12,6 +12,7 @@ import {
 import { reconcileGlobalPoints } from "./global/reconcile";
 import type { GlobalPoint } from "./global/types";
 import {
+  BREADTH_CHECKPOINT_TIMES,
   expectedDailyJobs,
   readDailyJobCheckpoints,
   type JobCheckpoint,
@@ -33,6 +34,93 @@ interface HealthNewsRun {
   started_at: string;
   finished_at: string | null;
   error_summary_json: string;
+}
+
+export interface IntradayBreadthPoint extends Breadth {
+  time: string;
+  source: string;
+  status: "complete" | "partial";
+  updatedAt: string;
+}
+
+export interface IntradayBreadthTimeline {
+  date: string;
+  snapshots: IntradayBreadthPoint[];
+  meta: {
+    expected: number;
+    captured: number;
+    pending: string[];
+    recovering: string[];
+    missing: string[];
+    status: "pending" | "partial" | "complete";
+    source: string;
+    updatedAt: string | null;
+  };
+}
+
+const BREADTH_RECOVERY_WINDOW_MS = 20 * 60_000;
+
+export function buildIntradayBreadthTimeline({
+  date,
+  now,
+  snapshots,
+}: {
+  date: string;
+  now: Date;
+  snapshots: IntradayBreadthPoint[];
+}): IntradayBreadthTimeline {
+  const expected = new Set<string>(BREADTH_CHECKPOINT_TIMES);
+  const validByTime = new Map(
+    snapshots
+      .filter((snapshot) => expected.has(snapshot.time))
+      .map((snapshot) => [snapshot.time, snapshot]),
+  );
+  const ordered = BREADTH_CHECKPOINT_TIMES.flatMap((time) => {
+    const snapshot = validByTime.get(time);
+    return snapshot ? [snapshot] : [];
+  });
+  const pending: string[] = [];
+  const recovering: string[] = [];
+  const missing: string[] = [];
+
+  for (const time of BREADTH_CHECKPOINT_TIMES) {
+    if (validByTime.has(time)) continue;
+    const expectedAt = new Date(`${date}T${time}:00+08:00`).getTime();
+    if (now.getTime() < expectedAt) {
+      pending.push(time);
+    } else if (now.getTime() <= expectedAt + BREADTH_RECOVERY_WINDOW_MS) {
+      recovering.push(time);
+    } else {
+      missing.push(time);
+    }
+  }
+
+  const captured = ordered.length;
+  const sources = [...new Set(ordered.map((snapshot) => snapshot.source).filter(Boolean))];
+  const updatedAt = ordered
+    .map((snapshot) => snapshot.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? null;
+
+  return {
+    date,
+    snapshots: ordered,
+    meta: {
+      expected: BREADTH_CHECKPOINT_TIMES.length,
+      captured,
+      pending,
+      recovering,
+      missing,
+      status: captured === BREADTH_CHECKPOINT_TIMES.length
+        ? "complete"
+        : captured > 0 || recovering.length > 0 || missing.length > 0
+          ? "partial"
+          : "pending",
+      source: sources.join(" / "),
+      updatedAt,
+    },
+  };
 }
 
 const healthSection = (status: string, message: string, updatedAt: string | null) => ({ status, message, updatedAt });
@@ -190,14 +278,21 @@ export function buildDailyJobHealth({
     marketSession: isChinaTradingWeekday(now),
   }).map((expected) => {
     const checkpoint = checkpointByKey.get(expected.key);
-    const overdue = now.getTime() > new Date(expected.expectedAt).getTime() + 5 * 60_000
+    const expectedTime = new Date(expected.expectedAt).getTime();
+    const graceMs = expected.key.startsWith("breadth-") ? BREADTH_RECOVERY_WINDOW_MS : 5 * 60_000;
+    const overdue = now.getTime() > expectedTime + graceMs
       && checkpoint?.status !== "complete";
+    const pendingMessage = now.getTime() < expectedTime
+      ? "等待计划时间"
+      : overdue
+        ? "补采窗口已过，等待兜底重试"
+        : "计划时间已到，正在自动采集";
     return [expected.key, {
       status: checkpoint?.status ?? "pending",
       expectedAt: expected.expectedAt,
       finishedAt: checkpoint?.finishedAt ?? null,
       nextRetryAt: checkpoint?.nextRetryAt ?? null,
-      message: checkpoint?.message ?? (overdue ? "计划时间已过，等待自动补跑" : "等待计划时间"),
+      message: checkpoint?.message ?? pendingMessage,
       attempt: checkpoint?.attempt ?? 0,
       overdue,
     }];
@@ -311,6 +406,42 @@ export async function readLatestReview(onOrBefore: string): Promise<DailyReview 
   if (!row?.payload) return null;
   try { return JSON.parse(row.payload) as DailyReview; }
   catch { return null; }
+}
+
+export async function readIntradayBreadthTimeline(
+  date: string,
+  now = new Date(),
+): Promise<IntradayBreadthTimeline> {
+  const db = await getD1();
+  if (!db) return buildIntradayBreadthTimeline({ date, now, snapshots: [] });
+  try {
+    const result = await db.prepare(
+      `SELECT snapshot_time, rising, falling, flat, source, status, updated_at
+       FROM breadth_snapshots
+       WHERE trade_date = ?
+       ORDER BY snapshot_time`,
+    ).bind(date).all<{
+      snapshot_time: string;
+      rising: number;
+      falling: number;
+      flat: number;
+      source: string;
+      status: string;
+      updated_at: string;
+    }>();
+    const snapshots = (result.results ?? []).map((row): IntradayBreadthPoint => ({
+      time: String(row.snapshot_time),
+      rising: Number(row.rising),
+      falling: Number(row.falling),
+      flat: Number(row.flat),
+      source: String(row.source ?? ""),
+      status: row.status === "complete" ? "complete" : "partial",
+      updatedAt: String(row.updated_at ?? ""),
+    }));
+    return buildIntradayBreadthTimeline({ date, now, snapshots });
+  } catch {
+    return buildIntradayBreadthTimeline({ date, now, snapshots: [] });
+  }
 }
 
 export async function readBrief(date: string): Promise<MorningBrief | null> {

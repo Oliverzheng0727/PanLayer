@@ -8,6 +8,8 @@ describe("live market API contract", () => {
     expect(route).toMatch(/authorizeApi/);
     expect(route).toMatch(/loadLiveMarketSnapshot/);
     expect(route).toMatch(/loadExpectedSymbols/);
+    expect(route).toMatch(/readIntradayBreadthTimeline/);
+    expect(route).toMatch(/intraday/);
     expect(route).toMatch(/expectedSymbols/);
     expect(route).toMatch(/breadth:\s*null/);
     expect(route).toMatch(/status:\s*"failed"/);

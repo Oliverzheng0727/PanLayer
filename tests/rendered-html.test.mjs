@@ -119,7 +119,7 @@ test("removes the disposable starter preview", async () => {
 
 test("expands the ETF K-line into a full-width row on medium screens", async () => {
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  const responsiveRule = css.match(/@media \(max-width:1180px\) \{[^}]+(?:\}[^@]*)*/)?.[0] ?? "";
+  const responsiveRule = css.match(/@media \(max-width:1480px\) \{[^}]+(?:\}[^@]*)*/)?.[0] ?? "";
   assert.match(responsiveRule, /\.etf-chart-panel \{ grid-column:1\/-1;/);
   assert.match(responsiveRule, /\.etf-chart-canvas \{ height:560px;/);
 });

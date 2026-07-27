@@ -70,6 +70,7 @@ describe("independent Cloudflare scheduler worker", () => {
     expect(config).toContain('"30 17 * * *"');
     expect(config).toContain('"0,10,25,30 1-8 * * MON-FRI"');
     expect(config.match(/"[^\"]+\* \* [A-Z*-]+"/g)).toHaveLength(5);
+    expect(config).not.toContain('"2 2,3,5,6,7 * * MON-FRI"');
     expect(config).toContain('"PANLAYER_TARGET_URL"');
     expect(config).not.toContain("PANLAYER_CRON_SECRET");
   });

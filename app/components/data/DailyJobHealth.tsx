@@ -1,5 +1,6 @@
 import type { DailyJobHealth } from "../../../lib/data/repository";
 import type { NewHighProgress } from "../../../lib/history/new-high-progress";
+import { breadthProgressDetail } from "../../../lib/jobs/sidebar-progress";
 import { clockTime } from "./LiveDataStatus";
 
 const statusLabel = {
@@ -19,7 +20,9 @@ export function DailyJobHealthPanel({
 }) {
   const marketSession = health.marketSession ?? true;
   const breadthJobs = Object.entries(health.jobs).filter(([key]) => key.startsWith("breadth-"));
-  const breadthComplete = breadthJobs.filter(([, job]) => job.status === "complete").length;
+  const breadthComplete = breadthJobs.filter(([, job]) => (
+    job.status === "complete" || job.status === "partial"
+  )).length;
   const close = health.jobs["close-review"];
   const closeStages = Object.entries(health.stages ?? {}).filter(([key]) => key.startsWith("close-review:"));
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
@@ -33,9 +36,7 @@ export function DailyJobHealthPanel({
     {
       label: "盘中快照",
       value: marketSession ? `${breadthComplete}/6` : "非交易日",
-      detail: marketSession
-        ? breadthComplete === 6 ? "六个节点完整" : "缺失节点将按有效窗口补跑"
-        : "中国市场休市，今日无盘中节点",
+      detail: breadthProgressDetail(health),
     },
     {
       label: "收盘复盘",
