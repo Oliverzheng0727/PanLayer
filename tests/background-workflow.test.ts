@@ -25,11 +25,9 @@ describe("production background workflow", () => {
     expect(route).toMatch(/runPanLayerJob/);
 
     expect(viteConfig).toContain('"17 * * * *"');
-    expect(viteConfig).toContain('"2 2 * * 1-5"');
-    expect(viteConfig).toContain('"2 3 * * 1-5"');
-    expect(viteConfig).toContain('"2 5 * * 1-5"');
-    expect(viteConfig).toContain('"2 6 * * 1-5"');
-    expect(viteConfig).toContain('"2 7 * * 1-5"');
+    expect(viteConfig).toContain('"50,55 22 * * *"');
+    expect(viteConfig).toContain('"15,20,25,30 23,0 * * *"');
+    expect(viteConfig).toContain('"0,10,20,25-30 1-8 * * 1-5"');
     expect(viteConfig).not.toContain('"0,30 10-15 * * 1-5"');
     expect(viteConfig).not.toContain('"*/5 18-21 * * 0-4"');
     expect(viteConfig).not.toContain('"*/5 0-10 * * 1-5"');

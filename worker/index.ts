@@ -56,6 +56,7 @@ const worker = {
       db: env.DB,
       now,
       runJob: (job) => runPanLayerJob(job, now, env),
+      provider: "worker",
     }));
   },
 };

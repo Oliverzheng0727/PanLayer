@@ -24,7 +24,9 @@ export function DailyJobHealthPanel({
     job.status === "complete" || job.status === "partial"
   )).length;
   const close = health.jobs["close-review"];
-  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) => key.startsWith("close-review:"));
+  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) =>
+    key.startsWith("close-review:") && key !== "close-review:assemble"
+  );
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
   const brief = health.jobs["morning-brief"];
   const briefLate = brief?.finishedAt

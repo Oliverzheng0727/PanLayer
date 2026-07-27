@@ -10,13 +10,14 @@ export function formatEtfMetricsProgress(progress: {
   attempted: number;
   remaining: number;
   failed: number;
+  inapplicable?: number;
   errors?: Array<{ symbol: string; message: string }>;
 }): string {
   const failures = (progress.errors ?? [])
     .slice(0, 2)
     .map((error) => `${error.symbol} ${error.message}`)
     .join("；");
-  return `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}`
+  return `etf-metrics ${progress.completed}/${progress.attempted}; remaining ${progress.remaining}; failed ${progress.failed}; sample-insufficient ${progress.inapplicable ?? 0}`
     + (failures ? `; ${failures}` : "");
 }
 
@@ -26,29 +27,34 @@ export async function enrichEtfMetricsBatch({
   batchSize,
   loadBars,
   minimumIntervalMs = 0,
+  inapplicableSymbols = new Set<string>(),
 }: {
   items: EtfSnapshot[];
   cursor: number;
   batchSize: number;
   loadBars: (symbol: string) => Promise<Array<Pick<MarketBar, "time" | "amount">>>;
   minimumIntervalMs?: number;
+  inapplicableSymbols?: Set<string>;
 }): Promise<{
   items: EtfSnapshot[];
   attempted: number;
   completed: number;
   failed: number;
+  inapplicable: number;
+  inapplicableSymbols: string[];
   errors: Array<{ symbol: string; message: string }>;
   nextCursor: number;
   remaining: number;
 }> {
   const missingIndices = items
-    .flatMap((item, index) => item.averageAmount20 === null ? [index] : [])
+    .flatMap((item, index) => item.averageAmount20 === null && !inapplicableSymbols.has(item.symbol) ? [index] : [])
     .sort((left, right) => items[right].amount - items[left].amount);
   const start = cursor >= missingIndices.length ? 0 : Math.max(0, cursor);
   const selected = missingIndices.slice(start, start + Math.max(1, batchSize));
   const next = [...items];
   let completed = 0;
   let failed = 0;
+  let inapplicable = 0;
   const errors: Array<{ symbol: string; message: string }> = [];
   let lastRequestStartedAt = 0;
 
@@ -61,11 +67,8 @@ export async function enrichEtfMetricsBatch({
       lastRequestStartedAt = Date.now();
       const averageAmount20 = calculateAverageAmount20(await loadBars(items[itemIndex].symbol));
       if (averageAmount20 === null) {
-        failed += 1;
-        errors.push({
-          symbol: items[itemIndex].symbol,
-          message: "不足20个有效成交额交易日",
-        });
+        inapplicable += 1;
+        inapplicableSymbols.add(items[itemIndex].symbol);
         continue;
       }
       next[itemIndex] = { ...items[itemIndex], averageAmount20 };
@@ -79,11 +82,21 @@ export async function enrichEtfMetricsBatch({
     }
   }
 
-  const remaining = next.filter((item) => item.averageAmount20 === null).length;
+  const remaining = next.filter((item) => item.averageAmount20 === null && !inapplicableSymbols.has(item.symbol)).length;
   const nextCursor = completed > 0
     ? 0
     : start + selected.length >= missingIndices.length ? 0 : start + selected.length;
-  return { items: next, attempted: selected.length, completed, failed, errors, nextCursor, remaining };
+  return {
+    items: next,
+    attempted: selected.length,
+    completed,
+    failed,
+    inapplicable,
+    inapplicableSymbols: [...inapplicableSymbols].sort(),
+    errors,
+    nextCursor,
+    remaining,
+  };
 }
 
 export async function runEtfMetricsRefreshBatch({
@@ -102,10 +115,21 @@ export async function runEtfMetricsRefreshBatch({
   fuyaoBaseUrl?: string;
 }) {
   const stateKey = `etf-metrics-cursor:${date}`;
-  const [persisted, cursorRow] = await Promise.all([
+  const inapplicableStateKey = `etf-metrics-inapplicable:${date}`;
+  const [persisted, cursorRow, inapplicableRow] = await Promise.all([
     loadLatestEtfCatalogSnapshot(db, date),
     db.prepare("SELECT value FROM bootstrap_state WHERE key = ?").bind(stateKey).first<{ value: string }>(),
+    db.prepare("SELECT value FROM bootstrap_state WHERE key = ?").bind(inapplicableStateKey).first<{ value: string }>(),
   ]);
+  let inapplicableSymbols = new Set<string>();
+  try {
+    const parsed = JSON.parse(inapplicableRow?.value ?? "[]") as unknown;
+    if (Array.isArray(parsed)) {
+      inapplicableSymbols = new Set(parsed.filter((symbol): symbol is string => typeof symbol === "string"));
+    }
+  } catch {
+    inapplicableSymbols = new Set();
+  }
   const live = await createEastmoneyProvider(fetcher).getEtfs(date).catch(() => []);
   let items = live.length > 0
     ? mergeEtfDerivedMetrics(live, persisted?.items ?? [])
@@ -152,6 +176,7 @@ export async function runEtfMetricsRefreshBatch({
     cursor: Number(cursorRow?.value ?? 0),
     batchSize,
     minimumIntervalMs: 1_100,
+    inapplicableSymbols,
     loadBars: async (symbol) => (await loadEtfBarsWithFallback(
       symbol,
       "day",
@@ -170,9 +195,15 @@ export async function runEtfMetricsRefreshBatch({
     status: result.remaining === 0 ? "complete" : "partial",
     receivedAt,
   });
-  await db.prepare(
-    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-  ).bind(stateKey, String(result.nextCursor), receivedAt).run();
+  await db.batch([
+    db.prepare(
+      `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+    ).bind(stateKey, String(result.nextCursor), receivedAt),
+    db.prepare(
+      `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+    ).bind(inapplicableStateKey, JSON.stringify(result.inapplicableSymbols), receivedAt),
+  ]);
   return { ...result, total: items.length };
 }

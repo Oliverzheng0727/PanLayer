@@ -32,7 +32,11 @@ describe("independent Cloudflare scheduler worker", () => {
       input: "https://example.com/api/v1/internal/scheduler/tick",
       init: {
         method: "POST",
-        headers: { Authorization: "Bearer scheduler-secret" },
+        headers: {
+          Authorization: "Bearer scheduler-secret",
+          "X-PanLayer-Scheduled-Time": expect.any(String),
+          "X-PanLayer-Scheduler": "cloudflare",
+        },
       },
     });
     expect(result).toEqual({ status: 200, body: '{"ok":true}' });
@@ -66,9 +70,9 @@ describe("independent Cloudflare scheduler worker", () => {
     expect(config).toContain('"compatibility_date": "2026-07-24"');
     expect(config).toContain('"workers_dev": false');
     expect(config).toContain('"50,55 22 * * *"');
-    expect(config).toContain('"15,30 23,0 * * *"');
+    expect(config).toContain('"15,20,25,30 23,0 * * *"');
     expect(config).toContain('"30 17 * * *"');
-    expect(config).toContain('"0,10,25-30 1-8 * * MON-FRI"');
+    expect(config).toContain('"0,10,20,25-30 1-8 * * MON-FRI"');
     expect(config.match(/"[^\"]+\* \* [A-Z*-]+"/g)).toHaveLength(5);
     expect(config).not.toContain('"2 2,3,5,6,7 * * MON-FRI"');
     expect(config).toContain('"PANLAYER_TARGET_URL"');

@@ -1,4 +1,4 @@
-export async function triggerPanLayerScheduler(env, fetcher = fetch) {
+export async function triggerPanLayerScheduler(env, fetcher = fetch, scheduledTime = Date.now()) {
   const targetUrl = String(env.PANLAYER_TARGET_URL ?? "").trim();
   const secret = String(env.PANLAYER_CRON_SECRET ?? "").trim();
   if (!targetUrl) throw new Error("PANLAYER_TARGET_URL is not configured");
@@ -6,7 +6,11 @@ export async function triggerPanLayerScheduler(env, fetcher = fetch) {
 
   const response = await fetcher(targetUrl, {
     method: "POST",
-    headers: { Authorization: `Bearer ${secret}` },
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "X-PanLayer-Scheduler": "cloudflare",
+      "X-PanLayer-Scheduled-Time": String(scheduledTime),
+    },
   });
   const body = await response.text();
   if (!response.ok) {
@@ -27,8 +31,8 @@ const worker = {
     return new Response("Not found", { status: 404 });
   },
 
-  async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(triggerPanLayerScheduler(env));
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(triggerPanLayerScheduler(env, fetch, controller.scheduledTime));
   },
 };
 

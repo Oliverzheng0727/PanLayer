@@ -24,6 +24,7 @@ export function LiveDataStatus({
   marketSession = true,
   error = "",
   label = "行情",
+  hasData = true,
 }: {
   source: string;
   status: LiveDataState;
@@ -33,11 +34,12 @@ export function LiveDataStatus({
   marketSession?: boolean;
   error?: string;
   label?: string;
+  hasData?: boolean;
 }) {
   const failed = status === "failed" || Boolean(error);
   const effectiveStale = marketSession && isStale;
   const stateLabel = failed
-    ? "更新失败 · 旧数据"
+    ? hasData ? "更新失败 · 旧数据" : "更新失败 · 暂无数据"
     : !marketSession
       ? "最近交易日"
       : effectiveStale

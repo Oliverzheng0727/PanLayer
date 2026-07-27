@@ -27,13 +27,14 @@ interface HistoryWorkspaceProps {
   initialNewHighProgress: NewHighProgress;
   canManageHistory?: boolean;
   onSelectedRowChange?: (row: HistoryRow) => void;
+  onNewHighProgressChange?: (progress: NewHighProgress) => void;
 }
 
 export interface HistoryWorkspaceHandle {
   selectDate: (date: string) => void;
 }
 
-export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorkspaceProps>(function HistoryWorkspace({ initialRows = [], initialNewHighProgress, canManageHistory = false, onSelectedRowChange }, ref) {
+export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorkspaceProps>(function HistoryWorkspace({ initialRows = [], initialNewHighProgress, canManageHistory = false, onSelectedRowChange, onNewHighProgressChange }, ref) {
   const router = useRouter();
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
@@ -126,13 +127,14 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
     if (!response.ok) return;
     const progress = await response.json() as NewHighProgress;
     setNewHighProgress(progress);
+    onNewHighProgressChange?.(progress);
     if (progress.complete) {
       setNewHighState("complete");
       setNewHighLabel("新高初始化完成");
     } else if (newHighState !== "running" && newHighState !== "failed") {
       setNewHighLabel(progress.completed > 0 ? "继续初始化" : "初始化新高");
     }
-  }, [newHighState]);
+  }, [newHighState, onNewHighProgressChange]);
 
   useEffect(() => {
     if (newHighProgress.complete) return;

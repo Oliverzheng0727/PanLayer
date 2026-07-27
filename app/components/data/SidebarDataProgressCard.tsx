@@ -32,6 +32,11 @@ const statusView: Record<SidebarProgressStatus, {
     dot: "bg-amber-400 shadow-[0_0_8px_#f59e0b]",
     text: "text-amber-300",
   },
+  delayed: {
+    label: "延迟",
+    dot: "bg-amber-300 shadow-[0_0_8px_#fcd34d]",
+    text: "text-amber-200",
+  },
   complete: {
     label: "完整",
     dot: "bg-emerald-400 shadow-[0_0_8px_#34d399]",
@@ -124,13 +129,21 @@ export function SidebarDataProgressCard({
           </span>
         </span>
         <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
-          <span>调度心跳</span>
-          <span className={health.heartbeat?.status === "failed" ? "text-red-300" : health.heartbeat?.status === "running" ? "text-sky-300" : "text-emerald-300"}>
+          <span>调度心跳{health.heartbeat?.provider ? ` · ${health.heartbeat.provider}` : ""}</span>
+          <span className={health.heartbeat?.status === "failed" ? "text-red-300" : health.heartbeat?.status === "running" ? "text-sky-300" : health.heartbeat?.status === "partial" ? "text-amber-300" : "text-emerald-300"}>
             {health.heartbeat
-              ? `${health.heartbeat.stale ? "中断" : health.heartbeat.status === "running" ? "运行中" : health.heartbeat.status === "failed" ? "异常" : "正常"} · ${formatBeijingDateTime(health.heartbeat.receivedAt)}`
+              ? `${health.heartbeat.stale ? "中断" : health.heartbeat.status === "running" ? "运行中" : health.heartbeat.status === "failed" ? "异常" : health.heartbeat.status === "partial" ? "部分任务待补跑" : "正常"} · ${formatBeijingDateTime(health.heartbeat.receivedAt)}`
               : "尚未收到"}
           </span>
         </span>
+        <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>当前交易日</span>
+          <span>{health.tradeDate} · {formatBeijingDateTime(health.generatedAt)}</span>
+        </span>
+        {health.latestCompletedTradeDate && <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>最新完整复盘</span>
+          <span>{health.latestCompletedTradeDate}</span>
+        </span>}
       </button>
 
       <div
@@ -164,6 +177,11 @@ export function SidebarDataProgressCard({
                     {taskTime ? ` · ${taskTime}` : ""}
                   </p>
                   {canManageJobs && task.key === "tier2-firecrawl" && <Tier2RerunButton />}
+                  {task.nextRetryAt && (
+                    <p className="mt-1 text-[9px] text-amber-200/45">
+                      下次自动重试 {formatBeijingDateTime(task.nextRetryAt)}
+                    </p>
+                  )}
                 </div>
               );
             })}

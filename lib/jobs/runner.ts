@@ -43,6 +43,7 @@ import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import { fetchThsPopularitySnapshot } from "../data/ths-popularity";
+import { applyStructuredSignalFallbacks } from "../data/structured-signal-fallback";
 import type { SourceAudit } from "../data/quality";
 import { fetchTencentQuotes } from "../data/tencent";
 import { withRetry } from "../data/resilience";
@@ -778,14 +779,14 @@ export async function runPanLayerJob(
   now: Date,
   env: PanLayerEnv,
   options: { force?: boolean; fetcher?: typeof fetch; sectionKeys?: BriefSectionKey[]; mode?: "failed" } = {},
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; status: "running" | "partial" | "complete" | "failed"; message: string }> {
   if (!env.DB) throw new Error("DB binding is unavailable");
   const db = env.DB;
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
   const leaseJob = leaseLabelForJob(job);
   const leaseToken = await acquireJobLease(db, leaseJob, date);
-  if (!leaseToken) return { ok: false, message: `${leaseJob} already running` };
+  if (!leaseToken) return { ok: true, status: "running", message: `${leaseJob} already running` };
   const morningBriefLease: MorningBriefLease | undefined = leaseJob === "morning-brief" && leaseToken
     ? { token: leaseToken, renew: () => renewJobLease(db, "morning-brief", date, leaseToken) }
     : undefined;
@@ -967,7 +968,7 @@ export async function runPanLayerJob(
       const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
       if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
       await finishCheckpoint(progress.remaining === 0 ? "complete" : "partial", message, progress);
-      return { ok: true, message };
+      return { ok: true, status: progress.remaining === 0 ? "complete" : "partial", message };
     } else if (job.type === "new-high-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
       const store = createD1NewHighStateStore(db);
@@ -1017,7 +1018,7 @@ export async function runPanLayerJob(
         ).bind(status, message, new Date().toISOString(), run.id).run();
       }
       await finishCheckpoint(status, message, progress);
-      return { ok: true, message };
+      return { ok: true, status, message };
     } else if (job.type === "etf-metrics-refresh") {
       const progress = await runEtfMetricsRefreshBatch({
         db,
@@ -1028,14 +1029,35 @@ export async function runPanLayerJob(
         fuyaoBaseUrl: env.FUYAO_MCP_BASE_URL,
       });
       const message = formatEtfMetricsProgress(progress);
-      const status = progress.remaining === 0 ? "complete" : "partial";
+      const historyStatus = progress.remaining === 0 ? "complete" : "partial";
+      const finishedAt = new Date().toISOString();
+      await recordJobCheckpoint(db, {
+        tradeDate: date,
+        key: "etf-metrics-refresh",
+        stage: "history-metrics",
+        status: historyStatus,
+        attempt: checkpointAttempt,
+        expectedAt: checkpointExpectedAt,
+        startedAt: checkpointStartedAt,
+        finishedAt,
+        nextRetryAt: historyStatus === "complete"
+          ? null
+          : new Date(now.getTime() + 5 * 60_000).toISOString(),
+        message,
+        resultJson: JSON.stringify(progress),
+      });
+      const dailyMessage = `ETF 当日行情已更新；历史指标${historyStatus === "complete" ? "完整" : "后台初始化中"}；${message}`;
       if (run?.id) {
         await db.prepare(
           "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
-        ).bind(status, message, new Date().toISOString(), run.id).run();
+        ).bind("complete", dailyMessage, finishedAt, run.id).run();
       }
-      await finishCheckpoint(status, message, progress);
-      return { ok: true, message };
+      await finishCheckpoint("complete", dailyMessage, {
+        dailySnapshot: "complete",
+        historyMetrics: historyStatus,
+        ...progress,
+      });
+      return { ok: true, status: "complete", message: dailyMessage };
     } else if (job.type === "breadth") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({
@@ -1137,6 +1159,7 @@ export async function runPanLayerJob(
         existingIndices,
         fuyaoPool,
         thsPopularity,
+        fallbackSectors,
       ] = await Promise.all([
         withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
         provider.getMarginBalance(date).catch(() => null),
@@ -1150,8 +1173,9 @@ export async function runPanLayerJob(
             ).catch(() => null)
           : Promise.resolve(null),
         fetchThsPopularitySnapshot(date, now, fetcher),
+        provider.getSectors(date).catch(() => []),
       ]);
-      const [structuredSignals, fuyaoAggregate] = fuyao
+      const [rawStructuredSignals, fuyaoAggregate] = fuyao
         ? await Promise.all([
             fuyao.fetchStructuredMarketSignals(date, now, fuyaoPool ?? undefined).catch(() => undefined),
             withRetry(
@@ -1160,6 +1184,13 @@ export async function runPanLayerJob(
             ).catch(() => null),
           ])
         : [undefined, null] as const;
+      const structuredSignals = applyStructuredSignalFallbacks({
+        signals: rawStructuredSignals,
+        popularity: thsPopularity,
+        sectors: fallbackSectors,
+        referenceDate: date,
+        receivedAt: new Date().toISOString(),
+      });
       const effectiveBoardPools: BoardPools | null = boardPools
         ? {
             ...boardPools,
@@ -1403,13 +1434,13 @@ export async function runPanLayerJob(
       if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force), existingSchemaVersion, existingSectionCount)) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         await finishCheckpoint("complete", "already complete; skipped");
-        return { ok: true, message: `${label} already complete; skipped` };
+        return { ok: true, status: "complete", message: `${label} already complete; skipped` };
       }
       const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS_V3.map((section) => section.key);
       if (selectedKeys.length === 0) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         await finishCheckpoint("complete", "no failed or missing modules; skipped");
-        return { ok: true, message: `${label} no failed or missing modules; skipped` };
+        return { ok: true, status: "complete", message: `${label} no failed or missing modules; skipped` };
       }
       const snapshotFetcher = createDeadlineAwareBufferedFetcher(fetcher, deadlineAt);
       const [global, marketContext, newsBundle] = await Promise.all([
@@ -1492,7 +1523,7 @@ export async function runPanLayerJob(
     }
     if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();
     await finishCheckpoint(finalStatus, finalMessage);
-    return { ok: finalStatus !== "failed", message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
+    return { ok: finalStatus !== "failed", status: finalStatus, message: `${label} ${finalStatus}${finalMessage ? `; ${finalMessage}` : ""}` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (run?.id) await db.prepare("UPDATE job_runs SET status='failed', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();

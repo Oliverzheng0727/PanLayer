@@ -115,6 +115,29 @@ describe("remote scheduler", () => {
     ]));
   });
 
+  it("continues ETF history metrics after the daily ETF snapshot is complete", () => {
+    const main: JobCheckpoint = {
+      ...checkpoint("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
+      status: "complete",
+    };
+    const historyMetrics: JobCheckpoint = {
+      ...main,
+      stage: "history-metrics",
+      status: "partial",
+      nextRetryAt: "2026-07-24T08:15:00.000Z",
+    };
+    const newHighComplete: JobCheckpoint = {
+      ...checkpoint("new-high-bootstrap", "2026-07-24T02:00:00+08:00"),
+      status: "complete",
+    };
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:17:00.000Z"),
+      checkpoints: [main, historyMetrics, newHighComplete],
+    });
+
+    expect(jobs).toContainEqual({ type: "etf-metrics-refresh" });
+  });
+
   it("persists the scheduler heartbeat independently of job completion", async () => {
     const writes: unknown[][] = [];
     const db = {
@@ -203,15 +226,19 @@ describe("remote scheduler", () => {
       {
         job: "morning-brief",
         ok: true,
+        status: "complete",
+        critical: true,
         message: "advanced",
       },
       {
         job: "new-high-bootstrap",
         ok: true,
+        status: "complete",
+        critical: false,
         message: "advanced",
       },
     ]);
     expect(writes.some((values) => String(values[1]).includes("scheduler tick started"))).toBe(true);
-    expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:ok"))).toBe(true);
+    expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:complete"))).toBe(true);
   });
 });

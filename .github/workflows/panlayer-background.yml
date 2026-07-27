@@ -33,10 +33,27 @@ jobs:
         env:
           PANLAYER_CRON_SECRET: ${{ secrets.PANLAYER_CRON_SECRET }}
         run: |
-          curl --fail-with-body --silent --show-error \
+          response="$(
+            curl --fail-with-body --silent --show-error \
             --max-time 240 \
             --retry 2 \
             --retry-all-errors \
             -X POST \
             -H "Authorization: Bearer ${PANLAYER_CRON_SECRET}" \
-            "https://panlayer-market-review.lihaozheng567.chatgpt.site/api/v1/internal/scheduler/tick"
+            -H "X-PanLayer-Scheduler: github" \
+            "https://panlayer.online/api/v1/internal/scheduler/tick"
+          )"
+          printf '%s\n' "$response"
+          RESPONSE_JSON="$response" node --input-type=module <<'NODE'
+          const payload = JSON.parse(process.env.RESPONSE_JSON || "{}");
+          const critical = Array.isArray(payload.jobs)
+            ? payload.jobs.filter((job) => job?.critical)
+            : [];
+          const incomplete = critical.filter((job) =>
+            job?.ok === false || job?.status === "partial" || job?.status === "failed"
+          );
+          if (incomplete.length > 0) {
+            console.error(`Critical PanLayer jobs incomplete: ${incomplete.map((job) => `${job.job}:${job.status}`).join(", ")}`);
+            process.exit(1);
+          }
+          NODE

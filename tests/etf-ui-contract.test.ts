@@ -13,6 +13,18 @@ describe("ETF workspace UI contract", () => {
     expect(workspace).toMatch(/onAdd=\{/);
   });
 
+  it("cancels obsolete K-line requests and never falls back to demo bars", async () => {
+    const chart = await readFile(new URL("../app/components/etf/EtfChart.tsx", import.meta.url), "utf8");
+
+    expect(chart).toContain("new AbortController()");
+    expect(chart).toContain("signal: controller.signal");
+    expect(chart).toContain("controller.abort()");
+    expect(chart).not.toContain("createDemoBars");
+    expect(chart).toContain("requestedAdjustment");
+    expect(chart).toContain("appliedAdjustment");
+    expect(chart).toContain("降级源");
+  });
+
   it("exposes source and freshness metadata from the full-market endpoint", async () => {
     const [route, catalog] = await Promise.all([
       readFile(new URL("../app/api/v1/etfs/route.ts", import.meta.url), "utf8"),

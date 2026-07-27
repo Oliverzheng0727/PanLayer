@@ -70,7 +70,8 @@ describe("sidebar data progress card", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-controls="sidebar-data-progress-details"');
     expect(html).toContain("收盘复盘");
-    expect(html).toContain("ETF 指标");
+    expect(html).toContain("ETF 当日行情");
+    expect(html).toContain("ETF 历史指标");
     expect(html).toContain("调度心跳");
     expect(html).toContain("正常");
   });

@@ -3,16 +3,36 @@
 import { CandlestickSeries, ColorType, HistogramSeries, createChart, type Time, type UTCTimestamp } from "lightweight-charts";
 import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { createDemoBars, type Adjustment, type BarPeriod, type MarketBar } from "../../../lib/etf/bars";
+import { type Adjustment, type BarPeriod, type MarketBar } from "../../../lib/etf/bars";
 import { ETF_CATEGORIES } from "../../../lib/etf/catalog";
 import type { EtfSnapshot } from "../../../lib/data/provider";
 import { LiveDataStatus, type LiveDataState } from "../data/LiveDataStatus";
 
 const periods: Array<{ value: BarPeriod; label: string }> = [{ value: "minute", label: "分时" }, { value: "day", label: "日K" }, { value: "week", label: "周K" }, { value: "month", label: "月K" }];
+const emptyBars: MarketBar[] = [];
 
 const chartTime = (time: string): Time => time.includes(" ")
   ? Math.floor(new Date(`${time.replace(" ", "T")}:00+08:00`).getTime() / 1000) as UTCTimestamp
   : time.slice(0, 10) as Time;
+
+interface EtfChartPayload {
+  requestKey: string;
+  bars: MarketBar[];
+  source: string;
+  fallbackSource: string | null;
+  status: LiveDataState;
+  marketTime: string | null;
+  receivedAt: string | null;
+  requestedPeriod: BarPeriod;
+  appliedPeriod: BarPeriod | null;
+  requestedAdjustment: Adjustment;
+  appliedAdjustment: Adjustment | null;
+  message: string;
+  error: string;
+}
+
+const periodLabel = (period: BarPeriod | null) => periods.find((item) => item.value === period)?.label ?? "暂缺";
+const adjustmentLabel = (adjustment: Adjustment | null) => adjustment === "forward" ? "前复权" : adjustment === "none" ? "不复权" : "暂缺";
 
 export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, onAdd, addDisabled = false }: {
   etf: EtfSnapshot;
@@ -25,42 +45,64 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
   const container = useRef<HTMLDivElement>(null);
   const [period, setPeriod] = useState<BarPeriod>("day");
   const [adjustment, setAdjustment] = useState<Adjustment>("forward");
-  const [bars, setBars] = useState<MarketBar[]>(() => process.env.NODE_ENV === "development" ? createDemoBars(etf.symbol, "day", etf.price) : []);
-  const [source, setSource] = useState(process.env.NODE_ENV === "development" ? "本机演示行情" : "东方财富");
-  const [status, setStatus] = useState<LiveDataState>(process.env.NODE_ENV === "development" ? "demo" : "complete");
-  const [marketTime, setMarketTime] = useState<string | null>(null);
-  const [receivedAt, setReceivedAt] = useState<string | null>(null);
-  const [chartError, setChartError] = useState("");
+  const [payload, setPayload] = useState<EtfChartPayload | null>(null);
+  const requestKey = `${etf.symbol}:${period}:${adjustment}`;
+  const currentPayload = payload?.requestKey === requestKey ? payload : null;
+  const bars = currentPayload?.bars ?? emptyBars;
+  const source = currentPayload?.source ?? "正在加载K线";
+  const status = currentPayload?.status ?? "partial";
+  const marketTime = currentPayload?.marketTime ?? null;
+  const receivedAt = currentPayload?.receivedAt ?? null;
+  const chartError = currentPayload?.error ?? "";
 
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/v1/etfs/${etf.symbol}/bars?period=${period}&adjust=${adjustment}`)
+    const controller = new AbortController();
+    const activeRequestKey = `${etf.symbol}:${period}:${adjustment}`;
+    fetch(`/api/v1/etfs/${etf.symbol}/bars?period=${period}&adjust=${adjustment}`, {
+      signal: controller.signal,
+    })
       .then(async (response) => {
-        const payload = await response.json() as { bars?: MarketBar[]; source?: string; status?: LiveDataState; marketTime?: string | null; receivedAt?: string | null; error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "K 线数据更新失败");
-        return payload;
+        const result = await response.json() as Partial<Omit<EtfChartPayload, "requestKey" | "error">> & { error?: string };
+        if (!response.ok) throw new Error(result.error ?? "K 线数据更新失败");
+        return result;
       })
-      .then((payload) => {
-        if (!cancelled && payload.bars?.length) {
-          setBars(payload.bars);
-          setSource(payload.source ?? "行情源");
-          setStatus(payload.status ?? "complete");
-          setMarketTime(payload.marketTime ?? null);
-          setReceivedAt(payload.receivedAt ?? new Date().toISOString());
-          setChartError("");
-        }
+      .then((result) => {
+        setPayload({
+          requestKey: activeRequestKey,
+          bars: result.bars ?? [],
+          source: result.source ?? "行情源",
+          fallbackSource: result.fallbackSource ?? null,
+          status: result.status ?? "complete",
+          marketTime: result.marketTime ?? null,
+          receivedAt: result.receivedAt ?? new Date().toISOString(),
+          requestedPeriod: result.requestedPeriod ?? period,
+          appliedPeriod: result.appliedPeriod ?? null,
+          requestedAdjustment: result.requestedAdjustment ?? adjustment,
+          appliedAdjustment: result.appliedAdjustment ?? null,
+          message: result.message ?? "",
+          error: "",
+        });
       })
       .catch((error) => {
-        if (cancelled) return;
-        setChartError(error instanceof Error ? error.message : "K 线数据更新失败");
-        setStatus("failed");
-        if (process.env.NODE_ENV === "development") {
-          setBars(createDemoBars(etf.symbol, period, etf.price));
-          setSource("本机演示行情");
-        }
+        if (controller.signal.aborted) return;
+        setPayload({
+          requestKey: activeRequestKey,
+          bars: [],
+          source: period === "minute" ? "东方财富 / 新浪财经" : "扶摇 Fuyao / 东方财富 / 百度股市通 / 新浪财经",
+          fallbackSource: null,
+          status: "failed",
+          marketTime: null,
+          receivedAt: new Date().toISOString(),
+          requestedPeriod: period,
+          appliedPeriod: null,
+          requestedAdjustment: adjustment,
+          appliedAdjustment: null,
+          message: "所有可用K线数据源均获取失败",
+          error: error instanceof Error ? error.message : "K 线数据更新失败",
+        });
       });
-    return () => { cancelled = true; };
-  }, [adjustment, etf.price, etf.symbol, period]);
+    return () => controller.abort();
+  }, [adjustment, etf.symbol, period]);
 
   useEffect(() => {
     if (!container.current) return;
@@ -98,7 +140,13 @@ export function EtfChart({ etf, isWatched = false, onCategoryChange, onRemove, o
           <button type="button" className={adjustment === "forward" ? "active" : ""} onClick={() => setAdjustment((value) => value === "forward" ? "none" : "forward")}>{adjustment === "forward" ? "前复权" : "不复权"}</button>
         </div>
       </div>
-      <LiveDataStatus label="K线" source={source} status={status} marketTime={marketTime} receivedAt={receivedAt} isStale={Boolean(chartError) || status === "demo"} error={chartError} />
+      <LiveDataStatus label="K线" source={source} status={status} marketTime={marketTime} receivedAt={receivedAt} isStale={Boolean(chartError) || status === "demo"} error={chartError} hasData={bars.length > 0} />
+      {currentPayload && <div className="etf-chart-data-meta">
+        <span>请求 {periodLabel(currentPayload.requestedPeriod)} · {adjustmentLabel(currentPayload.requestedAdjustment)}</span>
+        <span>实际 {periodLabel(currentPayload.appliedPeriod)} · {adjustmentLabel(currentPayload.appliedAdjustment)}</span>
+        {currentPayload.fallbackSource && <span>降级源 {currentPayload.fallbackSource}</span>}
+      </div>}
+      {currentPayload?.message && (currentPayload.status !== "complete" || currentPayload.fallbackSource) && <div className={`etf-chart-notice ${currentPayload.status}`}>{currentPayload.message}</div>}
       <div ref={container} className="etf-chart-canvas" />
       {!bars.length && <div className="etf-chart-empty">数据暂缺 · 更新失败</div>}
       <div className="etf-chart-foot"><span>十字光标 · 缩放浏览</span><span>{source} · 成交量同步显示</span></div>

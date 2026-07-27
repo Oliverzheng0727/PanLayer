@@ -28,18 +28,29 @@ export async function POST(request: Request) {
     return Response.json({ error: "DB binding is unavailable" }, { status: 503 });
   }
 
-  const now = new Date();
+  const scheduledAt = Number(request.headers.get("x-panlayer-scheduled-time"));
+  const now = Number.isFinite(scheduledAt) && scheduledAt > 0
+    ? new Date(scheduledAt)
+    : new Date();
+  const providerHeader = request.headers.get("x-panlayer-scheduler");
+  const provider = providerHeader === "cloudflare" || providerHeader === "github" || providerHeader === "worker"
+    ? providerHeader
+    : "unknown";
   const result = await executeRemoteSchedulerTick({
     db: runtimeEnv.DB,
     now,
     runJob: (job) => runPanLayerJob(job, now, runtimeEnv),
+    provider,
   });
 
+  const failed = result.jobs.some((job) => !job.ok || job.status === "failed");
+  const partial = result.jobs.some((job) => job.status === "partial" || job.status === "running");
   return Response.json({
-    ok: result.jobs.every((job) => job.ok),
+    ok: !failed,
+    status: failed ? "failed" : partial ? "partial" : "complete",
     date: result.date,
     jobs: result.jobs,
   }, {
-    status: result.jobs.some((job) => !job.ok) ? 502 : 200,
+    status: failed ? 502 : partial ? 207 : 200,
   });
 }

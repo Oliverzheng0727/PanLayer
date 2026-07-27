@@ -14,8 +14,17 @@ import {
 
 export interface SchedulerHeartbeat {
   receivedAt: string;
-  status: "running" | "complete" | "failed";
+  provider: "cloudflare" | "github" | "worker" | "unknown";
+  status: "running" | "partial" | "complete" | "failed";
   message: string;
+}
+
+export type SchedulerJobStatus = "running" | "partial" | "complete" | "failed";
+
+export function isCriticalSchedulerJob(job: ScheduledJob): boolean {
+  return job.type !== "new-high-bootstrap"
+    && job.type !== "etf-metrics-refresh"
+    && job.type !== "history-backfill";
 }
 
 export async function recordSchedulerHeartbeat(
@@ -37,41 +46,58 @@ export async function executeRemoteSchedulerTick({
   now,
   runJob,
   loadCheckpoints = readDailyJobCheckpoints,
+  provider = "unknown",
 }: {
   db: D1Database;
   now: Date;
-  runJob: (job: ScheduledJob) => Promise<{ ok: boolean; message: string }>;
+  runJob: (job: ScheduledJob) => Promise<{ ok: boolean; status?: SchedulerJobStatus; message: string }>;
   loadCheckpoints?: (db: D1Database, date: string) => Promise<JobCheckpoint[]>;
+  provider?: SchedulerHeartbeat["provider"];
 }): Promise<{
   date: string;
-  jobs: Array<{ job: string; ok: boolean; message: string }>;
+  jobs: Array<{ job: string; ok: boolean; status: SchedulerJobStatus; critical: boolean; message: string }>;
 }> {
   const { date } = beijingDateParts(now);
   await recordSchedulerHeartbeat(db, {
     receivedAt: now.toISOString(),
+    provider,
     status: "running",
     message: "scheduler tick started",
   }).catch(() => undefined);
   const checkpoints = await loadCheckpoints(db, date).catch(() => []);
   const planned = planRemoteSchedulerJobs({ now, checkpoints });
-  const results: Array<{ job: string; ok: boolean; message: string }> = [];
+  const results: Array<{ job: string; ok: boolean; status: SchedulerJobStatus; critical: boolean; message: string }> = [];
   for (const job of planned) {
     try {
       const result = await runJob(job);
-      results.push({ job: scheduledJobKey(job), ...result });
+      results.push({
+        job: scheduledJobKey(job),
+        ok: result.ok,
+        status: result.status ?? (result.ok ? "complete" : "failed"),
+        critical: isCriticalSchedulerJob(job),
+        message: result.message,
+      });
     } catch (error) {
       results.push({
         job: scheduledJobKey(job),
         ok: false,
+        status: "failed",
+        critical: isCriticalSchedulerJob(job),
         message: error instanceof Error ? error.message : String(error),
       });
     }
   }
+  const heartbeatStatus = results.some((result) => !result.ok || result.status === "failed")
+    ? "failed"
+    : results.some((result) => result.status === "partial" || result.status === "running")
+      ? "partial"
+      : "complete";
   await recordSchedulerHeartbeat(db, {
     receivedAt: new Date().toISOString(),
-    status: results.some((result) => !result.ok) ? "failed" : "complete",
+    provider,
+    status: heartbeatStatus,
     message: results.length > 0
-      ? results.map((result) => `${result.job}:${result.ok ? "ok" : "failed"}`).join(",")
+      ? results.map((result) => `${result.job}:${result.status}`).join(",")
       : "idle",
   }).catch(() => undefined);
   return { date, jobs: results };
@@ -122,13 +148,25 @@ export function planRemoteSchedulerJobs({
       .filter((checkpoint) => checkpoint.stage === "main")
       .map((checkpoint) => [checkpoint.key, checkpoint]),
   );
+  const etfHistoryCheckpoint = checkpoints.find((checkpoint) =>
+    checkpoint.key === "etf-metrics-refresh" && checkpoint.stage === "history-metrics"
+  );
+  const etfHistoryDue = marketSession
+    && time >= "15:30"
+    && etfHistoryCheckpoint
+    && isCheckpointRetryable(etfHistoryCheckpoint, now);
 
-  const candidates = [...(exactJob ? [exactJob] : []), ...catchUpJobs]
+  const candidates = [
+    ...(exactJob ? [exactJob] : []),
+    ...catchUpJobs,
+    ...(etfHistoryDue ? [{ type: "etf-metrics-refresh" } as const] : []),
+  ]
     .filter((job, index, all) => (
       all.findIndex((candidate) => scheduledJobKey(candidate) === scheduledJobKey(job)) === index
     ))
     .filter((job) => {
       const checkpoint = checkpointByKey.get(scheduledJobKey(job));
+      if (job.type === "etf-metrics-refresh" && etfHistoryDue) return true;
       return !checkpoint || isCheckpointRetryable(checkpoint, now);
     });
   const isContinuous = (job: ScheduledJob) => (

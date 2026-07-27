@@ -164,7 +164,7 @@ describe("close review aggregation", () => {
       { type: "history-backfill", days: 120 },
       new Date("2026-07-23T08:00:00Z"),
       { DB: db },
-    )).resolves.toEqual({ ok: true, message: "history-backfill 5/120; remaining 115" });
+    )).resolves.toEqual({ ok: true, status: "partial", message: "history-backfill 5/120; remaining 115" });
 
     expect(runHistoryBackfillBatch).toHaveBeenCalledWith(expect.objectContaining({
       db,

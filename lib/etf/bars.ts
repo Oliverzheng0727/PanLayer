@@ -16,8 +16,11 @@ export interface MarketBar {
 export interface EtfBarsResult {
   bars: MarketBar[];
   source: string;
+  fallbackSource: string | null;
   status: "complete" | "partial";
   appliedAdjustment: Adjustment;
+  appliedPeriod: BarPeriod;
+  message: string;
 }
 
 const UPSTREAM_TIMEOUT_MS = 4_500;
@@ -51,6 +54,22 @@ export function aggregateBars(bars: MarketBar[], period: "week" | "month"): Mark
     volume: group.reduce((sum, item) => sum + item.volume, 0),
     amount: group.reduce((sum, item) => sum + item.amount, 0),
   }));
+}
+
+export function sanitizeMarketBars(bars: MarketBar[]): MarketBar[] {
+  const valid = bars.filter((bar) => {
+    const prices = [bar.open, bar.high, bar.low, bar.close];
+    return /^\d{4}-\d{2}-\d{2}/.test(bar.time)
+      && prices.every((value) => Number.isFinite(value) && value > 0)
+      && bar.high >= Math.max(bar.open, bar.close, bar.low)
+      && bar.low <= Math.min(bar.open, bar.close, bar.high)
+      && Number.isFinite(bar.volume)
+      && bar.volume >= 0
+      && Number.isFinite(bar.amount)
+      && bar.amount >= 0;
+  });
+  return [...new Map(valid.map((bar) => [bar.time, bar])).values()]
+    .toSorted((left, right) => left.time.localeCompare(right.time));
 }
 
 function secidFor(symbol: string): string {
@@ -235,110 +254,137 @@ export async function loadEtfBarsWithFallback(
 ): Promise<EtfBarsResult> {
   const loadFuyaoBars = async () => {
     if (!fuyaoOptions || period === "minute") throw new Error("Fuyao ETF daily source is unavailable");
-    const daily = await createFuyaoMcpClient({ ...fuyaoOptions, fetcher }).fetchFundDailyBars(symbol);
+    const daily = sanitizeMarketBars(
+      await createFuyaoMcpClient({ ...fuyaoOptions, fetcher }).fetchFundDailyBars(symbol),
+    );
     const bars = period === "day" ? daily : aggregateBars(daily, period);
     if (bars.length === 0) throw new Error("Fuyao ETF bars are empty");
     return bars;
   };
 
-  if (fuyaoOptions && period !== "minute" && adjustment === "none") {
+  const periodLabel = period === "day" ? "日K" : period === "week" ? "周K" : "月K";
+  if (period === "minute") {
+    try {
+      const bars = sanitizeMarketBars(await fetchEastmoneyMinuteBars(symbol, fetcher));
+      if (bars.length === 0) throw new Error("empty market bars");
+      return {
+        bars,
+        source: "东方财富",
+        fallbackSource: null,
+        status: "complete",
+        appliedAdjustment: "none",
+        appliedPeriod: "minute",
+        message: "东方财富分时行情",
+      };
+    } catch (primaryError) {
+      try {
+        const bars = sanitizeMarketBars(await fetchSinaMinuteBars(symbol, fetcher));
+        if (bars.length === 0) throw new Error("empty market bars");
+        return {
+          bars,
+          source: "新浪财经（5分钟）",
+          fallbackSource: "新浪财经",
+          status: "partial",
+          appliedAdjustment: "none",
+          appliedPeriod: "minute",
+          message: "东方财富分时不可用，已降级为新浪5分钟K线",
+        };
+      } catch (fallbackError) {
+        const primaryMessage = primaryError instanceof Error ? primaryError.message : "primary source failed";
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "fallback source failed";
+        throw new Error(`ETF bars unavailable: ${primaryMessage}; ${fallbackMessage}`);
+      }
+    }
+  }
+
+  let fuyaoPrimaryError: unknown;
+  if (adjustment === "none" && fuyaoOptions) {
     try {
       return {
         bars: await loadFuyaoBars(),
-        source: "扶摇 Fuyao",
+        source: period === "day" ? "扶摇 Fuyao" : `扶摇 Fuyao（日K聚合${periodLabel}）`,
+        fallbackSource: null,
         status: "complete",
         appliedAdjustment: "none",
+        appliedPeriod: period,
+        message: period === "day" ? "扶摇ETF日K" : `扶摇ETF日K由服务端聚合为${periodLabel}`,
+      };
+    } catch (error) {
+      fuyaoPrimaryError = error;
+    }
+  }
+
+  let eastmoneyError: unknown;
+  try {
+    const daily = sanitizeMarketBars(await fetchEastmoneyDailyBars(symbol, adjustment, fetcher));
+    const bars = period === "day" ? daily : aggregateBars(daily, period);
+    if (bars.length === 0) throw new Error("empty market bars");
+    const fellBackFromFuyao = adjustment === "none" && Boolean(fuyaoOptions);
+    return {
+      bars,
+      source: "东方财富",
+      fallbackSource: fellBackFromFuyao ? "东方财富" : null,
+      status: "complete",
+      appliedAdjustment: adjustment,
+      appliedPeriod: period,
+      message: fellBackFromFuyao
+        ? `扶摇${periodLabel}不可用，已降级至东方财富`
+        : `东方财富${adjustment === "forward" ? "前复权" : "不复权"}${periodLabel}`,
+    };
+  } catch (error) {
+    eastmoneyError = error;
+  }
+
+  if (fuyaoOptions && adjustment === "forward") {
+    try {
+      return {
+        bars: await loadFuyaoBars(),
+        source: period === "day" ? "扶摇 Fuyao（不复权）" : `扶摇 Fuyao（日K聚合${periodLabel}，不复权）`,
+        fallbackSource: "扶摇 Fuyao",
+        status: "partial",
+        appliedAdjustment: "none",
+        appliedPeriod: period,
+        message: `东方财富前复权${periodLabel}不可用；扶摇仅提供不复权数据，当前K线未冒充前复权`,
       };
     } catch {
-      // Keep the established public-source chain as a verified fallback.
+      // Continue to public unadjusted fallbacks.
     }
   }
 
   try {
-    const daily = period === "minute" ? [] : await fetchEastmoneyDailyBars(symbol, adjustment, fetcher);
-    const bars = period === "minute"
-      ? await fetchEastmoneyMinuteBars(symbol, fetcher)
-      : period === "day"
-        ? daily
-        : aggregateBars(daily, period);
+    const daily = sanitizeMarketBars(await fetchBaiduDailyBars(symbol, fetcher));
+    const bars = period === "day" ? daily : aggregateBars(daily, period);
     if (bars.length === 0) throw new Error("empty market bars");
     return {
       bars,
-      source: "东方财富",
-      status: "complete",
-      appliedAdjustment: period === "minute" ? "none" : adjustment,
+      source: "百度股市通（不复权）",
+      fallbackSource: "百度股市通",
+      status: "partial",
+      appliedAdjustment: "none",
+      appliedPeriod: period,
+      message: `${adjustment === "forward" ? "前复权数据不可用；" : ""}已降级至百度股市通不复权${periodLabel}`,
     };
-  } catch (primaryError) {
-    if (period !== "minute") {
-      if (fuyaoOptions) {
-        try {
-          return {
-            bars: await loadFuyaoBars(),
-            source: adjustment === "forward" ? "扶摇 Fuyao（不复权）" : "扶摇 Fuyao",
-            status: adjustment === "forward" ? "partial" : "complete",
-            appliedAdjustment: "none",
-          };
-        } catch {
-          // Continue to the public web fallbacks.
-        }
-      }
-      try {
-        const daily = await fetchBaiduDailyBars(symbol, fetcher);
-        const bars = period === "day" ? daily : aggregateBars(daily, period);
-        if (bars.length === 0) throw new Error("empty market bars");
-        return {
-          bars,
-          source: "百度股市通（不复权）",
-          status: "partial",
-          appliedAdjustment: "none",
-        };
-      } catch {
-        // Continue to Sina, whose daily endpoint lacks historical turnover amount
-        // but remains useful for chart rendering when both primary sources fail.
-      }
-    }
-    try {
-      const daily = period === "minute" ? [] : await fetchSinaDailyBars(symbol, fetcher);
-      const bars = period === "minute"
-        ? await fetchSinaMinuteBars(symbol, fetcher)
-        : period === "day"
-          ? daily
-          : aggregateBars(daily, period);
-      if (bars.length === 0) throw new Error("empty market bars");
-      return {
-        bars,
-        source: period === "minute" ? "新浪财经（5分钟）" : "新浪财经（不复权）",
-        status: "partial",
-        appliedAdjustment: "none",
-      };
-    } catch (fallbackError) {
-      const primaryMessage = primaryError instanceof Error ? primaryError.message : "primary source failed";
-      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "fallback source failed";
-      throw new Error(`ETF bars unavailable: ${primaryMessage}; ${fallbackMessage}`);
-    }
+  } catch {
+    // Continue to Sina, whose daily endpoint lacks historical turnover amount.
   }
-}
 
-export function createDemoBars(symbol: string, period: BarPeriod, lastPrice = 1): MarketBar[] {
-  const count = period === "minute" ? 120 : period === "month" ? 48 : period === "week" ? 80 : 160;
-  const seed = [...symbol].reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  const start = period === "minute" ? new Date("2026-07-22T01:30:00Z") : new Date("2026-01-01T00:00:00Z");
-  return Array.from({ length: count }, (_, index) => {
-    const drift = 1 + index / count * .16;
-    const wave = Math.sin((index + seed) / 7) * .035 + Math.cos((index + seed) / 19) * .02;
-    const close = lastPrice / 1.16 * (drift + wave);
-    const open = close * (1 + Math.sin(index * 1.7) * .008);
-    const high = Math.max(open, close) * 1.012;
-    const low = Math.min(open, close) * .988;
-    const date = new Date(start);
-    if (period === "minute") date.setUTCMinutes(start.getUTCMinutes() + index);
-    else if (period === "day") date.setUTCDate(start.getUTCDate() + index);
-    else if (period === "week") date.setUTCDate(start.getUTCDate() + index * 7);
-    else date.setUTCMonth(start.getUTCMonth() + index);
+  try {
+    const daily = sanitizeMarketBars(await fetchSinaDailyBars(symbol, fetcher));
+    const bars = period === "day" ? daily : aggregateBars(daily, period);
+    if (bars.length === 0) throw new Error("empty market bars");
     return {
-      time: period === "minute" ? date.toISOString().slice(0, 16).replace("T", " ") : date.toISOString().slice(0, 10),
-      open: Number(open.toFixed(3)), high: Number(high.toFixed(3)), low: Number(low.toFixed(3)), close: Number(close.toFixed(3)),
-      volume: 1_000_000 + (index % 17) * 170_000, amount: close * (1_000_000 + (index % 17) * 170_000),
+      bars,
+      source: "新浪财经（不复权）",
+      fallbackSource: "新浪财经",
+      status: "partial",
+      appliedAdjustment: "none",
+      appliedPeriod: period,
+      message: `${adjustment === "forward" ? "前复权数据不可用；" : ""}已降级至新浪财经不复权${periodLabel}`,
     };
-  });
+  } catch (fallbackError) {
+    const primaryError = adjustment === "none" && fuyaoOptions ? fuyaoPrimaryError : eastmoneyError;
+    const primaryMessage = primaryError instanceof Error ? primaryError.message : "primary source failed";
+    const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "fallback source failed";
+    throw new Error(`ETF bars unavailable: ${primaryMessage}; ${fallbackMessage}`);
+  }
 }

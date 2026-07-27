@@ -7,6 +7,7 @@ import {
   fetchBaiduDailyBars,
   fetchSinaDailyBars,
   fetchSinaMinuteBars,
+  sanitizeMarketBars,
   type MarketBar,
 } from "../lib/etf/bars";
 
@@ -17,6 +18,60 @@ const bars: MarketBar[] = [
 ];
 
 describe("ETF market bar aggregation", () => {
+  const fuyaoRows = [
+    {
+      date_ms: Date.parse("2026-07-13T00:00:00+08:00"),
+      open_price: 1,
+      high_price: 1.2,
+      low_price: .9,
+      close_price: 1.1,
+      volume: 100,
+      turnover: 110,
+    },
+    {
+      date_ms: Date.parse("2026-07-14T00:00:00+08:00"),
+      open_price: 1.1,
+      high_price: 1.3,
+      low_price: 1.05,
+      close_price: 1.2,
+      volume: 200,
+      turnover: 240,
+    },
+  ];
+
+  const mcpResponse = (data: unknown) => Response.json({
+    jsonrpc: "2.0",
+    id: 2,
+    result: {
+      structuredContent: {
+        code: 0,
+        message: "success",
+        request_id: "etf-bars-request",
+        data,
+      },
+    },
+  });
+
+  const createFuyaoBarsFetcher = (onPublicRequest?: (url: string) => Response) => async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as {
+      method?: string;
+      params?: { name?: string };
+    } : null;
+    if (body?.method === "initialize") {
+      return Response.json({ jsonrpc: "2.0", id: 1, result: {} }, {
+        headers: { "Mcp-Session-Id": "session-etf-bars" },
+      });
+    }
+    if (body?.params?.name === "get_fund_market_historical") {
+      return mcpResponse({ item: fuyaoRows });
+    }
+    if (onPublicRequest) return onPublicRequest(String(input));
+    throw new Error(`unexpected request ${String(input)}`);
+  };
+
   it("aggregates daily bars into exchange weeks", () => {
     expect(aggregateBars(bars, "week")).toEqual([
       { time: "2026-07-14", open: 1, high: 1.3, low: .9, close: 1.2, volume: 300, amount: 350 },
@@ -28,6 +83,106 @@ describe("ETF market bar aggregation", () => {
     expect(aggregateBars(bars, "month")).toEqual([
       { time: "2026-07-20", open: 1, high: 1.4, low: .9, close: 1.35, volume: 550, amount: 680 },
     ]);
+  });
+
+  it("deduplicates, sorts and rejects invalid provider bars", () => {
+    expect(sanitizeMarketBars([
+      bars[1],
+      { ...bars[0], close: -1 },
+      bars[0],
+      { ...bars[0], close: 1.15 },
+      { ...bars[2], volume: -1 },
+    ])).toEqual([
+      { ...bars[0], close: 1.15 },
+      bars[1],
+    ]);
+  });
+
+  it("uses Fuyao as the primary unadjusted ETF daily source", async () => {
+    const fetcher = createFuyaoBarsFetcher();
+    await expect(loadEtfBarsWithFallback(
+      "510300",
+      "day",
+      "none",
+      fetcher as typeof fetch,
+      { apiKey: "secret" },
+    )).resolves.toMatchObject({
+      source: "扶摇 Fuyao",
+      fallbackSource: null,
+      status: "complete",
+      appliedPeriod: "day",
+      appliedAdjustment: "none",
+      bars: [{ time: "2026-07-13" }, { time: "2026-07-14" }],
+    });
+  });
+
+  it("aggregates Fuyao daily bars into weekly bars on the server", async () => {
+    const fetcher = createFuyaoBarsFetcher();
+    await expect(loadEtfBarsWithFallback(
+      "510300",
+      "week",
+      "none",
+      fetcher as typeof fetch,
+      { apiKey: "secret" },
+    )).resolves.toMatchObject({
+      source: "扶摇 Fuyao（日K聚合周K）",
+      appliedPeriod: "week",
+      bars: [{
+        time: "2026-07-14",
+        open: 1,
+        high: 1.3,
+        low: .9,
+        close: 1.2,
+        volume: 300,
+        amount: 350,
+      }],
+    });
+  });
+
+  it("does not use Fuyao when Eastmoney supplies the requested forward-adjusted bars", async () => {
+    let mcpRequested = false;
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.body) mcpRequested = true;
+      return Response.json({
+        data: {
+          klines: ["2026-07-22,4.761,4.775,4.779,4.751,271280,129163542.000"],
+        },
+      });
+    };
+
+    await expect(loadEtfBarsWithFallback(
+      "510300",
+      "day",
+      "forward",
+      fetcher as typeof fetch,
+      { apiKey: "secret" },
+    )).resolves.toMatchObject({
+      source: "东方财富",
+      status: "complete",
+      appliedAdjustment: "forward",
+    });
+    expect(mcpRequested).toBe(false);
+  });
+
+  it("marks Fuyao as an unadjusted fallback instead of claiming forward adjustment", async () => {
+    const fetcher = createFuyaoBarsFetcher((url) => {
+      if (url.includes("eastmoney.com")) return new Response("unavailable", { status: 520 });
+      throw new Error(`unexpected public request ${url}`);
+    });
+
+    await expect(loadEtfBarsWithFallback(
+      "510300",
+      "day",
+      "forward",
+      fetcher as typeof fetch,
+      { apiKey: "secret" },
+    )).resolves.toMatchObject({
+      source: "扶摇 Fuyao（不复权）",
+      fallbackSource: "扶摇 Fuyao",
+      status: "partial",
+      appliedAdjustment: "none",
+      message: expect.stringContaining("未冒充前复权"),
+    });
   });
 
   it("maps Eastmoney minute trend fields to OHLCV correctly", async () => {
@@ -189,5 +344,30 @@ describe("ETF market bar aggregation", () => {
       appliedAdjustment: "none",
       bars: [{ time: "2026-07-22 09:35" }],
     });
+  });
+
+  it("never calls Fuyao for minute bars", async () => {
+    let mcpRequested = false;
+    const fetcher = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.body) mcpRequested = true;
+      return Response.json({
+        data: {
+          trends: ["2026-07-22 09:31,4.761,4.775,4.779,4.751,271280,129163542.000"],
+        },
+      });
+    };
+
+    await expect(loadEtfBarsWithFallback(
+      "510300",
+      "minute",
+      "forward",
+      fetcher as typeof fetch,
+      { apiKey: "secret" },
+    )).resolves.toMatchObject({
+      source: "东方财富",
+      appliedPeriod: "minute",
+      appliedAdjustment: "none",
+    });
+    expect(mcpRequested).toBe(false);
   });
 });

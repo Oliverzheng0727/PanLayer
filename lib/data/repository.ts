@@ -127,6 +127,7 @@ const healthSection = (status: string, message: string, updatedAt: string | null
 export interface DailyJobHealth {
   tradeDate: string;
   generatedAt: string;
+  latestCompletedTradeDate?: string | null;
   /** Whether the current Beijing date is a regular A-share trading weekday. */
   marketSession?: boolean;
   heartbeat?: SchedulerHeartbeatHealth | null;
@@ -138,6 +139,8 @@ export interface DailyJobHealth {
     message: string;
     attempt: number;
     overdue: boolean;
+    delayMinutes: number | null;
+    timeliness: "not-due" | "on-time" | "delayed";
   }>;
   stages?: Record<string, {
     status: string;
@@ -150,7 +153,8 @@ export interface DailyJobHealth {
 
 export interface SchedulerHeartbeatHealth {
   receivedAt: string;
-  status: "running" | "complete" | "failed";
+  provider: "cloudflare" | "github" | "worker" | "unknown";
+  status: "running" | "partial" | "complete" | "failed";
   message: string;
   stale: boolean;
 }
@@ -174,11 +178,14 @@ export function buildSchedulerHeartbeat(
     const stale = now.getTime() - timestamp > SCHEDULER_HEARTBEAT_STALE_MS;
     const status = stale
       ? "failed"
-      : parsed.status === "running" || parsed.status === "failed"
+      : parsed.status === "running" || parsed.status === "partial" || parsed.status === "failed"
         ? parsed.status
         : "complete";
     return {
       receivedAt,
+      provider: parsed.provider === "cloudflare" || parsed.provider === "github" || parsed.provider === "worker"
+        ? parsed.provider
+        : "unknown",
       status,
       message: typeof parsed.message === "string" ? parsed.message : "",
       stale,
@@ -307,6 +314,15 @@ export function buildDailyJobHealth({
       : 5 * 60_000;
     const overdue = now.getTime() > expectedTime + graceMs
       && checkpoint?.status !== "complete";
+    const finishedTime = checkpoint?.finishedAt ? new Date(checkpoint.finishedAt).getTime() : null;
+    const delayMinutes = finishedTime !== null && Number.isFinite(finishedTime)
+      ? Math.max(0, Math.round((finishedTime - expectedTime) / 60_000))
+      : overdue ? Math.max(0, Math.round((now.getTime() - expectedTime) / 60_000)) : null;
+    const timeliness = now.getTime() < expectedTime && !checkpoint
+      ? "not-due" as const
+      : overdue || (delayMinutes !== null && delayMinutes > graceMs / 60_000)
+        ? "delayed" as const
+        : "on-time" as const;
     const pendingMessage = now.getTime() < expectedTime
       ? "等待计划时间"
       : overdue
@@ -320,6 +336,8 @@ export function buildDailyJobHealth({
       message: checkpoint?.message ?? pendingMessage,
       attempt: checkpoint?.attempt ?? 0,
       overdue,
+      delayMinutes,
+      timeliness,
     }];
   }));
   const stages = Object.fromEntries(checkpoints
@@ -339,6 +357,13 @@ export function buildDailyJobHealth({
       nextRetryAt: null,
       message: "早参已生成并通过结构校验",
       overdue: false,
+      delayMinutes: persistedBrief.updatedAt
+        ? Math.max(0, Math.round((new Date(persistedBrief.updatedAt).getTime() - new Date(jobs["morning-brief"].expectedAt).getTime()) / 60_000))
+        : null,
+      timeliness: persistedBrief.updatedAt
+        && new Date(persistedBrief.updatedAt).getTime() > new Date(jobs["morning-brief"].expectedAt).getTime() + 15 * 60_000
+          ? "delayed"
+          : "on-time",
     };
   }
   return {
@@ -658,6 +683,7 @@ export async function readDataHealth() {
     },
   });
   daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
+  daily.latestCompletedTradeDate = latestReview?.date ?? null;
   daily.fields = buildDailyFieldHealth(latestReview, progress);
   daily.fields.fuyaoEtf = {
     status: etfCatalogRow?.source.includes("扶摇 Fuyao")

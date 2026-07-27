@@ -110,6 +110,26 @@ describe("ETF metrics refresh batch", () => {
     }]);
   });
 
+  it("marks ETFs with fewer than 20 valid sessions as inapplicable instead of retrying forever", async () => {
+    const result = await enrichEtfMetricsBatch({
+      items: [item("510001"), item("510002")],
+      cursor: 0,
+      batchSize: 2,
+      loadBars: async (symbol) => symbol === "510001"
+        ? Array.from({ length: 10 }, (_, index) => ({ time: String(index), amount: 100_000_000 }))
+        : Array.from({ length: 20 }, (_, index) => ({ time: String(index), amount: 100_000_000 })),
+    });
+
+    expect(result).toMatchObject({
+      completed: 1,
+      failed: 0,
+      inapplicable: 1,
+      remaining: 0,
+      inapplicableSymbols: ["510001"],
+    });
+    expect(result.errors).toEqual([]);
+  });
+
   it("spaces ETF history requests by the configured provider interval", async () => {
     vi.useFakeTimers();
     try {

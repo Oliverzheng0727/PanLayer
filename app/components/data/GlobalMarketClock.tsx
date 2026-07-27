@@ -45,8 +45,8 @@ export function GlobalMarketClock({
 
   const failed = status === "failed" || Boolean(error);
   const delayedBy = now ? delayMinutes(receivedAt, now) : null;
-  const delayed = failed || (marketSession && delayedBy !== null && delayedBy > 5);
   const inSession = now ? isBeijingMarketSession(now) : false;
+  const delayed = failed || (marketSession && inSession && delayedBy !== null && delayedBy > 5);
   const seconds = now ? nextRefreshSeconds(receivedAt, now) : 0;
   const statusLabel = failed
     ? "更新失败 · 旧数据"
