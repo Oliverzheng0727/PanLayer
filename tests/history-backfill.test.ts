@@ -27,14 +27,17 @@ const pools: HistoricalBoardPools = {
 
 function createBackfillDb(existing: Record<string, DailyReview> = {}) {
   const reviews = new Map(Object.entries(existing).map(([date, review]) => [date, JSON.stringify(review)]));
-  let progressValue: string | null = null;
+  const bootstrapState = new Map<string, string>();
   const db = {
     prepare(sql: string) {
       return {
         bind(...args: unknown[]) {
           return {
             async first<T>() {
-              if (sql.includes("FROM bootstrap_state")) return (progressValue ? { value: progressValue } : null) as T;
+              if (sql.includes("FROM bootstrap_state")) {
+                const value = bootstrapState.get(String(args[0]));
+                return (value ? { value } : null) as T;
+              }
               if (sql.includes("FROM daily_reviews")) {
                 const payload = reviews.get(String(args[0]));
                 return (payload ? { payload } : null) as T;
@@ -55,7 +58,7 @@ function createBackfillDb(existing: Record<string, DailyReview> = {}) {
             },
             async run() {
               if (sql.includes("INSERT INTO bootstrap_state")) {
-                progressValue = String(args[1]);
+                bootstrapState.set(String(args[0]), String(args[1]));
               }
               if (sql.includes("INSERT INTO daily_reviews")) {
                 reviews.set(String(args[0]), String(args[1]));
@@ -67,7 +70,12 @@ function createBackfillDb(existing: Record<string, DailyReview> = {}) {
       };
     },
   };
-  return { db: db as unknown as D1Database, reviews, getProgress: () => progressValue };
+  return {
+    db: db as unknown as D1Database,
+    reviews,
+    getProgress: () => [...bootstrapState.entries()]
+      .find(([key]) => key.startsWith("history-backfill"))?.[1] ?? null,
+  };
 }
 
 function createBackfillFetcher() {

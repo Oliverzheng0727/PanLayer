@@ -13,6 +13,7 @@ import {
 } from "./backfill-sources";
 
 const PROGRESS_KEY = "history-backfill-v5-evidence-safe";
+const NEW_HIGH_BACKFILL_SCOPE_KEY = "new-high-backfill-history-days";
 const EMPTY_POOLS: HistoricalBoardPools = {
   limitUp: [],
   broken: [],
@@ -383,6 +384,22 @@ async function saveProgress(db: D1Database, progress: StoredProgress) {
   ).bind(PROGRESS_KEY, JSON.stringify(progress), new Date().toISOString()).run();
 }
 
+async function ensureNewHighBackfillScope(db: D1Database, days: number) {
+  const row = await db.prepare(
+    "SELECT value FROM bootstrap_state WHERE key = ?",
+  ).bind(NEW_HIGH_BACKFILL_SCOPE_KEY).first<{ value: string }>();
+  const currentDays = Number(row?.value ?? 0);
+  if (Number.isFinite(currentDays) && currentDays >= days) return;
+  const updatedAt = new Date().toISOString();
+  await db.prepare(
+    "UPDATE new_high_states SET status = 'rebuild', updated_at = ? WHERE status = 'active'",
+  ).bind(updatedAt).run();
+  await db.prepare(
+    "INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?) " +
+    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+  ).bind(NEW_HIGH_BACKFILL_SCOPE_KEY, String(days), updatedAt).run();
+}
+
 async function readExistingReview(db: D1Database, date: string): Promise<DailyReview | null> {
   const row = await db.prepare("SELECT payload FROM daily_reviews WHERE trade_date = ?").bind(date).first<{ payload: string }>();
   if (!row?.payload) return null;
@@ -515,6 +532,9 @@ export async function runHistoryBackfillBatch({
 
   const nextProgress = { ...progress, completed: progress.dates.filter((date) => completed.has(date)) };
   await saveProgress(db, nextProgress);
+  if (nextProgress.completed.length === progress.dates.length) {
+    await ensureNewHighBackfillScope(db, days);
+  }
   return {
     target: progress.dates.length,
     completed: nextProgress.completed.length,
