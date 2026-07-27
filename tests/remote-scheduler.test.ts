@@ -73,6 +73,20 @@ describe("remote scheduler", () => {
     expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(false);
   });
 
+  it("retries the 09:25 capture on the following minute when the first attempt failed", () => {
+    const failed = checkpoint("breadth-09:25", "2026-07-24T09:25:00+08:00");
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T01:26:00.000Z"),
+      checkpoints: [{
+        ...failed,
+        status: "failed",
+        nextRetryAt: "2026-07-24T01:25:40.000Z",
+      }],
+    });
+
+    expect(jobs).toContainEqual({ type: "breadth", time: "09:25" });
+  });
+
   it("rotates continuous ETF and new-high work while a close retry remains due", () => {
     const checkpoints = [
       checkpoint("close-review", "2026-07-24T16:10:00+08:00"),

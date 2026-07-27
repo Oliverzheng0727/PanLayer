@@ -178,6 +178,12 @@ export function retryAtForAttempt(now: Date, attempt: number): string {
   return new Date(now.getTime() + delayMinutes * 60_000).toISOString();
 }
 
+function breadthRetryAtForAttempt(now: Date, attempt: number): string {
+  const delays = [30, 60, 120];
+  const delaySeconds = delays[Math.min(Math.max(attempt - 1, 0), delays.length - 1)];
+  return new Date(now.getTime() + delaySeconds * 1_000).toISOString();
+}
+
 export function nextRetryAtForCheckpoint(
   key: DailyJobKey,
   status: CheckpointStatus,
@@ -185,6 +191,9 @@ export function nextRetryAtForCheckpoint(
   attempt: number,
 ): string | null {
   if (status === "complete") return null;
+  if (key.startsWith("breadth-")) {
+    return breadthRetryAtForAttempt(now, attempt);
+  }
   if (
     status === "partial"
     && (key === "new-high-bootstrap" || key === "etf-metrics-refresh" || key === "history-backfill")

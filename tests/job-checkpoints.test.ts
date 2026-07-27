@@ -74,6 +74,22 @@ describe("daily job checkpoints", () => {
     )).toBe("2026-07-24T08:30:00.000Z");
   });
 
+  it("retries failed breadth captures within the following minute", () => {
+    const now = new Date("2026-07-24T01:25:10.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "breadth-09:25",
+      "failed",
+      now,
+      1,
+    )).toBe("2026-07-24T01:25:40.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "breadth-09:25",
+      "failed",
+      now,
+      2,
+    )).toBe("2026-07-24T01:26:10.000Z");
+  });
+
   it("never downgrades an already complete stage during a later partial retry", async () => {
     let sql = "";
     const db = {
