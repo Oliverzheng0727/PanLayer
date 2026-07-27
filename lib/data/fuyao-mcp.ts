@@ -83,6 +83,14 @@ export interface FuyaoLimitUpSnapshot {
   evidence: StructuredSignalEvidence;
 }
 
+export interface FuyaoEtfCatalogMerge {
+  items: EtfSnapshot[];
+  masterCount: number;
+  matchedCount: number;
+  supplementalCount: number;
+  coveragePct: number;
+}
+
 interface FuyaoMcpResponse<T> {
   error?: { code?: number; message?: string };
   result?: {
@@ -277,6 +285,22 @@ function securityMeta(thscode: string): {
       : /^(300|301)/.test(code) ? "CHINEXT" : "MAIN";
   const limitRate = board === "BEIJING" ? 0.3 : board === "STAR" || board === "CHINEXT" ? 0.2 : 0.1;
   return { symbol: `${code}.${exchange}`, code, exchange, board, limitRate };
+}
+
+function etfSecurityMeta(value: string): {
+  symbol: string;
+  code: string;
+  exchange: "SH" | "SZ" | "OTHER";
+} {
+  const [code, suffix] = value.toUpperCase().split(".");
+  const exchange = suffix === "SH" || (!suffix && code.startsWith("5"))
+    ? "SH"
+    : suffix === "SZ" || (!suffix && code.startsWith("1")) ? "SZ" : "OTHER";
+  return {
+    symbol: exchange === "OTHER" ? code : `${code}.${exchange}`,
+    code,
+    exchange,
+  };
 }
 
 function quoteFromPriceRow(row: FuyaoPriceRow, name: string): Quote | null {
@@ -1207,7 +1231,7 @@ export class FuyaoMcpClient {
   }
 
   async fetchFundDailyBars(symbol: string, now = new Date()): Promise<MarketBar[]> {
-    const normalized = securityMeta(symbol).symbol;
+    const normalized = etfSecurityMeta(symbol).symbol;
     const end = now.getTime();
     const start = end - 5 * 365 * 24 * 60 * 60 * 1_000;
     const data = await this.call<FuyaoHistoricalData>(
@@ -1230,8 +1254,45 @@ export class FuyaoMcpClient {
     }).toSorted((left, right) => left.time.localeCompare(right.time));
   }
 
+  async mergeEtfMasterCatalog(marketItems: EtfSnapshot[]): Promise<FuyaoEtfCatalogMerge> {
+    const tickers = await this.listTickers("fund-etf");
+    if (tickers.length === 0) throw new Error("Fuyao ETF master catalog is empty");
+    const marketBySymbol = new Map(
+      marketItems.map((item) => [etfSecurityMeta(item.symbol).symbol, item]),
+    );
+    const masterSymbols = new Set<string>();
+    const matched = tickers.flatMap((ticker): EtfSnapshot[] => {
+      const symbol = etfSecurityMeta(ticker.thscode).symbol;
+      masterSymbols.add(symbol);
+      const quote = marketBySymbol.get(symbol);
+      if (!quote) return [];
+      const classified = classifyEtf(ticker.name);
+      return [{
+        ...quote,
+        symbol: ticker.ticker,
+        name: ticker.name,
+        category: classified.category,
+        tags: classified.tags,
+        exchange: ticker.exchange === "SH" ? "SH" : ticker.exchange === "SZ" ? "SZ" : "OTHER",
+      }];
+    });
+    const supplemental = marketItems.filter(
+      (item) => !masterSymbols.has(etfSecurityMeta(item.symbol).symbol),
+    );
+    const items = [...new Map(
+      [...matched, ...supplemental].map((item) => [item.symbol, item]),
+    ).values()];
+    return {
+      items,
+      masterCount: tickers.length,
+      matchedCount: matched.length,
+      supplementalCount: supplemental.length,
+      coveragePct: Number((matched.length / Math.max(1, tickers.length) * 100).toFixed(2)),
+    };
+  }
+
   async fetchEtfSnapshot(symbol: string, ticker?: FuyaoTicker): Promise<EtfSnapshot> {
-    const normalized = securityMeta(symbol).symbol;
+    const normalized = etfSecurityMeta(symbol).symbol;
     const resolvedTicker = ticker ?? (await this.searchTickers(normalized, "fund-etf", 1))[0];
     if (!resolvedTicker) throw new Error(`Fuyao ETF ${normalized} is not in the master catalog`);
     const data = await this.call<FuyaoSnapshotData<FuyaoPriceRow>>(
@@ -1263,8 +1324,8 @@ export class FuyaoMcpClient {
 
   async fetchEtfSnapshots(symbols: string[], concurrency = 4): Promise<EtfSnapshot[]> {
     const tickers = await this.listTickers("fund-etf");
-    const tickerBySymbol = new Map(tickers.map((item) => [securityMeta(item.thscode).symbol, item]));
-    const requested = [...new Set(symbols.map((symbol) => securityMeta(symbol).symbol))]
+    const tickerBySymbol = new Map(tickers.map((item) => [etfSecurityMeta(item.thscode).symbol, item]));
+    const requested = [...new Set(symbols.map((symbol) => etfSecurityMeta(symbol).symbol))]
       .flatMap((symbol) => tickerBySymbol.has(symbol) ? [symbol] : []);
     const results: EtfSnapshot[] = [];
     let cursor = 0;

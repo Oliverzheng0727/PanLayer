@@ -24,6 +24,8 @@ describe("ETF workspace UI contract", () => {
     expect(catalog).toMatch(/marketTime/);
     expect(catalog).toMatch(/isStale/);
     expect(catalog).toMatch(/SERVER_LIVE_CACHE_MS/);
+    expect(catalog).toContain("扶摇 Fuyao ETF代码库 / 东方财富行情");
+    expect(catalog.indexOf("扶摇 Fuyao ETF代码库")).toBeLessThan(catalog.indexOf('source: "东方财富"'));
   });
 
   it("does not block the dashboard server render on live ETF providers", async () => {

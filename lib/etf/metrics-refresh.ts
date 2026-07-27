@@ -112,15 +112,20 @@ export async function runEtfMetricsRefreshBatch({
     : persisted?.items ?? [];
   if (items.length === 0) throw new Error("ETF catalog unavailable for metrics refresh");
   if (fuyaoApiKey) {
+    const fuyao = createFuyaoMcpClient({
+      apiKey: fuyaoApiKey,
+      baseUrl: fuyaoBaseUrl,
+      fetcher,
+    });
+    const mergedCatalog = await fuyao.mergeEtfMasterCatalog(items).catch(() => null);
+    if (mergedCatalog && mergedCatalog.coveragePct >= 80) {
+      items = mergedCatalog.items;
+    }
     const selectedSymbols = items
       .toSorted((left, right) => right.amount - left.amount)
       .slice(0, Math.max(12, batchSize))
       .map((item) => item.symbol);
-    const primary = await createFuyaoMcpClient({
-      apiKey: fuyaoApiKey,
-      baseUrl: fuyaoBaseUrl,
-      fetcher,
-    }).fetchEtfSnapshots(selectedSymbols).catch(() => []);
+    const primary = await fuyao.fetchEtfSnapshots(selectedSymbols).catch(() => []);
     if (primary.length > 0) {
       const primaryBySymbol = new Map(primary.map((item) => [item.symbol, item]));
       items = items.map((item) => {

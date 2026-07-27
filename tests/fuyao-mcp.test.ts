@@ -3,7 +3,7 @@ import {
   createFuyaoMcpClient,
   mergeVerifiedIndexSnapshots,
 } from "../lib/data/fuyao-mcp";
-import type { IndexSnapshot } from "../lib/data/provider";
+import type { EtfSnapshot, IndexSnapshot } from "../lib/data/provider";
 
 function mcpResult(data: unknown) {
   return Response.json({
@@ -172,6 +172,72 @@ describe("Fuyao MCP adapter", () => {
       pctChange: 1.25,
       amount: 88_000_000,
     })]);
+  });
+
+  it("uses the Fuyao ETF master catalog to normalize a cross-checked market catalog", async () => {
+    const fetcher = createFetcher((tool) => {
+      if (tool === "get_meta_tickers_list") {
+        return mcpResult({
+          item: [
+            { thscode: "510300.SH", ticker: "510300", name: "沪深300ETF华泰柏瑞", exchange: "SH", asset_type: "fund-etf" },
+            { thscode: "159995.SZ", ticker: "159995", name: "芯片ETF华夏", exchange: "SZ", asset_type: "fund-etf" },
+          ],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const marketItems: EtfSnapshot[] = [
+      {
+        symbol: "510300",
+        name: "沪深300ETF",
+        category: "宽基指数",
+        tags: ["宽基"],
+        exchange: "SH",
+        price: 4.2,
+        pctChange: 0.5,
+        amount: 5_000_000_000,
+        averageAmount20: 4_000_000_000,
+        scale: 100_000_000_000,
+        turnoverRate: 2,
+        status: "active",
+        updatedAt: "2026-07-27T15:00:00+08:00",
+      },
+      {
+        symbol: "512800",
+        name: "银行ETF",
+        category: "金融",
+        tags: ["金融"],
+        exchange: "SH",
+        price: 1.4,
+        pctChange: 0.2,
+        amount: 1_000_000_000,
+        averageAmount20: null,
+        scale: null,
+        turnoverRate: null,
+        status: "active",
+        updatedAt: "2026-07-27T15:00:00+08:00",
+      },
+    ];
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const result = await client.mergeEtfMasterCatalog(marketItems);
+
+    expect(result).toMatchObject({
+      masterCount: 2,
+      matchedCount: 1,
+      supplementalCount: 1,
+      coveragePct: 50,
+    });
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        symbol: "510300",
+        name: "沪深300ETF华泰柏瑞",
+        price: 4.2,
+      }),
+      expect.objectContaining({
+        symbol: "512800",
+        name: "银行ETF",
+      }),
+    ]);
   });
 
   it("maps Fuyao ETF daily K-lines without inventing adjustment", async () => {

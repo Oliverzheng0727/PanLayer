@@ -1,4 +1,6 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { createFuyaoMcpClient } from "../data/fuyao-mcp";
+import { resolveFuyaoRuntimeOptions } from "../data/fuyao-runtime";
 import type { EtfSnapshot } from "../data/provider";
 import { fetchSinaEtfs } from "../data/sina-etfs";
 import { refreshEtfCatalogFromTencent } from "../data/tencent";
@@ -146,13 +148,33 @@ export async function loadLiveEtfCatalogEnvelope(date = new Date().toISOString()
         return persistedPromise;
       },
     } : undefined;
+    let eastmoneyPromise: Promise<EtfSnapshot[]> | null = null;
+    const loadEastmoney = () => {
+      eastmoneyPromise ??= createEastmoneyProvider().getEtfs(date);
+      return eastmoneyPromise;
+    };
+    const fuyaoOptions = await resolveFuyaoRuntimeOptions();
     const envelope = await loadEtfCatalogWithFallback({
       date,
       providers: [
+        ...(fuyaoOptions ? [{
+          source: "扶摇 Fuyao ETF代码库 / 东方财富行情",
+          status: "complete" as const,
+          load: async () => {
+            const merged = await createFuyaoMcpClient(fuyaoOptions)
+              .mergeEtfMasterCatalog(await loadEastmoney());
+            if (merged.coveragePct < 80) {
+              throw new Error(
+                `Fuyao ETF catalog quote coverage ${merged.coveragePct}% is below 80%`,
+              );
+            }
+            return merged.items;
+          },
+        }] : []),
         {
           source: "东方财富",
           status: "complete",
-          load: () => createEastmoneyProvider().getEtfs(date),
+          load: loadEastmoney,
         },
         {
           source: "腾讯财经",
