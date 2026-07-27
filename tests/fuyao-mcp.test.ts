@@ -149,6 +149,84 @@ describe("Fuyao MCP adapter", () => {
     }]);
   });
 
+  it("builds a bounded first-tier morning evidence snapshot with provenance", async () => {
+    const referenceDate = "2026-07-24";
+    const referenceMs = Date.parse(`${referenceDate}T00:00:00+08:00`);
+    const fetcher = createFetcher((tool) => {
+      if (tool === "get_a_share_index_prices_historical") {
+        return mcpResult({
+          item: [
+            { date_ms: referenceMs - 24 * 60 * 60 * 1_000, close_price: 100, turnover: 900 },
+            { date_ms: referenceMs, close_price: 101, turnover: 1_000 },
+          ],
+        });
+      }
+      if (tool === "get_a_share_special_data_limit_up_pool") {
+        return mcpResult({
+          pagination: { total: 1 },
+          item: [{
+            thscode: "600001.SH",
+            name: "测试股份",
+            continue_day_cnt: 3,
+            seal_money: 8_000_000,
+            limit_up_time: "09:35",
+            limit_up_reason: "算力",
+            is_st: false,
+          }],
+        });
+      }
+      if (tool === "get_a_share_special_data_limit_up_ladder") {
+        return mcpResult({
+          item: [{
+            date: referenceDate,
+            boards: {
+              two_board: [],
+              three_board: [{ thscode: "600001.SH", name: "测试股份", board_num: 3 }],
+              four_board: [],
+              five_board: [],
+              six_board: [],
+              seven_over: [],
+            },
+          }],
+        });
+      }
+      if (tool === "get_a_share_special_data_hot_stock_list") {
+        return mcpResult({
+          item: [{ thscode: "600001.SH", name: "测试股份", rank: 1, rank_change: 2, heat: "1234" }],
+        });
+      }
+      if (tool === "get_a_share_special_data_dragon_tiger_list") {
+        return mcpResult({
+          trade_date: referenceDate,
+          stock_items: [{
+            thscode: "600001.SH",
+            name: "测试股份",
+            net_value: 10_000,
+            org_net_value: 2_000,
+            hot_money_net_value: 1_000,
+            concept_list: [{ name: "算力" }],
+          }],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const evidence = await client.fetchMorningBriefEvidence(referenceDate, new Date("2026-07-27T22:50:00Z"));
+
+    expect(evidence).toMatchObject({
+      status: "complete",
+      referenceDate,
+      datasetSuccess: 5,
+      datasetTotal: 5,
+      limitUpPool: { total: 1 },
+      ladder: { highest: 3 },
+    });
+    expect(evidence.indices).toHaveLength(5);
+    expect(evidence.hotStocks[0]).toMatchObject({ symbol: "600001.SH", rank: 1 });
+    expect(evidence.dragonTiger[0]).toMatchObject({ netValue: 10_000, concepts: ["算力"] });
+    expect(evidence.requestIds).toEqual(["request-1"]);
+  });
+
   it("marks disagreeing index sources as partial and keeps both source names", () => {
     const base: IndexSnapshot = {
       symbol: "000001.SH",

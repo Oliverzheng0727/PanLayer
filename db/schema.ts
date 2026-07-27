@@ -198,6 +198,15 @@ export const globalMarketSnapshots = sqliteTable("global_market_snapshots", {
   message: text("message").notNull().default(""),
 }, (table) => [primaryKey({ columns: [table.tradeDate, table.symbol, table.provider] }), index("global_snapshot_date_idx").on(table.tradeDate)]);
 
+export const briefMarketEvidence = sqliteTable("brief_market_evidence", {
+  tradeDate: text("trade_date").notNull(),
+  provider: text("provider").notNull(),
+  referenceDate: text("reference_date").notNull(),
+  payload: text("payload").notNull(),
+  status: text("status").notNull(),
+  receivedAt: text("received_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.tradeDate, table.provider] })]);
+
 export const briefSources = sqliteTable("brief_sources", {
   sourceId: text("source_id").primaryKey(),
   name: text("name").notNull(),

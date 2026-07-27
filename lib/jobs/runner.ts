@@ -13,6 +13,11 @@ import {
 } from "../ai/news-intake/repository";
 import { collectTier2News } from "../ai/news-intake/tier2";
 import {
+  FUYAO_MARKET_EVIDENCE_SCHEMA_STATEMENT,
+  persistFuyaoMarketEvidence,
+  readFuyaoMarketEvidence,
+} from "../ai/news-intake/market-evidence";
+import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
   QWEN_BRIEF_SECTION_MODEL,
@@ -295,7 +300,7 @@ function receivedContextTime(value: string): string | null {
 }
 
 export async function loadMorningBriefMarketContext(db: D1Database, date: string): Promise<MorningBriefMarketContext> {
-  const fallback: MorningBriefMarketContext = { review: null, etfs: [], etfSnapshot: null };
+  const fallback: MorningBriefMarketContext = { review: null, etfs: [], etfSnapshot: null, structuredEvidence: null };
   try {
     const reviewRow = await db.prepare("SELECT trade_date, payload, status, updated_at FROM daily_reviews WHERE trade_date < ? ORDER BY trade_date DESC LIMIT 1").bind(date).first<{ trade_date: string; payload: string; status: DailyReview["status"]; updated_at: string }>().catch(() => null);
     const etfResult = await db.prepare("SELECT category, name, symbol, trade_date, updated_at FROM etf_snapshots WHERE trade_date = (SELECT MAX(trade_date) FROM etf_snapshots WHERE trade_date < ?) ORDER BY category, symbol LIMIT 120").bind(date).all<{ category: string; name: string; symbol: string; trade_date: string; updated_at: string }>().catch(() => ({ results: [] }));
@@ -317,7 +322,13 @@ export async function loadMorningBriefMarketContext(db: D1Database, date: string
     const etfSnapshot = etfRows[0]
       ? { marketTime: marketContextTime(etfRows[0].trade_date), receivedAt: etfRows.map((item) => receivedContextTime(item.updated_at)).filter((value): value is string => value !== null).sort().at(-1) ?? null }
       : null;
-    return { review, etfs: etfRows.flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []), etfSnapshot };
+    const structuredEvidence = await readFuyaoMarketEvidence(db, date);
+    return {
+      review,
+      etfs: etfRows.flatMap((item) => typeof item.category === "string" && typeof item.name === "string" && typeof item.symbol === "string" ? [{ category: item.category, name: item.name, code: item.symbol }] : []),
+      etfSnapshot,
+      structuredEvidence,
+    };
   } catch { return fallback; }
 }
 
@@ -559,6 +570,7 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS new_high_bootstrap_retry_idx ON new_high_bootstrap_failures(next_retry_at, attempts)`,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
+  FUYAO_MARKET_EVIDENCE_SCHEMA_STATEMENT,
   ...NEWS_INTAKE_SCHEMA_STATEMENTS,
 ];
 
@@ -584,6 +596,20 @@ async function persistStockUniverse(db: D1Database, quotes: Quote[], updatedAt: 
       .bind(quote.symbol, quote.name, quote.exchange, quote.board, quote.sector, updatedAt));
     if (statements.length) await db.batch(statements);
   }
+}
+
+function previousWeekday(date: string): string {
+  const value = new Date(`${date}T12:00:00+08:00`);
+  do value.setUTCDate(value.getUTCDate() - 1);
+  while (value.getUTCDay() === 0 || value.getUTCDay() === 6);
+  return value.toISOString().slice(0, 10);
+}
+
+export async function resolveMorningEvidenceReferenceDate(db: D1Database, date: string): Promise<string> {
+  const row = await db.prepare(
+    "SELECT trade_date FROM daily_reviews WHERE trade_date < ? AND status != 'demo' ORDER BY trade_date DESC LIMIT 1",
+  ).bind(date).first<{ trade_date: string }>().catch(() => null);
+  return /^\d{4}-\d{2}-\d{2}$/.test(row?.trade_date ?? "") ? row!.trade_date : previousWeekday(date);
 }
 
 export function leaseLabelForJob(job: ScheduledJob): string {
@@ -787,15 +813,51 @@ export async function runPanLayerJob(
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
     if (job.type === "tier1-rss-prefetch") {
-      const summary = await collectTier1News({
-        date,
-        config: loadTier1NewsConfig(),
-        fetcher,
-        now,
-      });
+      const referenceDate = await resolveMorningEvidenceReferenceDate(db, date);
+      const [summary, structuredEvidence] = await Promise.all([
+        collectTier1News({
+          date,
+          config: loadTier1NewsConfig(),
+          fetcher,
+          now,
+        }),
+        fuyao
+          ? fuyao.fetchMorningBriefEvidence(referenceDate, now).catch((error) => ({
+              schemaVersion: 1 as const,
+              provider: "扶摇 Fuyao" as const,
+              status: "failed" as const,
+              referenceDate,
+              marketTime: `${referenceDate}T15:00:00+08:00`,
+              receivedAt: now.toISOString(),
+              datasetTotal: 5,
+              datasetSuccess: 0,
+              requestIds: [],
+              indices: [],
+              limitUpPool: null,
+              ladder: null,
+              hotStocks: [],
+              dragonTiger: [],
+              errors: [sanitizeMorningBriefDiagnostic(error)],
+            }))
+          : Promise.resolve(null),
+      ]);
       await persistNewsCollection(db, summary);
-      finalStatus = summary.status;
-      finalMessage = `${summary.sourceSuccess}/${summary.sourceTotal} sources; ${summary.keptItemCount} verified; ${summary.filteredItemCount} filtered`;
+      if (structuredEvidence) await persistFuyaoMarketEvidence(db, date, structuredEvidence);
+      finalStatus = !structuredEvidence
+        ? summary.status
+        : summary.status === "failed" && structuredEvidence.status === "failed"
+          ? "failed"
+          : summary.status === "complete" && structuredEvidence.status === "complete"
+            ? "complete"
+            : "partial";
+      finalMessage = [
+        `RSS ${summary.sourceSuccess}/${summary.sourceTotal} sources`,
+        `${summary.keptItemCount} verified`,
+        `${summary.filteredItemCount} filtered`,
+        structuredEvidence
+          ? `Fuyao ${structuredEvidence.datasetSuccess}/${structuredEvidence.datasetTotal} datasets (${structuredEvidence.referenceDate})`
+          : "Fuyao unconfigured",
+      ].join("; ");
     } else if (job.type === "tier2-news-prefetch") {
       if (!env.FIRECRAWL_API_KEY) throw new Error("FIRECRAWL_API_KEY is not configured");
       const bundle = await readCurrentNewsBundle(db, date);
@@ -1118,6 +1180,23 @@ export async function runPanLayerJob(
           verifiedFacts: newsBundle.items.filter((item) => item.verification === "verified").length,
           crossCheckedFacts: newsBundle.items.filter((item) => item.corroboratingUrls.length > 1 || item.sourceIds.length > 1).length,
           collectedAt: newsBundle.collectedAt,
+          structuredEvidence: marketContext.structuredEvidence
+            ? {
+                provider: marketContext.structuredEvidence.provider,
+                status: marketContext.structuredEvidence.status,
+                datasetTotal: marketContext.structuredEvidence.datasetTotal,
+                datasetSuccess: marketContext.structuredEvidence.datasetSuccess,
+                referenceDate: marketContext.structuredEvidence.referenceDate,
+                collectedAt: marketContext.structuredEvidence.receivedAt,
+              }
+            : {
+                provider: "扶摇 Fuyao",
+                status: "unavailable" as const,
+                datasetTotal: 5,
+                datasetSuccess: 0,
+                referenceDate: null,
+                collectedAt: null,
+              },
         },
       };
       await assertMorningBriefLease(morningBriefLease);

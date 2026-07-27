@@ -76,6 +76,14 @@ export interface MorningBriefCoverage {
   verifiedFacts: number;
   crossCheckedFacts: number;
   collectedAt: string | null;
+  structuredEvidence?: {
+    provider: string;
+    status: "complete" | "partial" | "failed" | "unavailable";
+    datasetTotal: number;
+    datasetSuccess: number;
+    referenceDate: string | null;
+    collectedAt: string | null;
+  };
 }
 
 export interface MorningBrief {
@@ -419,6 +427,15 @@ export function validateMorningBrief(brief: MorningBrief): BriefValidationResult
     if (numericCoverage.some((value) => !Number.isInteger(value) || value < 0)) errors.push("早参来源覆盖统计不合法");
     if (brief.coverage.sourceSuccess > brief.coverage.sourceTotal) errors.push("早参来源成功数超过来源总数");
     if (brief.coverage.collectedAt !== null && !isIsoTimestamp(brief.coverage.collectedAt)) errors.push("早参来源采集时间不合法");
+    if (brief.coverage.structuredEvidence) {
+      const structured = brief.coverage.structuredEvidence;
+      if (!isNonBlankString(structured.provider)) errors.push("早参结构化证据来源名称不合法");
+      if (!["complete", "partial", "failed", "unavailable"].includes(structured.status)) errors.push("早参结构化证据状态不合法");
+      if (![structured.datasetTotal, structured.datasetSuccess].every((value) => Number.isInteger(value) && value >= 0)) errors.push("早参结构化证据覆盖统计不合法");
+      if (structured.datasetSuccess > structured.datasetTotal) errors.push("早参结构化证据成功数超过数据集总数");
+      if (structured.referenceDate !== null && !isCalendarDate(structured.referenceDate)) errors.push("早参结构化证据参考日期不合法");
+      if (structured.collectedAt !== null && !isIsoTimestamp(structured.collectedAt)) errors.push("早参结构化证据采集时间不合法");
+    }
   }
 
   const sourceValidation = validateSources(brief.sources);

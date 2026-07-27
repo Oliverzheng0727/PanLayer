@@ -158,7 +158,7 @@ export function buildSidebarProgress(
     tasks: [
       {
         key: "tier1-rss",
-        label: "一级资讯 RSS",
+        label: "一级资源 RSS + Fuyao",
         status: normalizeStatus(health.jobs["tier1-rss-prefetch"]?.status),
         value: STATUS_VALUE[normalizeStatus(health.jobs["tier1-rss-prefetch"]?.status)],
         detail: health.jobs["tier1-rss-prefetch"]?.message || "等待 06:50",

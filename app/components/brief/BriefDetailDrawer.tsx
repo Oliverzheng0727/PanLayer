@@ -61,7 +61,7 @@ export function BriefDetailDrawer({ brief, section, sectionIndex, onClose }: { b
           {headings.length > 0 && <nav className="brief-drawer-outline" aria-label="本模块目录">{headings.map((heading) => <a key={heading.id} href={`#${heading.id}`}>{heading.text}</a>)}</nav>}
           <div className="brief-drawer-body"><BriefBlockRenderer brief={brief} section={section} /></div>
         </div>
-        <footer className="brief-drawer-footer"><span>{brief.sources.length} 个联网来源{brief.coverage ? ` · 已核验事实 ${brief.coverage.verifiedFacts} · 交叉核验 ${brief.coverage.crossCheckedFacts}` : ""}</span><span>{brief.disclaimer}</span></footer>
+        <footer className="brief-drawer-footer"><span>{brief.sources.length} 个联网来源{brief.coverage ? ` · 已核验事实 ${brief.coverage.verifiedFacts} · 交叉核验 ${brief.coverage.crossCheckedFacts}${brief.coverage.structuredEvidence ? ` · ${brief.coverage.structuredEvidence.provider} ${brief.coverage.structuredEvidence.datasetSuccess}/${brief.coverage.structuredEvidence.datasetTotal}` : ""}` : ""}</span><span>{brief.disclaimer}</span></footer>
       </aside>
     </div>
   );

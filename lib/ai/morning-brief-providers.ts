@@ -1,4 +1,5 @@
 import type { ReconciledGlobalPoint } from "../data/global/types";
+import type { FuyaoMorningBriefEvidence } from "../data/fuyao-mcp";
 import { LEADER_RANKING_BASIS } from "../domain/metrics";
 import type { FirecrawlBriefSource } from "./firecrawl-brief-fallback";
 import { sanitizeMorningBriefDiagnostic } from "./morning-brief-diagnostics";
@@ -32,6 +33,7 @@ export interface MorningBriefMarketContext {
   };
   etfs: Array<{ category: string; name: string; code: string }>;
   etfSnapshot: null | { marketTime: string | null; receivedAt: string | null };
+  structuredEvidence: FuyaoMorningBriefEvidence | null;
 }
 
 export type BriefSectionGenerator = (input: {
@@ -257,6 +259,7 @@ ${externalSources.length > 0 ? "只使用下方服务端资料包。" : "主动�
 ${externalSourceInstruction}
 
 ${key === "mapping" || key === "risk" ? `服务端会在最终模块中追加已校验的复盘排名、龙头排名和 ETF 映射表。V3 模块允许引用服务端客观排序，但不得自行创造排序数字或股票名单；所有“主线”“龙头”映射只能以服务端表格为准。V2 兼容提示：旧版模型正文不得输出“主线”“热点”“龙头”或“ETF”这些保留词；模型正文不得输出未经服务端验证的排名结论。“ETF”只由服务端追加的映射表提供。旧版覆盖提示：本模块必须逐项覆盖：指数、成交额、涨跌停、连板、资金、利好、利空、内需。` : ""}
+${key === "technical" || key === "funding" || key === "mapping" || key === "risk" ? "服务端还会追加扶摇 Fuyao 的结构化行情证据表；模型不得把结构化行情伪装成新闻，不得自行猜测表中数值、榜单或股票名单。" : ""}
 ${retryGuidance}
 
 仅返回合法 JSON 对象，不要 Markdown 代码块。示例只展示结构，实际每个内容块必须满足上述长度与来源要求：
@@ -951,8 +954,9 @@ function contextUnavailableCallout(label: string, text: string): BriefBlock {
 }
 
 function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMarketContext | undefined): BriefBlock[] {
-  if (key !== "mapping" && key !== "risk") return [];
+  if (key !== "technical" && key !== "funding" && key !== "mapping" && key !== "risk") return [];
   const review = marketContext?.review;
+  const evidence = marketContext?.structuredEvidence;
   const blocks: BriefBlock[] = [];
   const reviewProvenance = review && review.marketTime && review.receivedAt && asBeijingMarketTime(review.marketTime) && validIsoTimestamp(review.receivedAt)
     ? { marketTime: asBeijingMarketTime(review.marketTime)!, receivedAt: review.receivedAt, providers: ["服务端日度复盘"] }
@@ -960,6 +964,48 @@ function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMa
   const etfProvenance = marketContext?.etfSnapshot?.marketTime && marketContext.etfSnapshot.receivedAt && asBeijingMarketTime(marketContext.etfSnapshot.marketTime) && validIsoTimestamp(marketContext.etfSnapshot.receivedAt)
     ? { marketTime: asBeijingMarketTime(marketContext.etfSnapshot.marketTime)!, receivedAt: marketContext.etfSnapshot.receivedAt, providers: ["服务端ETF快照"] }
     : null;
+  const evidenceProvenance = evidence?.marketTime && evidence.receivedAt && asBeijingMarketTime(evidence.marketTime) && validIsoTimestamp(evidence.receivedAt)
+    ? { marketTime: asBeijingMarketTime(evidence.marketTime)!, receivedAt: evidence.receivedAt, providers: [evidence.provider] }
+    : null;
+  if (key === "technical") {
+    if (evidence?.indices.length && evidenceProvenance) {
+      blocks.push(contextSnapshotTable(
+        "扶摇A股指数收盘证据",
+        ["指数", "收盘点位", "涨跌幅", "成交额", "状态"],
+        evidence.indices.map((index) => [
+          index.name,
+          index.price === null ? "暂缺" : String(index.price),
+          index.pctChange === null ? "暂缺" : `${index.pctChange >= 0 ? "+" : ""}${index.pctChange.toFixed(2)}%`,
+          index.amount === null ? "暂缺" : String(index.amount),
+          index.status,
+        ]),
+        evidenceProvenance,
+      ));
+    } else {
+      blocks.push(contextUnavailableCallout("扶摇A股指数收盘证据", "扶摇结构化指数证据暂缺，技术面不使用猜测数值。"));
+    }
+    return blocks;
+  }
+  if (key === "funding") {
+    if (evidence?.dragonTiger.length && evidenceProvenance) {
+      blocks.push(contextSnapshotTable(
+        "扶摇龙虎榜资金证据",
+        ["股票", "代码", "净额", "机构净额", "游资净额", "概念"],
+        evidence.dragonTiger.slice(0, 10).map((item) => [
+          item.name,
+          item.symbol,
+          item.netValue === null ? "暂缺" : String(item.netValue),
+          item.organizationNetValue === null ? "暂缺" : String(item.organizationNetValue),
+          item.hotMoneyNetValue === null ? "暂缺" : String(item.hotMoneyNetValue),
+          item.concepts.join("、") || "暂缺",
+        ]),
+        evidenceProvenance,
+      ));
+    } else {
+      blocks.push(contextUnavailableCallout("扶摇龙虎榜资金证据", "扶摇龙虎榜结构化证据暂缺，资金面不使用旧值替代。"));
+    }
+    return blocks;
+  }
   if (review?.sectors.length && reviewProvenance) {
     blocks.push(contextSnapshotTable("服务端主线热点复盘", ["主线/热点", "板块", "排名依据", "因素"], review.sectors.slice(0, 5).map((sector) => ["服务端复盘", sector.name, "涨停数、均涨幅、成交额增量、最高连板", `涨停${sector.factors.limitUpCount}；均涨幅${sector.factors.averagePct}%；成交额增量${sector.factors.amountGrowthPct === null ? "暂缺" : `${sector.factors.amountGrowthPct}%`}；最高连板${sector.factors.maxStreak}`]), reviewProvenance));
   } else {
@@ -975,6 +1021,62 @@ function marketContextBlocks(key: BriefSectionKey, marketContext: MorningBriefMa
     blocks.push(contextSnapshotTable("服务端ETF映射", ["ETF分类", "ETF名称", "代码", "映射依据"], displayedEtfs.map((etf) => [etf.category, etf.name, etf.code, "服务端 ETF 分类映射"]), etfProvenance));
   } else {
     blocks.push(contextUnavailableCallout("服务端ETF映射", "服务端 ETF 映射上下文不可用：映射或快照时间暂缺。"));
+  }
+  if (key === "mapping") {
+    if (evidence?.limitUpPool && evidenceProvenance) {
+      blocks.push(contextSnapshotTable(
+        "扶摇涨停池客观排序",
+        ["股票", "代码", "连板高度", "首次封板", "涨停原因", "封单金额"],
+        evidence.limitUpPool.leaders.slice(0, 12).map((item) => [
+          item.name,
+          item.symbol,
+          String(item.streak),
+          item.firstLimitTime ?? "暂缺",
+          item.reason ?? "暂缺",
+          item.sealMoney === null ? "暂缺" : String(item.sealMoney),
+        ]),
+        evidenceProvenance,
+      ));
+    } else {
+      blocks.push(contextUnavailableCallout("扶摇涨停池客观排序", "扶摇涨停池结构化证据暂缺，不生成替代名单。"));
+    }
+    if (evidence?.hotStocks.length && evidenceProvenance) {
+      blocks.push(contextSnapshotTable(
+        "扶摇市场热度榜",
+        ["排名", "股票", "代码", "排名变化", "热度"],
+        evidence.hotStocks.slice(0, 10).map((item) => [
+          String(item.rank),
+          item.name,
+          item.symbol,
+          `${item.rankChange > 0 ? "+" : ""}${item.rankChange}`,
+          item.heat === null ? "暂缺" : String(item.heat),
+        ]),
+        evidenceProvenance,
+      ));
+    } else {
+      blocks.push(contextUnavailableCallout("扶摇市场热度榜", "扶摇市场热度榜暂缺；热度只作客观关注度记录，不代表推荐。"));
+    }
+  }
+  if (key === "risk") {
+    if (evidence?.ladder && evidenceProvenance) {
+      blocks.push(contextSnapshotTable(
+        "扶摇连板梯队证据",
+        ["最高板", "二板", "三板", "四板", "五板", "六板", "七板及以上", "最高梯队股票"],
+        [[
+          String(evidence.ladder.highest),
+          String(evidence.ladder.counts.two),
+          String(evidence.ladder.counts.three),
+          String(evidence.ladder.counts.four),
+          String(evidence.ladder.counts.five),
+          String(evidence.ladder.counts.six),
+          String(evidence.ladder.counts.sevenPlus),
+          evidence.ladder.leaders.filter((item) => item.height === evidence.ladder!.highest).map((item) => item.name).join("、") || "无",
+        ]],
+        evidenceProvenance,
+      ));
+    } else {
+      blocks.push(contextUnavailableCallout("扶摇连板梯队证据", "扶摇连板梯队结构化证据暂缺，风险模块不沿用旧值。"));
+    }
   }
   return blocks;
 }
