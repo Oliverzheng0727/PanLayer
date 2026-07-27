@@ -89,11 +89,15 @@ export async function runEtfMetricsRefreshBatch({
   date,
   fetcher = fetch,
   batchSize = 12,
+  fuyaoApiKey,
+  fuyaoBaseUrl,
 }: {
   db: D1Database;
   date: string;
   fetcher?: typeof fetch;
   batchSize?: number;
+  fuyaoApiKey?: string;
+  fuyaoBaseUrl?: string;
 }) {
   const stateKey = `etf-metrics-cursor:${date}`;
   const [persisted, cursorRow] = await Promise.all([
@@ -111,7 +115,13 @@ export async function runEtfMetricsRefreshBatch({
     cursor: Number(cursorRow?.value ?? 0),
     batchSize,
     minimumIntervalMs: 1_100,
-    loadBars: async (symbol) => (await loadEtfBarsWithFallback(symbol, "day", "none", fetcher)).bars,
+    loadBars: async (symbol) => (await loadEtfBarsWithFallback(
+      symbol,
+      "day",
+      "none",
+      fetcher,
+      fuyaoApiKey ? { apiKey: fuyaoApiKey, baseUrl: fuyaoBaseUrl, fetcher } : undefined,
+    )).bars,
   });
   const receivedAt = new Date().toISOString();
   await saveEtfCatalogSnapshot(db, {

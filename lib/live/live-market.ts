@@ -1,4 +1,5 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { createFuyaoMcpClient, type FuyaoMcpOptions } from "../data/fuyao-mcp";
 import { runDomesticPipeline } from "../data/market-pipeline";
 import { fetchTencentQuotes } from "../data/tencent";
 import { calculateBreadth } from "../domain/metrics";
@@ -43,8 +44,9 @@ export function createLiveMarketCache<T>(ttlMs: number) {
   };
 }
 
-export function createLiveMarketLoader(fetcher: typeof fetch = fetch) {
+export function createLiveMarketLoader(fetcher: typeof fetch = fetch, fuyaoOptions?: FuyaoMcpOptions) {
   const cache = createLiveMarketCache<Omit<LiveMarketSnapshot, "isStale">>(SERVER_LIVE_CACHE_MS);
+  const fuyao = fuyaoOptions ? createFuyaoMcpClient({ ...fuyaoOptions, fetcher }) : null;
 
   return async (now = new Date(), expectedSymbols: string[] = []): Promise<LiveMarketSnapshot> => {
     const cached = await cache.get(async () => {
@@ -54,11 +56,13 @@ export function createLiveMarketLoader(fetcher: typeof fetch = fetch) {
         at: time,
         expectedSymbols,
         primary: provider,
-        secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
+        secondary: fuyao
+          ? { name: "扶摇 Fuyao", getQuotes: (symbols) => fuyao.fetchAShareQuotes(symbols) }
+          : { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
         now,
         retryDelayMs: 200,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
-        secondarySampleSize: 240,
+        secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
       });
       if (market.status === "failed" || market.quotes.length === 0) {
         throw new Error(market.message || "实时行情源返回空数据");
@@ -81,7 +85,14 @@ export function createLiveMarketLoader(fetcher: typeof fetch = fetch) {
 }
 
 const liveMarketLoader = createLiveMarketLoader();
+let fuyaoLiveMarketLoader: ReturnType<typeof createLiveMarketLoader> | null = null;
 
-export function loadLiveMarketSnapshot(now = new Date(), expectedSymbols: string[] = []): Promise<LiveMarketSnapshot> {
-  return liveMarketLoader(now, expectedSymbols);
+export function loadLiveMarketSnapshot(
+  now = new Date(),
+  expectedSymbols: string[] = [],
+  fuyaoOptions?: FuyaoMcpOptions,
+): Promise<LiveMarketSnapshot> {
+  if (!fuyaoOptions) return liveMarketLoader(now, expectedSymbols);
+  fuyaoLiveMarketLoader ??= createLiveMarketLoader(fuyaoOptions.fetcher ?? fetch, fuyaoOptions);
+  return fuyaoLiveMarketLoader(now, expectedSymbols);
 }

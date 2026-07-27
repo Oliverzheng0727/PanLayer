@@ -1,5 +1,6 @@
 import { authorizeApi } from "../../../../../auth-guard";
 import { createDemoBars, loadEtfBarsWithFallback, type Adjustment, type BarPeriod } from "../../../../../../lib/etf/bars";
+import { resolveFuyaoRuntimeOptions } from "../../../../../../lib/data/fuyao-runtime";
 
 const periods: BarPeriod[] = ["minute", "day", "week", "month"];
 
@@ -15,7 +16,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
   if (adjustment !== "none" && adjustment !== "forward") return Response.json({ error: "invalid adjustment" }, { status: 400 });
 
   try {
-    const result = await loadEtfBarsWithFallback(symbol, period, adjustment);
+    const fuyao = await resolveFuyaoRuntimeOptions();
+    const result = await loadEtfBarsWithFallback(symbol, period, adjustment, fetch, fuyao ?? undefined);
     return Response.json({
       symbol,
       period,

@@ -24,6 +24,7 @@ import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, calculateOp
 import { buildMarketComparison } from "../domain/comparison";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { createFuyaoMcpClient, mergeVerifiedIndexSnapshots } from "../data/fuyao-mcp";
 import type { BoardPools, IndexSnapshot, MarketAggregate } from "../data/provider";
 import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
@@ -80,6 +81,8 @@ export interface PanLayerEnv {
   ALPHA_VANTAGE_API_KEY?: string;
   FRED_API_KEY?: string;
   EIA_API_KEY?: string;
+  FUYAO_API_KEY?: string;
+  FUYAO_MCP_BASE_URL?: string;
 }
 
 export function resolveMorningBriefProvider(env: Pick<PanLayerEnv, "DASHSCOPE_API_KEY" | "OPENAI_API_KEY">): {
@@ -765,6 +768,22 @@ export async function runPanLayerJob(
     run = await db.prepare("INSERT INTO job_runs (job, trade_date, status, started_at) VALUES (?, ?, 'running', ?) RETURNING id").bind(label, date, startedAt).first<{ id: number }>();
     const fetcher = options.fetcher ?? fetch;
     const provider = createEastmoneyProvider(fetcher);
+    const fuyao = env.FUYAO_API_KEY
+      ? createFuyaoMcpClient({
+        apiKey: env.FUYAO_API_KEY,
+        baseUrl: env.FUYAO_MCP_BASE_URL,
+        fetcher,
+      })
+      : null;
+    const quoteCrossSource = fuyao
+      ? {
+        name: "扶摇 Fuyao",
+        getQuotes: (symbols: string[]) => fuyao.fetchAShareQuotes(symbols),
+      }
+      : {
+        name: "腾讯",
+        getQuotes: (symbols: string[]) => fetchTencentQuotes(symbols, fetcher),
+      };
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
     if (job.type === "tier1-rss-prefetch") {
@@ -804,6 +823,8 @@ export async function runPanLayerJob(
         days: job.days,
         batchSize: 5,
         fetcher,
+        fuyaoApiKey: env.FUYAO_API_KEY,
+        fuyaoBaseUrl: env.FUYAO_MCP_BASE_URL,
       });
       const message = `history-backfill ${progress.completed}/${progress.target}; remaining ${progress.remaining}`;
       if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?").bind(message, new Date().toISOString(), run.id).run();
@@ -851,6 +872,8 @@ export async function runPanLayerJob(
         date,
         fetcher,
         batchSize: 12,
+        fuyaoApiKey: env.FUYAO_API_KEY,
+        fuyaoBaseUrl: env.FUYAO_MCP_BASE_URL,
       });
       const message = formatEtfMetricsProgress(progress);
       const status = progress.remaining === 0 ? "complete" : "partial";
@@ -867,10 +890,10 @@ export async function runPanLayerJob(
         at: job.time,
         expectedSymbols,
         primary: provider,
-        secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
+        secondary: quoteCrossSource,
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
-        secondarySampleSize: 240,
+        secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
       });
       await persistSourceAudits(db, date, job.time, market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -938,10 +961,10 @@ export async function runPanLayerJob(
         at: "16:10",
         expectedSymbols,
         primary: provider,
-        secondary: { name: "腾讯", getQuotes: (symbols) => fetchTencentQuotes(symbols, fetcher) },
+        secondary: quoteCrossSource,
         now,
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
-        secondarySampleSize: 240,
+        secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
       });
       await persistSourceAudits(db, date, "16:10", market.audits);
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
@@ -952,13 +975,19 @@ export async function runPanLayerJob(
         market.message,
         { quoteCount: market.quotes.length, source: market.source },
       );
-      const [limitPool, marginBalance, boardPools, marketAggregate, indices] = await Promise.all([
+      const [limitPool, marginBalance, boardPools, marketAggregate, existingIndices] = await Promise.all([
         withRetry(() => provider.getLimitPool(date), { retries: 2, delayMs: 250 }).catch(() => []),
         provider.getMarginBalance(date).catch(() => null),
         withRetry(() => provider.getBoardPools(date), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getMarketAggregate("15:00"), { retries: 2, delayMs: 250 }).catch(() => null),
         withRetry(() => provider.getIndexSnapshots(date), { retries: 2, delayMs: 250 }).catch(() => []),
       ]);
+      const indices = fuyao
+        ? mergeVerifiedIndexSnapshots(
+          await withRetry(() => fuyao.fetchIndexSnapshots(date, now), { retries: 1, delayMs: 250 }).catch(() => []),
+          existingIndices,
+        )
+        : existingIndices;
       await Promise.all([
         finishCloseStage(
           "board-pools",

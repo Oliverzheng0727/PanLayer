@@ -1,4 +1,5 @@
 import { createEastmoneyProvider } from "../data/eastmoney";
+import { createFuyaoMcpClient, mergeVerifiedIndexSnapshots } from "../data/fuyao-mcp";
 import { withRetry } from "../data/resilience";
 import { bucketLimitLadder, rankLeaders, rankSectors } from "../domain/metrics";
 import { buildMarketComparison, withoutStBoardPools } from "../domain/comparison";
@@ -260,24 +261,31 @@ export async function runHistoryBackfillBatch({
   days,
   batchSize = 5,
   fetcher = fetch,
+  fuyaoApiKey,
+  fuyaoBaseUrl,
 }: {
   db: D1Database;
   endDate: string;
   days: number;
   batchSize?: number;
   fetcher?: typeof fetch;
+  fuyaoApiKey?: string;
+  fuyaoBaseUrl?: string;
 }): Promise<HistoryBackfillProgress> {
   const progress = await loadProgress(db, endDate, days, fetcher);
   const completed = new Set(progress.completed);
   const pending = progress.dates.filter((date) => !completed.has(date)).slice(0, Math.max(1, batchSize));
   const provider = createEastmoneyProvider(fetcher);
+  const fuyao = fuyaoApiKey
+    ? createFuyaoMcpClient({ apiKey: fuyaoApiKey, baseUrl: fuyaoBaseUrl, fetcher })
+    : null;
 
   for (let offset = 0; offset < pending.length; offset += 2) {
     const pair = pending.slice(offset, offset + 2);
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
       try {
-        const [pools, marginBalance, indices] = await Promise.all([
+        const [pools, marginBalance, existingIndices] = await Promise.all([
           withRetry(
             () => fetchHistoricalBoardPools(date, fetcher),
             { retries: 2, delayMs: 180 },
@@ -291,6 +299,15 @@ export async function runHistoryBackfillBatch({
             { retries: 1, delayMs: 180 },
           ).catch(() => []),
         ]);
+        const indices = fuyao
+          ? mergeVerifiedIndexSnapshots(
+            await withRetry(
+              () => fuyao.fetchIndexSnapshots(date),
+              { retries: 1, delayMs: 180 },
+            ).catch(() => []),
+            existingIndices,
+          )
+          : existingIndices;
         const receivedAt = new Date().toISOString();
         const backfilled = buildBackfilledReview(date, pools, normalizeMarginBalance(marginBalance), receivedAt, indices);
         const review = existing ? mergeBackfilledStructure(existing, backfilled) : backfilled;

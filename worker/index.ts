@@ -11,6 +11,8 @@ interface Env {
   OPENAI_API_KEY?: string;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_API_URL?: string;
+  FUYAO_API_KEY?: string;
+  FUYAO_MCP_BASE_URL?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {

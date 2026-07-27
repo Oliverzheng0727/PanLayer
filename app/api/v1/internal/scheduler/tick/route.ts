@@ -11,6 +11,8 @@ interface SchedulerEnv {
   OPENAI_API_KEY?: string;
   FIRECRAWL_API_KEY?: string;
   FIRECRAWL_API_URL?: string;
+  FUYAO_API_KEY?: string;
+  FUYAO_MCP_BASE_URL?: string;
 }
 
 export async function POST(request: Request) {

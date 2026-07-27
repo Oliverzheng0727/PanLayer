@@ -1,3 +1,5 @@
+import { createFuyaoMcpClient, type FuyaoMcpOptions } from "../data/fuyao-mcp";
+
 export type BarPeriod = "minute" | "day" | "week" | "month";
 export type Adjustment = "none" | "forward";
 
@@ -229,7 +231,29 @@ export async function loadEtfBarsWithFallback(
   period: BarPeriod,
   adjustment: Adjustment,
   fetcher: typeof fetch = fetch,
+  fuyaoOptions?: FuyaoMcpOptions,
 ): Promise<EtfBarsResult> {
+  const loadFuyaoBars = async () => {
+    if (!fuyaoOptions || period === "minute") throw new Error("Fuyao ETF daily source is unavailable");
+    const daily = await createFuyaoMcpClient({ ...fuyaoOptions, fetcher }).fetchFundDailyBars(symbol);
+    const bars = period === "day" ? daily : aggregateBars(daily, period);
+    if (bars.length === 0) throw new Error("Fuyao ETF bars are empty");
+    return bars;
+  };
+
+  if (fuyaoOptions && period !== "minute" && adjustment === "none") {
+    try {
+      return {
+        bars: await loadFuyaoBars(),
+        source: "扶摇 Fuyao",
+        status: "complete",
+        appliedAdjustment: "none",
+      };
+    } catch {
+      // Keep the established public-source chain as a verified fallback.
+    }
+  }
+
   try {
     const daily = period === "minute" ? [] : await fetchEastmoneyDailyBars(symbol, adjustment, fetcher);
     const bars = period === "minute"
@@ -246,6 +270,18 @@ export async function loadEtfBarsWithFallback(
     };
   } catch (primaryError) {
     if (period !== "minute") {
+      if (fuyaoOptions) {
+        try {
+          return {
+            bars: await loadFuyaoBars(),
+            source: adjustment === "forward" ? "扶摇 Fuyao（不复权）" : "扶摇 Fuyao",
+            status: adjustment === "forward" ? "partial" : "complete",
+            appliedAdjustment: "none",
+          };
+        } catch {
+          // Continue to the public web fallbacks.
+        }
+      }
       try {
         const daily = await fetchBaiduDailyBars(symbol, fetcher);
         const bars = period === "day" ? daily : aggregateBars(daily, period);

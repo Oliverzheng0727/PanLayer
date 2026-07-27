@@ -3,6 +3,7 @@ import { loadLiveMarketSnapshot } from "../../../../../lib/live/live-market";
 import { loadExpectedSymbols } from "../../../../../lib/jobs/runner";
 import { readIntradayBreadthTimeline } from "../../../../../lib/data/repository";
 import { beijingDateParts } from "../../../../../lib/jobs/schedule";
+import { resolveFuyaoRuntimeOptions } from "../../../../../lib/data/fuyao-runtime";
 
 export async function GET() {
   const denied = await authorizeApi();
@@ -18,14 +19,15 @@ export async function GET() {
     } catch {
       expectedSymbols = [];
     }
+    const fuyao = await resolveFuyaoRuntimeOptions();
     return Response.json({
-      ...await loadLiveMarketSnapshot(now, expectedSymbols),
+      ...await loadLiveMarketSnapshot(now, expectedSymbols, fuyao ?? undefined),
       intraday,
     });
   } catch (error) {
     return Response.json({
       breadth: null,
-      source: "东方财富 / 新浪 / 腾讯",
+      source: "东方财富 / 新浪 / 扶摇 Fuyao / 腾讯",
       status: "failed",
       message: error instanceof Error ? error.message : "实时市场数据失败",
       universeSize: 0,
