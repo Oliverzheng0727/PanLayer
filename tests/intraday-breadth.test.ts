@@ -34,16 +34,26 @@ describe("intraday breadth timeline", () => {
     });
   });
 
-  it("separates a catch-up node from a truly missing node", () => {
+  it("keeps the opening node recoverable from the official open price", () => {
     const timeline = buildIntradayBreadthTimeline({
       date: "2026-07-27",
       now: new Date("2026-07-27T10:05:00+08:00"),
       snapshots: [],
     });
 
-    expect(timeline.meta.missing).toEqual(["09:25"]);
-    expect(timeline.meta.recovering).toEqual(["10:00"]);
+    expect(timeline.meta.missing).toEqual([]);
+    expect(timeline.meta.recovering).toEqual(["09:25", "10:00"]);
     expect(timeline.meta.pending).toEqual(["11:00", "13:00", "14:00", "15:00"]);
+  });
+
+  it("marks an unfilled opening node missing after the same-day recovery window", () => {
+    const timeline = buildIntradayBreadthTimeline({
+      date: "2026-07-27",
+      now: new Date("2026-07-27T15:31:00+08:00"),
+      snapshots: [],
+    });
+
+    expect(timeline.meta.missing).toContain("09:25");
   });
 
   it("counts partial-quality rows as captured and orders them by checkpoint", () => {

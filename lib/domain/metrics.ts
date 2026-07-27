@@ -19,6 +19,38 @@ export function calculateBreadth(quotes: Quote[]): Breadth {
   }, { rising: 0, falling: 0, flat: 0 });
 }
 
+export interface OpeningBreadthResult extends Breadth {
+  validCount: number;
+  expectedCount: number;
+  coveragePct: number;
+}
+
+export function calculateOpeningBreadth(quotes: Quote[]): OpeningBreadthResult {
+  const expected = quotes.filter((item) =>
+    !item.isST
+    && Number.isFinite(item.previousClose)
+    && item.previousClose > 0,
+  );
+  const valid = expected.filter((item) =>
+    Number.isFinite(item.open)
+    && item.open > 0,
+  );
+  const breadth = valid.reduce<Breadth>((result, item) => {
+    if (item.open > item.previousClose + PRICE_EPSILON) result.rising += 1;
+    else if (item.open < item.previousClose - PRICE_EPSILON) result.falling += 1;
+    else result.flat += 1;
+    return result;
+  }, { rising: 0, falling: 0, flat: 0 });
+  return {
+    ...breadth,
+    validCount: valid.length,
+    expectedCount: expected.length,
+    coveragePct: expected.length > 0
+      ? Number(((valid.length / expected.length) * 100).toFixed(2))
+      : 0,
+  };
+}
+
 export function formatBreadthRatio(rising: number, falling: number): string {
   if (!Number.isFinite(rising) || !Number.isFinite(falling) || falling <= 0) return "暂缺";
   return (rising / falling).toFixed(2);

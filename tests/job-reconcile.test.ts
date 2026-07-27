@@ -22,6 +22,17 @@ describe("daily job reconciliation", () => {
     expect(jobs).not.toContainEqual({ type: "breadth", time: "10:00" });
   });
 
+  it("keeps 09:25 recoverable from the official opening price during the same session", () => {
+    const jobs = planCatchUpJobs({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T04:17:00Z"),
+      checkpoints: [],
+      limit: 20,
+    });
+
+    expect(jobs).toContainEqual({ type: "breadth", time: "09:25" });
+  });
+
   it("retries an incomplete close review until 18:00 Beijing", () => {
     const jobs = planCatchUpJobs({
       tradeDate: "2026-07-24",

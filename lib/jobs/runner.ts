@@ -20,7 +20,7 @@ import {
   type GeneratedBriefSection,
   type MorningBriefMarketContext,
 } from "../ai/morning-brief-providers";
-import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
+import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, calculateOpeningBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
 import { buildMarketComparison } from "../domain/comparison";
 import type { Breadth, DailyReview, Quote, SectorMetric } from "../domain/types";
 import { createEastmoneyProvider } from "../data/eastmoney";
@@ -587,6 +587,93 @@ export function leaseLabelForJob(job: ScheduledJob): string {
   return job.type === "breadth" ? `breadth-${job.time}` : job.type;
 }
 
+async function persistOpeningBreadthBackfill({
+  db,
+  date,
+  quotes,
+  source,
+  sourceStatus,
+  receivedAt,
+}: {
+  db: D1Database;
+  date: string;
+  quotes: Quote[];
+  source: string;
+  sourceStatus: "complete" | "partial";
+  receivedAt: string;
+}): Promise<{ persisted: boolean; message: string }> {
+  const existing = await db.prepare(
+    "SELECT 1 AS present FROM breadth_snapshots WHERE trade_date = ? AND snapshot_time = '09:25'",
+  ).bind(date).first<{ present: number }>();
+  if (existing) return { persisted: false, message: "09:25 已有真实快照" };
+
+  const opening = calculateOpeningBreadth(quotes);
+  const minimumCount = Math.ceil(MINIMUM_ALL_A_UNIVERSE * 0.95);
+  if (opening.coveragePct < 95 || opening.validCount < minimumCount) {
+    return {
+      persisted: false,
+      message: `09:25 开盘价覆盖不足 ${opening.validCount}/${opening.expectedCount}（${opening.coveragePct}%）`,
+    };
+  }
+
+  const snapshotSource = `${source}（官方开盘价回补）`;
+  const snapshotStatus = sourceStatus === "complete" ? "complete" : "partial";
+  await db.prepare(
+    `INSERT INTO breadth_snapshots (
+      trade_date, snapshot_time, rising, falling, flat, source, status, updated_at
+    ) VALUES (?, '09:25', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(trade_date, snapshot_time) DO NOTHING`,
+  ).bind(
+    date,
+    opening.rising,
+    opening.falling,
+    opening.flat,
+    snapshotSource,
+    snapshotStatus,
+    receivedAt,
+  ).run();
+  await persistSourceAudits(db, date, "09:25", [{
+    source: snapshotSource,
+    marketTime: `${date}T09:25:00+08:00`,
+    receivedAt,
+    rawCount: opening.expectedCount,
+    validCount: opening.validCount,
+    invalidCount: Math.max(0, opening.expectedCount - opening.validCount),
+    coveragePct: opening.coveragePct,
+    directionAgreementPct: null,
+    priceAgreementPct: null,
+    breadthDifference: null,
+    status: snapshotStatus,
+    message: "按当日官方开盘价相对昨收价重建集合竞价涨跌家数",
+  }]);
+  await recordJobCheckpoint(db, {
+    tradeDate: date,
+    key: "breadth-09:25",
+    stage: "main",
+    status: "complete",
+    attempt: 1,
+    expectedAt: expectedAtForJob(date, "breadth-09:25"),
+    startedAt: receivedAt,
+    finishedAt: receivedAt,
+    nextRetryAt: null,
+    message: `官方开盘价回补；${opening.validCount}只；覆盖率 ${opening.coveragePct}%`,
+    resultJson: JSON.stringify({
+      formula: "official open versus previous close",
+      rising: opening.rising,
+      falling: opening.falling,
+      flat: opening.flat,
+      validCount: opening.validCount,
+      expectedCount: opening.expectedCount,
+      coveragePct: opening.coveragePct,
+      source: snapshotSource,
+    }),
+  });
+  return {
+    persisted: true,
+    message: `已回补 09:25：上涨 ${opening.rising}、下跌 ${opening.falling}、平盘 ${opening.flat}`,
+  };
+}
+
 export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
@@ -789,14 +876,62 @@ export async function runPanLayerJob(
       if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
       const updatedAt = new Date().toISOString();
       await persistStockUniverse(db, market.quotes, updatedAt);
-      const metric = calculateBreadth(market.quotes);
-      await db.prepare(`INSERT INTO breadth_snapshots (trade_date, snapshot_time, rising, falling, flat, source, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, snapshot_time) DO UPDATE SET rising=excluded.rising, falling=excluded.falling, flat=excluded.flat, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, job.time, metric.rising, metric.falling, metric.flat, market.source, market.status, updatedAt).run();
+      const currentBeijingTime = beijingDateParts(now).time;
+      const delayedOpeningCapture = job.time === "09:25" && currentBeijingTime >= "09:30";
+      const opening = delayedOpeningCapture ? calculateOpeningBreadth(market.quotes) : null;
+      if (
+        opening
+        && (opening.coveragePct < 95 || opening.validCount < Math.ceil(MINIMUM_ALL_A_UNIVERSE * 0.95))
+      ) {
+        throw new Error(
+          `09:25 开盘价覆盖不足 ${opening.validCount}/${opening.expectedCount}（${opening.coveragePct}%）`,
+        );
+      }
+      const metric = opening ?? calculateBreadth(market.quotes);
+      const snapshotSource = delayedOpeningCapture
+        ? `${market.source}（官方开盘价回补）`
+        : market.source;
+      await db.prepare(`INSERT INTO breadth_snapshots (trade_date, snapshot_time, rising, falling, flat, source, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trade_date, snapshot_time) DO UPDATE SET rising=excluded.rising, falling=excluded.falling, flat=excluded.flat, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, job.time, metric.rising, metric.falling, metric.flat, snapshotSource, market.status, updatedAt).run();
+      if (delayedOpeningCapture) {
+        await persistSourceAudits(db, date, "09:25", [{
+          source: snapshotSource,
+          marketTime: `${date}T09:25:00+08:00`,
+          receivedAt: updatedAt,
+          rawCount: opening!.expectedCount,
+          validCount: opening!.validCount,
+          invalidCount: Math.max(0, opening!.expectedCount - opening!.validCount),
+          coveragePct: opening!.coveragePct,
+          directionAgreementPct: null,
+          priceAgreementPct: null,
+          breadthDifference: null,
+          status: market.status,
+          message: "按当日官方开盘价相对昨收价重建集合竞价涨跌家数",
+        }]);
+      } else if (job.time !== "09:25" && currentBeijingTime >= "09:30") {
+        const openingBackfill = await persistOpeningBreadthBackfill({
+          db,
+          date,
+          quotes: market.quotes,
+          source: market.source,
+          sourceStatus: market.status,
+          receivedAt: updatedAt,
+        });
+        if (openingBackfill.persisted) {
+          finalMessage = openingBackfill.message;
+        }
+      }
       // A non-empty snapshot is a completed scheduled capture even when the
       // underlying quote cross-check is only partial. Data quality remains on
       // the persisted snapshot and source audit instead of keeping the job in
       // an endless retry loop.
       finalStatus = "complete";
-      finalMessage = `${market.quotes.length}只；数据质量 ${market.status}；${market.message}`;
+      finalMessage = [
+        `${market.quotes.length}只`,
+        delayedOpeningCapture ? "09:25 官方开盘价回补" : "",
+        finalMessage,
+        `数据质量 ${market.status}`,
+        market.message,
+      ].filter(Boolean).join("；");
     } else if (job.type === "close-review") {
       const expectedSymbols = await loadExpectedSymbols(db);
       const market = await runDomesticPipeline({

@@ -5,12 +5,13 @@ import {
   type DailyJobKey,
   type JobCheckpoint,
 } from "./checkpoints";
+import { breadthRecoveryMinutes } from "./breadth-recovery";
 
 const CATCH_UP_MINUTES: Record<DailyJobKey, number> = {
   "tier1-rss-prefetch": 14 * 60,
   "tier2-news-prefetch": 14 * 60,
   "morning-brief": 14 * 60,
-  "breadth-09:25": 20,
+  "breadth-09:25": breadthRecoveryMinutes("09:25"),
   "breadth-10:00": 20,
   "breadth-11:00": 20,
   "breadth-13:00": 20,

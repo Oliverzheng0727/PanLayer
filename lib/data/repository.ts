@@ -18,6 +18,7 @@ import {
   type JobCheckpoint,
 } from "../jobs/checkpoints";
 import { beijingDateParts, isChinaTradingWeekday } from "../jobs/schedule";
+import { breadthRecoveryWindowMs } from "../jobs/breadth-recovery";
 
 interface HealthJob { job: string; trade_date: string; status: string; message: string; started_at: string; finished_at: string | null }
 interface HealthSource { source?: string; provider?: string; status: string; received_at: string; message: string }
@@ -58,8 +59,6 @@ export interface IntradayBreadthTimeline {
   };
 }
 
-const BREADTH_RECOVERY_WINDOW_MS = 20 * 60_000;
-
 export function buildIntradayBreadthTimeline({
   date,
   now,
@@ -88,7 +87,7 @@ export function buildIntradayBreadthTimeline({
     const expectedAt = new Date(`${date}T${time}:00+08:00`).getTime();
     if (now.getTime() < expectedAt) {
       pending.push(time);
-    } else if (now.getTime() <= expectedAt + BREADTH_RECOVERY_WINDOW_MS) {
+    } else if (now.getTime() <= expectedAt + breadthRecoveryWindowMs(time)) {
       recovering.push(time);
     } else {
       missing.push(time);
@@ -279,7 +278,9 @@ export function buildDailyJobHealth({
   }).map((expected) => {
     const checkpoint = checkpointByKey.get(expected.key);
     const expectedTime = new Date(expected.expectedAt).getTime();
-    const graceMs = expected.key.startsWith("breadth-") ? BREADTH_RECOVERY_WINDOW_MS : 5 * 60_000;
+    const graceMs = expected.key.startsWith("breadth-")
+      ? breadthRecoveryWindowMs(expected.key.replace("breadth-", ""))
+      : 5 * 60_000;
     const overdue = now.getTime() > expectedTime + graceMs
       && checkpoint?.status !== "complete";
     const pendingMessage = now.getTime() < expectedTime

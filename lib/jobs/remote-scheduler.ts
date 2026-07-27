@@ -135,6 +135,11 @@ export function planRemoteSchedulerJobs({
     job.type === "new-high-bootstrap" || job.type === "etf-metrics-refresh"
   );
   const critical = candidates.filter((job) => !isContinuous(job));
+  if (!exactJob) {
+    const priority = (job: ScheduledJob) =>
+      job.type === "close-review" ? 2 : job.type === "morning-brief" ? 1 : 0;
+    critical.sort((left, right) => priority(right) - priority(left));
+  }
   const continuous = candidates
     .filter(isContinuous)
     .sort((left, right) => left.type.localeCompare(right.type));
