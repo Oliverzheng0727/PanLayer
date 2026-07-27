@@ -14,7 +14,7 @@ describe("live refresh UI contract", () => {
     expect(dashboard).toMatch(/BREADTH_REFRESH_MS/);
     expect(dashboard).toMatch(/\/api\/v1\/market\/live/);
     expect(dashboard).toMatch(/visibilitychange/);
-    expect(dashboard).toMatch(/router\.refresh/);
+    expect(dashboard).not.toMatch(/router\.refresh|\/api\/v1\/admin\/jobs/);
   });
 
   it("never renders incomplete breadth, invalid ratios, undefined amounts, or fabricated comparisons as real metrics", async () => {

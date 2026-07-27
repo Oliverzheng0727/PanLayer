@@ -73,10 +73,6 @@ button, input { font: inherit; }
 .brief-module-nav button:hover,.brief-module-nav button:focus-visible { border-color:rgba(240,161,111,.55); background:rgba(240,161,111,.08); color:#f0a16f; outline:none; }
 .brief-module-nav button span { margin-right:6px; color:rgba(240,161,111,.7); }
 .brief-card-featured { grid-column:span 2; background:radial-gradient(circle at 100% 0,rgba(232,112,42,.11),transparent 45%),rgba(255,255,255,.025); }
-.brief-regenerate { display:flex; align-items:center; gap:9px; min-height:34px; padding-top:3px; color:rgba(255,255,255,.36); font-size:10px; }
-.brief-regenerate-button { display:flex; align-items:center; gap:6px; border:1px solid rgba(232,112,42,.25); border-radius:999px; background:rgba(232,112,42,.08); padding:8px 11px; color:#f0a16f; font-size:10px; }
-.brief-regenerate-button:hover { background:rgba(232,112,42,.14); }
-.brief-regenerate-button:disabled { cursor:wait; opacity:.65; }
 .brief-drawer-overlay { position:fixed; inset:0; z-index:130; display:flex; justify-content:flex-end; background:rgba(0,0,0,.62); backdrop-filter:blur(6px); animation:drawerFade .2s ease-out; }
 .brief-drawer { display:flex; width:min(900px,100vw); height:100%; flex-direction:column; border-left:1px solid rgba(255,255,255,.08); background:#0e1012; box-shadow:-30px 0 80px rgba(0,0,0,.48); animation:drawerIn .34s cubic-bezier(.16,1,.3,1); }
 .brief-drawer.is-fullscreen { width:100vw; border-left:0; box-shadow:none; }
@@ -247,11 +243,6 @@ button, input { font: inherit; }
 .history-toolbar label { display:flex; align-items:center; gap:7px; margin-left:auto; border:1px solid rgba(255,255,255,.07); border-radius:999px; background:rgba(255,255,255,.025); padding:8px 12px; color:rgba(255,255,255,.28); }
 .history-toolbar input { width:130px; border:0; outline:0; background:transparent; color:rgba(255,255,255,.72); font-size:10px; }
 .history-toolbar input::placeholder { color:rgba(255,255,255,.22); }
-.history-backfill { display:inline-flex; align-items:center; gap:6px; border:1px solid rgba(232,112,42,.2); border-radius:999px; background:rgba(232,112,42,.07); padding:8px 11px; color:#f0a16f; font-size:9px; white-space:nowrap; }
-.history-backfill:hover { background:rgba(232,112,42,.13); }
-.history-backfill:disabled { cursor:wait; opacity:.66; }
-.history-backfill.complete { border-color:rgba(59,201,135,.2); background:rgba(59,201,135,.07); color:#70d9a8; }
-.history-backfill.failed { max-width:190px; overflow:hidden; border-color:rgba(239,91,88,.2); background:rgba(239,91,88,.07); color:#ef7774; text-overflow:ellipsis; }
 .new-high-progress { color:rgba(255,255,255,.42); font-size:9px; white-space:nowrap; }
 .new-high-progress.ready { color:#70d9a8; }
 .history-count { white-space:nowrap; font-size:9px; color:rgba(255,255,255,.25); }

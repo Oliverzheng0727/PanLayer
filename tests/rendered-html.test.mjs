@@ -48,7 +48,7 @@ test("server-renders the protected review dashboard for the allowed user", async
   assert.match(html, /ETF 全品类/);
   assert.match(html, /近20日均成交/);
   assert.match(html, /历史数据表/);
-  assert.match(html, /回补近120日/);
+  assert.doesNotMatch(html, /回补近120日|继续初始化|刷新数据|仅重试失败模块/);
   assert.match(html, /120日新高/);
   assert.match(html, /连板收盘溢价/);
   const historyTable = html.match(/<table class="history-table">[\s\S]*?<\/table>/)?.[0] ?? "";
@@ -100,7 +100,7 @@ test("binds morning brief cards to source-aware details instead of a placeholder
     readFile(new URL("../app/components/brief/BriefBlockRenderer.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(dashboard, /BriefDetailDrawer/);
-  assert.match(dashboard, /BriefRegenerateButton/);
+  assert.doesNotMatch(dashboard, /BriefRegenerateButton|\/api\/v1\/admin\/jobs/);
   assert.doesNotMatch(dashboard, /href="https:\/\/example\.com"/);
   assert.doesNotMatch(renderer, /dangerouslySetInnerHTML|innerHTML/);
 });

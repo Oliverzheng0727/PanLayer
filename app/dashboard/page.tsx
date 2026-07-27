@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { isAdminUser, requireAllowedUser } from "../auth-guard";
+import { requireAllowedUser } from "../auth-guard";
 import { Dashboard } from "../components/Dashboard";
 import { demoBrief, demoEtfs, demoHistory, demoReview } from "../../lib/data/demo";
 import { readBrief, readDataHealth, readHistory, readIntradayBreadthTimeline, readLatestBrief, readLatestReview, readNewHighProgress } from "../../lib/data/repository";
@@ -44,5 +44,5 @@ export default async function DashboardPage() {
     cursor: 0,
     limit: 100,
   }).items;
-  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} newHighProgress={newHighProgress} dataHealth={dataHealth.daily} intradayBreadth={intradayBreadth} userName={user.displayName} canManageBrief={await isAdminUser(user.email)} />;
+  return <Dashboard review={review} brief={brief} etfs={etfs} history={history} newHighProgress={newHighProgress} dataHealth={dataHealth.daily} intradayBreadth={intradayBreadth} userName={user.displayName} />;
 }

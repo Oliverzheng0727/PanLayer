@@ -1,8 +1,7 @@
 "use client";
 
-import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Flame, Layers3, LogOut, Menu, RefreshCw, Search, Sparkles, Table2, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Flame, Layers3, LogOut, Menu, Search, Sparkles, Table2, X } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
@@ -23,7 +22,6 @@ import { HighDetailDrawer } from "./history/HighDetailDrawer";
 import { MetricTrendDrawer } from "./history/MetricTrendDrawer";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
-import { BriefRegenerateButton } from "./brief/BriefRegenerateButton";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
 import { LiveDataStatus, type LiveDataState } from "./data/LiveDataStatus";
 import { DailyJobHealthPanel } from "./data/DailyJobHealth";
@@ -104,10 +102,8 @@ function briefPublicationLabel(brief: MorningBrief) {
   ].join(" · ");
 }
 
-export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, intradayBreadth, userName, canManageBrief }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; intradayBreadth: IntradayBreadthTimeline; userName: string; canManageBrief: boolean }) {
-  const router = useRouter();
+export function Dashboard({ review, brief, etfs, history, newHighProgress, dataHealth, intradayBreadth, userName }: { review: DailyReview; brief: MorningBrief | null; etfs: EtfSnapshot[]; history: HistoryRow[]; newHighProgress: NewHighProgress; dataHealth: DailyJobHealth; intradayBreadth: IntradayBreadthTimeline; userName: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [briefSectionIndex, setBriefSectionIndex] = useState<number | null>(null);
   const [highDrawer, setHighDrawer] = useState<{
@@ -239,23 +235,6 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     };
   }, [refreshLiveBreadth]);
 
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    setRefreshError("");
-    try {
-      await refreshLiveBreadth();
-      const response = await fetch("/api/v1/admin/jobs/close-review/run", { method: "POST" });
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(payload.error ?? "收盘复盘刷新失败");
-      router.refresh();
-    } catch (error) {
-      setRefreshError(error instanceof Error ? error.message : "刷新失败，请稍后重试");
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   return (
     <div className="dashboard-shell min-h-screen bg-[#090a0b] text-[#f3f0e9]">
       <aside className={`dashboard-sidebar ${menuOpen ? "is-open" : ""}`}>
@@ -274,7 +253,6 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
             reviewStatus={effectiveStatus}
             source={activeSource}
             updatedAt={activeReceivedAt}
-            canManageJobs={canManageBrief}
           />
           <div className="mt-4 flex items-center justify-between px-2 text-xs text-white/40"><span className="truncate">{userName}</span><Link href="/signout-with-chatgpt?return_to=/" aria-label="退出"><LogOut size={15} /></Link></div>
         </div>
@@ -287,7 +265,6 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden xl:block"><LiveDataStatus label="市场" source={liveMarket?.source ?? review.source} status={refreshError ? "failed" : liveMarket?.status ?? review.status} marketTime={liveMarket?.marketTime ?? null} receivedAt={liveMarket?.receivedAt ?? review.updatedAt} isStale={Boolean(refreshError) || (liveMarket?.isStale ?? review.status === "demo")} marketSession={dataHealth.marketSession ?? true} error={refreshError} /></div>
             <label className="hidden items-center gap-2 rounded-full border border-white/[0.07] bg-white/[0.035] px-4 py-2 text-xs text-white/35 md:flex"><Search size={14} /><input className="w-32 bg-transparent outline-none placeholder:text-white/25" placeholder="搜索指标或板块" /></label>
-            <button onClick={refresh} disabled={refreshing} title={refreshError || undefined} className="flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-xs text-white/65 transition hover:bg-white/[0.06] disabled:cursor-wait disabled:opacity-60"><RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />{refreshing ? "刷新中" : "刷新数据"}</button>
           </div>
         </header>
         <GlobalMarketClock
@@ -327,7 +304,6 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
                 ref={historyWorkspaceRef}
                 initialRows={history}
                 initialNewHighProgress={currentNewHighProgress}
-                canManageHistory={canManageBrief}
                 onSelectedRowChange={selectHistoryRow}
                 onNewHighProgressChange={setCurrentNewHighProgress}
               />
@@ -358,10 +334,10 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
             </Panel>
           </section>
 
-          <section id="brief" className="dashboard-section scroll-mt-24" data-can-manage-brief={canManageBrief ? "true" : "false"}>
-            <div className="brief-heading-row"><SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定七模块，事实带来源，风险情景客观呈现。" /><div className="flex flex-wrap gap-2">{canManageBrief && <BriefRegenerateButton />}{canManageBrief && brief && brief.status !== "complete" && <BriefRegenerateButton mode="failed" label="仅重试失败模块" />}</div></div>
+          <section id="brief" className="dashboard-section scroll-mt-24">
+            <div className="brief-heading-row"><SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定七模块，事实带来源，风险情景客观呈现。" /></div>
             {brief
-              ? <><div className="brief-coverage-banner"><span>{briefCoverageLabel(brief)}</span><span>{briefPublicationLabel(brief)}</span>{brief.sourceWindow && <span>窗口 {brief.sourceWindow.from.slice(0, 16).replace("T", " ")} 至 {brief.sourceWindow.to.slice(0, 16).replace("T", " ")}（北京时间）</span>}{brief.coverage?.collectedAt && <span>最后采集 {formatBeijingDateTime(brief.coverage.collectedAt)}</span>}</div><nav className="brief-module-nav" aria-label="早参七模块导航">{brief.sections.map((section, index) => <button type="button" key={section.key} onClick={() => setBriefSectionIndex(index)}><span>0{index + 1}</span>{section.title}</button>)}</nav><div className="brief-grid">{brief.sections.map((section, index) => <article key={section.key} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`}><button type="button" className="brief-card-open" onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="brief-card-top"><span>0{index + 1}</span><span className={`brief-card-status is-${section.status}`}>{briefStatusLabel[section.status]}</span><Sparkles size={15} aria-hidden="true"/></div><h3>{section.title}</h3><p className="brief-card-summary">{section.summary}</p><div className="brief-tags">{section.tags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="brief-card-meta"><span>{briefItemCount(section)} 条</span><span>{briefSourceCount(section)} 个来源</span><span>{section.generatedAt.slice(11, 16)} 生成</span></div><span className="brief-card-action">打开详情 <ArrowUpRight size={11}/></span></button>{canManageBrief && section.status === "failed" && <BriefRegenerateButton section={section.key} label="重试此模块" />}</article>)}</div><BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={closeBriefDrawer} /></>
+              ? <><div className="brief-coverage-banner"><span>{briefCoverageLabel(brief)}</span><span>{briefPublicationLabel(brief)}</span>{brief.sourceWindow && <span>窗口 {brief.sourceWindow.from.slice(0, 16).replace("T", " ")} 至 {brief.sourceWindow.to.slice(0, 16).replace("T", " ")}（北京时间）</span>}{brief.coverage?.collectedAt && <span>最后采集 {formatBeijingDateTime(brief.coverage.collectedAt)}</span>}</div><nav className="brief-module-nav" aria-label="早参七模块导航">{brief.sections.map((section, index) => <button type="button" key={section.key} onClick={() => setBriefSectionIndex(index)}><span>0{index + 1}</span>{section.title}</button>)}</nav><div className="brief-grid">{brief.sections.map((section, index) => <article key={section.key} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`}><button type="button" className="brief-card-open" onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="brief-card-top"><span>0{index + 1}</span><span className={`brief-card-status is-${section.status}`}>{briefStatusLabel[section.status]}</span><Sparkles size={15} aria-hidden="true"/></div><h3>{section.title}</h3><p className="brief-card-summary">{section.summary}</p><div className="brief-tags">{section.tags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="brief-card-meta"><span>{briefItemCount(section)} 条</span><span>{briefSourceCount(section)} 个来源</span><span>{section.generatedAt.slice(11, 16)} 生成</span></div><span className="brief-card-action">打开详情 <ArrowUpRight size={11}/></span></button></article>)}</div><BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={closeBriefDrawer} /></>
               : <div className="brief-unavailable panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">暂不可用，生成后将显示七个模块。</p></div></div>}
           </section>
 

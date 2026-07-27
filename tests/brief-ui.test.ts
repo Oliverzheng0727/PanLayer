@@ -50,25 +50,14 @@ describe("full morning brief reader", () => {
     expect(drawer).not.toContain("if (!isOpen) setFullscreen(false)");
   });
 
-  it("shows manual full regeneration only to administrators without exposing credentials", async () => {
-    const [dashboard, button] = await Promise.all([
-      read("app/components/Dashboard.tsx"),
-      read("app/components/brief/BriefRegenerateButton.tsx"),
-    ]);
-
-    expect(dashboard).toMatch(/canManageBrief\s*&&\s*<BriefRegenerateButton/);
-    expect(button).toContain('/api/v1/admin/jobs/morning-brief/run?force=true');
-    expect(button).toContain('method: "POST"');
-    expect(button).toContain("window.location.reload()");
-    expect(button).not.toMatch(/API_KEY|apiKey|secret/i);
-  });
-
-  it("offers failed-only and per-card retry affordances and labels unavailable publication times honestly", async () => {
+  it("does not expose manual generation controls and labels unavailable publication times honestly", async () => {
     const [dashboard, renderer] = await Promise.all([
       read("app/components/Dashboard.tsx"), read("app/components/brief/BriefBlockRenderer.tsx"),
     ]);
-    expect(dashboard).toContain("仅重试失败模块");
-    expect(dashboard).toContain("section={section.key}");
+    expect(dashboard).not.toContain("BriefRegenerateButton");
+    expect(dashboard).not.toContain("/api/v1/admin/jobs");
+    expect(dashboard).not.toContain("重新生成");
+    expect(dashboard).not.toContain("仅重试失败模块");
     expect(renderer).toContain("发布时间未公开");
     expect(renderer).toContain("接收时间（北京时间）");
   });

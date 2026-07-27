@@ -73,16 +73,16 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(drawer).toContain("历史新高");
   });
 
-  it("provides an administrator control for resumable new-high initialization", async () => {
+  it("shows automatic new-high progress without exposing manual job controls", async () => {
     const [workspace, progress] = await Promise.all([
       readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8"),
       readFile(new URL("../lib/history/new-high-progress.ts", import.meta.url), "utf8"),
     ]);
-    expect(workspace).toContain("/api/v1/admin/jobs/new-high-bootstrap/run");
     expect(workspace).toContain("/api/v1/new-high/progress");
     expect(progress).toContain("历史行情初始化");
-    expect(workspace).toContain("初始化新高");
-    expect(workspace).toContain("后台每小时自动继续");
+    expect(workspace).not.toContain("/api/v1/admin/jobs");
+    expect(workspace).not.toContain("回补近120日");
+    expect(workspace).not.toContain("继续初始化");
   });
 
   it("schedules resumable initialization hourly across weekdays and weekends", async () => {
