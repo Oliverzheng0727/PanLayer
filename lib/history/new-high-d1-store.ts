@@ -146,7 +146,7 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
 
     async listBackfillDates(targetDate) {
       const result = await db.prepare(
-        "SELECT trade_date FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 20",
+        "SELECT trade_date FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120",
       ).bind(targetDate).all<{ trade_date: string }>();
       return (result.results ?? []).map((row) => String(row.trade_date));
     },
@@ -155,7 +155,7 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
       const statements: D1PreparedStatement[] = [
         db.prepare(
           "DELETE FROM new_high_details WHERE symbol = ? AND trade_date IN " +
-          "(SELECT trade_date FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 20)",
+          "(SELECT trade_date FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120)",
         ).bind(state.symbol, state.initializedThrough),
         stateStatement(db, state),
         ...details.map((detail) => detailStatement(db, detail)),
@@ -271,7 +271,7 @@ export async function patchBackfilledReviewHighCounts(
   targetDate: string,
 ): Promise<number> {
   const rows = await db.prepare(
-    "SELECT trade_date, payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 20",
+    "SELECT trade_date, payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120",
   ).bind(targetDate).all<{ trade_date: string; payload: string }>();
   const statements: D1PreparedStatement[] = [];
   for (const row of rows.results ?? []) {

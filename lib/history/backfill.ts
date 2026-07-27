@@ -13,6 +13,12 @@ import {
 } from "./backfill-sources";
 
 const PROGRESS_KEY = "history-backfill-v5-evidence-safe";
+const EMPTY_POOLS: HistoricalBoardPools = {
+  limitUp: [],
+  broken: [],
+  limitDown: [],
+  yesterdayLimitUp: [],
+};
 
 export interface HistoryBackfillProgress {
   target: number;
@@ -129,6 +135,128 @@ export function buildBackfilledReview(
       receivedAt,
     }),
     historyMeta: { backfilled: true, receivedAt },
+  };
+}
+
+export function buildEvidenceOnlyBackfilledReview(
+  date: string,
+  marginBalance: number | null,
+  receivedAt: string,
+  indices: IndexSnapshot[],
+  unavailableReason: string,
+): DailyReview {
+  const source = "历史回补 · 东方财富历史指数/两融 / 新浪交易日历";
+  const comparison = buildMarketComparison({
+    date,
+    quotes: [],
+    pools: EMPTY_POOLS,
+    marketAggregate: null,
+    indices,
+    sectors: [],
+    source,
+    receivedAt,
+  });
+  const poolEvidenceKeys = [
+    "brokenCount",
+    "sealRate",
+    "yesterdaySuccessRate",
+    "continuation",
+    "brokenBoard",
+    "maxBoard",
+    "mainSectors",
+    "cycleLeader",
+    "recognition",
+    "poolConsistency",
+  ];
+  const evidence = { ...comparison.evidence };
+  for (const key of poolEvidenceKeys) {
+    const current = evidence[key];
+    if (!current) continue;
+    evidence[key] = {
+      ...current,
+      status: "failed",
+      sampleSize: 0,
+      message: unavailableReason,
+    };
+  }
+  return {
+    date,
+    status: "partial",
+    source,
+    updatedAt: receivedAt,
+    unavailableReason,
+    breadth: [],
+    metrics: {
+      limitUp: null,
+      limitDown: null,
+      consecutive: null,
+      largeRise: null,
+      high20: null,
+      high120: null,
+      allTimeHigh: null,
+      marginBalance,
+    },
+    premium: { openPct: null, closePct: null, sampleSize: 0 },
+    ladder: { first: [], second: [], third: [], fourth: [], fivePlus: [] },
+    sectors: [],
+    leaders: [],
+    structure: {
+      status: "failed",
+      source: "东方财富历史四池",
+      message: unavailableReason,
+      receivedAt,
+    },
+    comparison: {
+      ...comparison,
+      brokenCount: null,
+      sealRate: null,
+      yesterdaySuccessRate: null,
+      yesterdaySuccessSampleSize: 0,
+      continuation: null,
+      maxBoard: null,
+      brokenBoard: { count: null, rate: null, sampleSize: 0, stocks: [] },
+      mainSectors: [],
+      cycleLeader: null,
+      recognition: [],
+      evidence,
+    },
+    historyMeta: { backfilled: true, receivedAt },
+  };
+}
+
+function mergeEvidenceOnlyBackfill(
+  existing: DailyReview,
+  backfilled: DailyReview,
+): DailyReview {
+  const existingIndices = existing.comparison?.indices ?? [];
+  const backfilledIndices = backfilled.comparison?.indices ?? [];
+  const comparison = existing.comparison
+    ? {
+      ...existing.comparison,
+      indices: existingIndices.length > 0 ? existingIndices : backfilledIndices,
+      evidence: {
+        ...backfilled.comparison?.evidence,
+        ...existing.comparison.evidence,
+        ...(existingIndices.length === 0 && backfilled.comparison?.evidence.indices
+          ? { indices: backfilled.comparison.evidence.indices }
+          : {}),
+      },
+    }
+    : backfilled.comparison;
+  return {
+    ...existing,
+    status: existing.status === "failed" ? "partial" : existing.status,
+    source: [...new Set([
+      ...existing.source.split(" / ").filter(Boolean),
+      ...backfilled.source.split(" / ").filter(Boolean),
+    ])].join(" / "),
+    updatedAt: backfilled.updatedAt,
+    metrics: {
+      ...existing.metrics,
+      marginBalance: existing.metrics.marginBalance ?? backfilled.metrics.marginBalance,
+    },
+    comparison,
+    historyMeta: existing.historyMeta ?? backfilled.historyMeta,
   };
 }
 
@@ -309,11 +437,15 @@ export async function runHistoryBackfillBatch({
     const results = await Promise.all(pair.map(async (date) => {
       const existing = await readExistingReview(db, date);
       try {
-        const [eastmoneyPools, marginBalance, existingIndices, fuyaoPool] = await Promise.all([
+        const [poolResult, marginBalance, existingIndices, fuyaoPool] = await Promise.all([
           withRetry(
             () => fetchHistoricalBoardPools(date, fetcher),
             { retries: 2, delayMs: 180 },
-          ),
+          ).then((pools) => ({ pools, error: null as string | null }))
+            .catch((error) => ({
+              pools: null,
+              error: error instanceof Error ? error.message : String(error),
+            })),
           withRetry(
             () => provider.getMarginBalance(date),
             { retries: 2, delayMs: 180 },
@@ -329,9 +461,6 @@ export async function runHistoryBackfillBatch({
               ).catch(() => null)
             : Promise.resolve(null),
         ]);
-        const pools: HistoricalBoardPools = fuyaoPool?.items.length
-          ? { ...eastmoneyPools, limitUp: fuyaoPool.items }
-          : eastmoneyPools;
         const indices = fuyao
           ? mergeVerifiedIndexSnapshots(
             await withRetry(
@@ -342,18 +471,39 @@ export async function runHistoryBackfillBatch({
           )
           : existingIndices;
         const receivedAt = new Date().toISOString();
-        const poolSource = fuyaoPool?.items.length
-          ? "扶摇 Fuyao 历史涨停池 / 东方财富炸板、跌停及昨日涨停池"
-          : "东方财富历史四池";
-        const backfilled = buildBackfilledReview(
-          date,
-          pools,
-          normalizeMarginBalance(marginBalance),
-          receivedAt,
-          indices,
-          poolSource,
-        );
-        const review = existing ? mergeBackfilledStructure(existing, backfilled) : backfilled;
+        let backfilled: DailyReview;
+        if (poolResult.pools) {
+          const pools: HistoricalBoardPools = fuyaoPool?.items.length
+            ? { ...poolResult.pools, limitUp: fuyaoPool.items }
+            : poolResult.pools;
+          const poolSource = fuyaoPool?.items.length
+            ? "扶摇 Fuyao 历史涨停池 / 东方财富炸板、跌停及昨日涨停池"
+            : "东方财富历史四池";
+          backfilled = buildBackfilledReview(
+            date,
+            pools,
+            normalizeMarginBalance(marginBalance),
+            receivedAt,
+            indices,
+            poolSource,
+          );
+        } else {
+          const unavailableReason =
+            `历史四池超出公开源可回溯窗口：${poolResult.error ?? "来源暂不可用"}；` +
+            "涨跌停、炸板和连板等字段保持暂缺，不写入伪造零值";
+          backfilled = buildEvidenceOnlyBackfilledReview(
+            date,
+            normalizeMarginBalance(marginBalance),
+            receivedAt,
+            indices,
+            unavailableReason,
+          );
+        }
+        const review = existing
+          ? poolResult.pools
+            ? mergeBackfilledStructure(existing, backfilled)
+            : mergeEvidenceOnlyBackfill(existing, backfilled)
+          : backfilled;
         await persistBackfilledReview(db, review);
         return { date, completed: true };
       } catch {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildBackfilledReview, mergeBackfilledStructure, runHistoryBackfillBatch } from "../lib/history/backfill";
+import {
+  buildBackfilledReview,
+  buildEvidenceOnlyBackfilledReview,
+  mergeBackfilledStructure,
+  runHistoryBackfillBatch,
+} from "../lib/history/backfill";
 import type { HistoricalBoardPools } from "../lib/history/backfill-sources";
 import type { DailyReview } from "../lib/domain/types";
 
@@ -117,6 +122,35 @@ describe("history review backfill", () => {
     expect(review.historyMeta).toEqual({ backfilled: true, receivedAt: "2026-07-23T08:00:00.000Z" });
   });
 
+  it("keeps pool-derived fields null when the public pool archive cannot reach an older date", () => {
+    const review = buildEvidenceOnlyBackfilledReview(
+      "2026-01-30",
+      26_500,
+      "2026-07-27T10:00:00.000Z",
+      [],
+      "历史四池超出公开源可回溯窗口",
+    );
+
+    expect(review.status).toBe("partial");
+    expect(review.metrics).toMatchObject({
+      limitUp: null,
+      limitDown: null,
+      consecutive: null,
+      high20: null,
+      high120: null,
+      allTimeHigh: null,
+      marginBalance: 26_500,
+    });
+    expect(review.comparison).toMatchObject({
+      brokenCount: null,
+      sealRate: null,
+      yesterdaySuccessRate: null,
+      maxBoard: null,
+      brokenBoard: { count: null, rate: null, sampleSize: 0 },
+    });
+    expect(review.comparison?.evidence.brokenCount.status).toBe("failed");
+  });
+
   it("repairs a richer review's missing market structure without overwriting its breadth", async () => {
     const richer: DailyReview = {
       ...buildBackfilledReview("2026-07-22", pools, 26978.8, "2026-07-22T08:00:00.000Z"),
@@ -182,6 +216,37 @@ describe("history review backfill", () => {
     });
 
     expect(progress).toMatchObject({ target: 6, completed: 6, remaining: 0 });
+  });
+
+  it("advances across older dates with truthful partial rows when historical pools have expired", async () => {
+    const fixture = createBackfillDb();
+    const normalFetcher = createBackfillFetcher();
+    const expiredPoolFetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (
+        url.includes("getTopicZTPool")
+        || url.includes("getTopicZBPool")
+        || url.includes("getTopicDTPool")
+        || url.includes("getYesterdayZTPool")
+      ) {
+        return new Response(JSON.stringify({ data: null }));
+      }
+      return normalFetcher(input, init);
+    };
+
+    const progress = await runHistoryBackfillBatch({
+      db: fixture.db,
+      endDate: "2026-07-22",
+      days: 6,
+      batchSize: 5,
+      fetcher: expiredPoolFetcher as typeof fetch,
+    });
+
+    expect(progress).toMatchObject({ target: 6, completed: 5, remaining: 1 });
+    const review = JSON.parse(fixture.reviews.get("2026-07-22")!) as DailyReview;
+    expect(review.metrics.limitUp).toBeNull();
+    expect(review.metrics.marginBalance).toBeNull();
+    expect(review.unavailableReason).toContain("不写入伪造零值");
   });
 
   it("preserves verified aggregate and index evidence while replacing historical pool structure", () => {
