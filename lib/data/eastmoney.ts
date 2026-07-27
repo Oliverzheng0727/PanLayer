@@ -18,6 +18,7 @@ export interface EastmoneyQuoteRow {
   f17: number | string;
   f18: number | string;
   f100?: string;
+  f26?: number | string;
 }
 
 interface LimitPoolRow {
@@ -93,6 +94,9 @@ export function mapEastmoneyQuote(row: EastmoneyQuoteRow): Quote {
     sector: row.f100 || "未分类",
     firstLimitTime: null,
     limitStreak: 0,
+    listingDate: /^\d{8}$/.test(String(row.f26 ?? ""))
+      ? `${String(row.f26).slice(0, 4)}-${String(row.f26).slice(4, 6)}-${String(row.f26).slice(6, 8)}`
+      : null,
   };
 }
 
@@ -107,7 +111,7 @@ const QUOTE_ORIGINS = [
 ];
 
 function quotePageUrl(page: number, origin = QUOTE_ORIGINS[0]) {
-  return `${origin}/api/qt/clist/get?pn=${page}&pz=${QUOTE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f100`;
+  return `${origin}/api/qt/clist/get?pn=${page}&pz=${QUOTE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048&fields=f12,f14,f2,f3,f6,f8,f15,f16,f17,f18,f26,f100`;
 }
 
 function limitPoolUrl(date: string) {
@@ -480,14 +484,15 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
       try {
         const [code, exchange] = symbol.split(".");
         const secid = `${exchange === "SH" ? 1 : 0}.${code}`;
-        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53,f57,f59`;
+        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10000&end=20500101&fields1=f1,f2,f3&fields2=f51,f53,f56,f57,f59`;
         const payload = await fetchJson<{ data?: { klines?: string[] } }>(fetcher, url);
         const rows: string[] = Array.isArray(payload?.data?.klines) ? payload.data.klines : [];
         const bars = rows.map((row) => {
-          const [date, close, amount, pctChange] = row.split(",");
+          const [date, close, volume, amount, pctChange] = row.split(",");
           return {
             date,
             close: numberValue(close),
+            volume: numberValue(volume),
             amount: numberValue(amount),
             pctChange: numberValue(pctChange),
           };

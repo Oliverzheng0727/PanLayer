@@ -1,4 +1,4 @@
-import type { DailyComparison, DailyReview } from "../domain/types";
+import type { DailyComparison, DailyReview, RecognitionRanking } from "../domain/types";
 import { resolveReviewStructureStatus } from "../domain/market-structure";
 
 export const HISTORY_SORT_FIELDS = [
@@ -35,6 +35,9 @@ export interface HistoryRow {
   brokenBoardRate: number | null;
   cycleLeader: string;
   recognition: string;
+  recognitionCount?: number | null;
+  recognitionTopScore?: number | null;
+  recognitionLeader?: string;
   indexSummary: string;
   openPremium: number | null;
   closePremium: number | null;
@@ -48,6 +51,7 @@ export interface HistoryRow {
   source: string;
   updatedAt: string;
   comparison?: DailyComparison;
+  recognitionRanking?: RecognitionRanking;
 }
 
 export interface HistoryQuery {
@@ -76,6 +80,15 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     : 0;
   const formatSignedPct = (value: number | null) =>
     value === null ? "暂缺" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+  const recognitionRanking = review.recognitionRanking;
+  const recognitionLeader = recognitionRanking?.items[0];
+  const recognitionSummary = recognitionRanking
+    ? recognitionLeader
+      ? `入围${recognitionRanking.items.length}只 · ${recognitionLeader.name} · ${recognitionLeader.scores.total.toFixed(1)}分`
+      : "入围0只 · 当日无共振入围"
+    : structureAvailable
+      ? comparison?.recognition.map((item) => item.name).join(" / ") || "新口径暂缺"
+      : "新口径暂缺";
   return {
     date: review.date,
     rising,
@@ -103,7 +116,10 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     cycleLeader: structureAvailable && comparison?.cycleLeader
       ? `${comparison.cycleLeader.name} · ${comparison.cycleLeader.limitStreak}板`
       : "无明确周期龙头",
-    recognition: structureAvailable ? comparison?.recognition.map((item) => item.name).join(" / ") || "—" : "—",
+    recognition: recognitionSummary,
+    recognitionCount: recognitionRanking?.items.length ?? null,
+    recognitionTopScore: recognitionLeader?.scores.total ?? null,
+    recognitionLeader: recognitionLeader?.name ?? "—",
     indexSummary: comparison?.indices.map((item) => `${item.name} ${formatSignedPct(item.pctChange)}`).join(" / ") || "暂缺",
     openPremium: review.premium.openPct,
     closePremium: review.premium.closePct,
@@ -119,6 +135,7 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     source: review.source,
     updatedAt: review.updatedAt,
     comparison,
+    recognitionRanking,
   };
 }
 

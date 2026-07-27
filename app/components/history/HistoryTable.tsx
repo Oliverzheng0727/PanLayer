@@ -34,7 +34,7 @@ const columns: Array<{ field?: HistorySortField; label: string; className?: stri
   { field: "brokenBoardRate", label: "断板率", width: 98 },
   { label: "主线板块", className: "history-main-sector", width: 270 },
   { label: "龙头周期", width: 130 },
-  { label: "今日辨识度个股", width: 330 },
+  { label: "客观辨识度榜", width: 330 },
   { label: "指数情况", width: 330 },
 ];
 
@@ -111,7 +111,7 @@ export function HistoryTable({
               <td>{pct(row.brokenBoardRate)}</td>
               <td className="history-main-sector"><EvidenceButton disabled={!row.comparison?.mainSectors.length} label={row.topSector} title="查看主线板块排序依据" onClick={() => onOpenEvidence(row, "mainSectors")} /></td>
               <td><EvidenceButton disabled={!row.comparison?.cycleLeader} label={row.cycleLeader} title="查看周期龙头排序依据" onClick={() => onOpenEvidence(row, "cycleLeader")} /></td>
-              <td><EvidenceButton disabled={!row.comparison?.recognition.length} label={row.recognition} title="查看辨识度个股排序依据" onClick={() => onOpenEvidence(row, "recognition")} /></td>
+              <td><EvidenceButton disabled={!row.comparison?.recognition.length && !row.recognitionCount && !row.comparison?.evidence.recognition} label={row.recognition} title="查看严格门槛、三维评分和全部入围股票" onClick={() => onOpenEvidence(row, "recognition")} /></td>
               <td><EvidenceButton disabled={!row.comparison?.indices.length} label={row.indexSummary} title="查看指数明细与来源" onClick={() => onOpenEvidence(row, "indices")} /></td>
             </tr>
           );

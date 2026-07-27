@@ -4,6 +4,7 @@ export type CloseReviewStage =
   | "quotes"
   | "board-pools"
   | "signals"
+  | "recognition"
   | "aggregate"
   | "indices"
   | "new-highs"
@@ -52,6 +53,21 @@ export function mergeCloseReviewWithExisting(
   const breadth = [...breadthByTime.values()].toSorted((left, right) => left.time.localeCompare(right.time));
   const previousStructureUsable = previous.structure?.status === "complete";
   const preserveStructure = structureFailed && previousStructureUsable;
+  const recognitionRanking = current.recognitionRanking?.status === "complete"
+    ? current.recognitionRanking
+    : previous.recognitionRanking?.status === "complete"
+      ? previous.recognitionRanking
+      : current.recognitionRanking ?? previous.recognitionRanking;
+  const mergedComparison = mergeComparison(previous.comparison, current.comparison);
+  if (mergedComparison && recognitionRanking) {
+    const sourceComparison = recognitionRanking === current.recognitionRanking
+      ? current.comparison
+      : previous.comparison;
+    mergedComparison.recognition = sourceComparison?.recognition ?? [];
+    if (sourceComparison?.evidence.recognition) {
+      mergedComparison.evidence.recognition = sourceComparison.evidence.recognition;
+    }
+  }
 
   return {
     ...current,
@@ -81,6 +97,7 @@ export function mergeCloseReviewWithExisting(
     sectors: preserveStructure ? previous.sectors : current.sectors,
     leaders: preserveStructure ? previous.leaders : current.leaders,
     structure: preserveStructure ? previous.structure : current.structure,
-    comparison: mergeComparison(previous.comparison, current.comparison),
+    comparison: mergedComparison,
+    recognitionRanking,
   };
 }

@@ -21,7 +21,7 @@ describe("PanLayer history comparison workspace UI contract", () => {
       "日期", "涨停家数", "跌停家数", "炸板家数", "大跌家数（7%）", "封板率",
       "昨日打板成功率", "连板反馈", "上涨家数", "成交额", "连板数",
       "最高板（名称）", "断板数（二板+）", "断板率", "主线板块", "龙头周期",
-      "今日辨识度个股", "指数情况",
+      "客观辨识度榜", "指数情况",
     ];
     let previousIndex = -1;
     for (const label of labels) {
@@ -50,7 +50,10 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(drawer).toContain("数据来源");
     expect(drawer).toContain("计算口径");
     expect(drawer).toContain("有效样本");
-    expect(drawer).toContain("仅供市场复盘，不构成投资建议");
+    expect(drawer).toContain("客观数据复盘，不构成投资建议；排名不代表未来涨跌");
+    expect(drawer).toContain("综合分");
+    expect(drawer).toContain("同花顺");
+    expect(drawer).toContain("全屏查看");
     const table = await readFile(new URL("../app/components/history/HistoryTable.tsx", import.meta.url), "utf8");
     expect(table).toContain("historicalMissingReason");
     expect(table).toContain("历史源不支持全市场回补");

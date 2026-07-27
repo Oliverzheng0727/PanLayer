@@ -547,9 +547,14 @@ export class FuyaoMcpClient {
     };
   }
 
-  async fetchAShareAdjustedBars(symbol: string, now = new Date()): Promise<AdjustedBar[]> {
+  async fetchAShareAdjustedBars(
+    symbol: string,
+    now = new Date(),
+    options: { lookbackDays?: number } = {},
+  ): Promise<AdjustedBar[]> {
     const end = now.getTime();
-    const start = end - 10 * 365 * 24 * 60 * 60 * 1_000;
+    const lookbackDays = Math.max(45, options.lookbackDays ?? 10 * 365);
+    const start = end - lookbackDays * 24 * 60 * 60 * 1_000;
     const data = await this.call<FuyaoHistoricalData>(
       "a-share",
       "get_a_share_prices_historical",
@@ -568,6 +573,7 @@ export class FuyaoMcpClient {
       return [{
         date: dateFromMilliseconds(row.date_ms),
         close,
+        volume: row.volume === undefined ? undefined : finiteNumber(row.volume),
         amount: row.turnover === undefined ? undefined : finiteNumber(row.turnover),
       }];
     }).toSorted((left, right) => left.date.localeCompare(right.date));

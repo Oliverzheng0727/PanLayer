@@ -159,7 +159,12 @@ export async function fetchTencentAdjustedBars(
       const date = String(row[0] ?? "");
       const close = Number(row[2]);
       if (/^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(close) && close > 0) {
-        byDate.set(date, { date, close });
+        const volume = Number(row[5]);
+        byDate.set(date, {
+          date,
+          close,
+          volume: Number.isFinite(volume) ? volume : undefined,
+        });
       }
     }
 

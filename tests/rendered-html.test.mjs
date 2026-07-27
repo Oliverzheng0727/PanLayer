@@ -55,7 +55,7 @@ test("server-renders the protected review dashboard for the allowed user", async
   const historyHeaders = [
     "日期", "涨停家数", "跌停家数", "炸板家数", "大跌家数（7%）", "封板率",
     "昨日打板成功率", "连板反馈", "上涨家数", "成交额", "连板数", "最高板（名称）",
-    "断板数（二板+）", "断板率", "主线板块", "龙头周期", "今日辨识度个股", "指数情况",
+    "断板数（二板+）", "断板率", "主线板块", "龙头周期", "客观辨识度榜", "指数情况",
   ];
   assert.doesNotMatch(historyTable, /大盘复盘记录/);
   for (let index = 1; index < historyHeaders.length; index += 1) {

@@ -134,20 +134,20 @@ describe("Eastmoney provider", () => {
     const fetcher: typeof fetch = async (input) => {
       const url = new URL(String(input));
       expect(url.searchParams.get("fqt")).toBe("1");
-      expect(url.searchParams.get("fields2")).toBe("f51,f53,f57,f59");
+      expect(url.searchParams.get("fields2")).toBe("f51,f53,f56,f57,f59");
       return new Response(JSON.stringify({
         data: {
           klines: [
-            "2026-07-22,10.25,860000000,3.12",
-            "2026-07-23,10.66,920000000,4.00",
+            "2026-07-22,10.25,120000000,860000000,3.12",
+            "2026-07-23,10.66,140000000,920000000,4.00",
           ],
         },
       }));
     };
 
     await expect(createEastmoneyProvider(fetcher).getAdjustedBars("600001.SH")).resolves.toEqual([
-      { date: "2026-07-22", close: 10.25, amount: 860000000, pctChange: 3.12 },
-      { date: "2026-07-23", close: 10.66, amount: 920000000, pctChange: 4 },
+      { date: "2026-07-22", close: 10.25, volume: 120000000, amount: 860000000, pctChange: 3.12 },
+      { date: "2026-07-23", close: 10.66, volume: 140000000, amount: 920000000, pctChange: 4 },
     ]);
   });
 
@@ -171,8 +171,8 @@ describe("Eastmoney provider", () => {
     };
 
     await expect(createEastmoneyProvider(fetcher).getAdjustedBars("600001.SH")).resolves.toEqual([
-      { date: "2026-07-22", close: 10.25 },
-      { date: "2026-07-23", close: 10.66 },
+      { date: "2026-07-22", close: 10.25, volume: 100 },
+      { date: "2026-07-23", close: 10.66, volume: 120 },
     ]);
   });
 

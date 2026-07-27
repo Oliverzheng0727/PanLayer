@@ -21,6 +21,7 @@ export interface Quote {
   sector: string;
   firstLimitTime: string | null;
   limitStreak: number;
+  listingDate?: string | null;
 }
 
 export interface Breadth {
@@ -129,6 +130,69 @@ export interface StructuredMarketSignals {
   errors: string[];
 }
 
+export interface RecognitionRankingItem {
+  rank: number;
+  symbol: string;
+  name: string;
+  tier: "first" | "second";
+  limitStreak: number;
+  pctChange: number;
+  amount: number;
+  volume: number;
+  turnoverRate: number;
+  averageVolume3: number;
+  averageVolume30: number;
+  volumeRatio: number;
+  hotRank: number;
+  hotRankChange: number;
+  hotHeat: number | null;
+  concepts: string[];
+  topic: string;
+  topicSource: string;
+  priceVolumeState: "上涨放量" | "回调缩量" | "上涨未充分放量" | "回调放量";
+  scores: {
+    streak: number;
+    liquidity: number;
+    popularity: number;
+    total: number;
+  };
+  highlights: string[];
+}
+
+export interface RecognitionRanking {
+  schemaVersion: 1;
+  status: "complete" | "partial" | "failed";
+  referenceDate: string;
+  marketTime: string;
+  receivedAt: string;
+  source: string;
+  items: RecognitionRankingItem[];
+  firstTierCount: number;
+  secondTierCount: number;
+  filters: {
+    ladderCandidates: number;
+    excludedBase: number;
+    excludedAmount: number;
+    excludedTurnover: number;
+    excludedListingAge: number;
+    excludedHotRank: number;
+    excludedVolumeHistory: number;
+    excludedVolumeCondition: number;
+    qualified: number;
+  };
+  evidence: {
+    hotListSource: string;
+    quoteSource: string;
+    barsSource: string;
+    ladderSource: string;
+    hotListStatus: "complete" | "partial" | "failed";
+    hotListCount: number;
+    barCandidateCount: number;
+    barSuccessCount: number;
+    message: string;
+  };
+}
+
 export interface DailyComparison {
   brokenCount: number | null;
   largeDownCount: number | null;
@@ -191,4 +255,5 @@ export interface DailyReview {
     receivedAt: string;
   };
   structuredSignals?: StructuredMarketSignals;
+  recognitionRanking?: RecognitionRanking;
 }
