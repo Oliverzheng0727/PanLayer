@@ -6,6 +6,7 @@ import {
   prepareMorningBriefRegeneration,
   runPanLayerJob,
 } from "../../../../../../lib/jobs/runner";
+import { beijingDateParts } from "../../../../../../lib/jobs/schedule";
 
 interface SchedulerEnv {
   DB: D1Database;
@@ -39,7 +40,8 @@ export async function POST(request: Request) {
   const provider = providerHeader === "cloudflare" || providerHeader === "github" || providerHeader === "worker"
     ? providerHeader
     : "unknown";
-  if (request.headers.get("x-panlayer-action") === "regenerate-morning-brief") {
+  const action = request.headers.get("x-panlayer-action");
+  if (action === "regenerate-morning-brief") {
     const prepared = await prepareMorningBriefRegeneration(runtimeEnv.DB, now);
     const firstModule = await runPanLayerJob(
       { type: "morning-brief" },
@@ -56,6 +58,23 @@ export async function POST(request: Request) {
       firstModule,
     }, {
       status: firstModule.status === "failed" ? 502 : firstModule.status === "partial" ? 207 : 200,
+    });
+  }
+  if (action === "continue-morning-brief") {
+    const nextModule = await runPanLayerJob(
+      { type: "morning-brief" },
+      now,
+      runtimeEnv,
+      { trigger: "reconcile" },
+    );
+    return Response.json({
+      ok: nextModule.ok,
+      status: nextModule.status,
+      date: beijingDateParts(now).date,
+      message: "七模块串行生成已继续推进一个模块",
+      nextModule,
+    }, {
+      status: nextModule.status === "failed" ? 502 : nextModule.status === "partial" ? 207 : 200,
     });
   }
   const result = await executeRemoteSchedulerTick({
