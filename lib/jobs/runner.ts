@@ -403,7 +403,16 @@ function isLeaseLost(error: unknown): boolean {
 
 export async function failedOrMissingBriefSectionKeys(db: D1Database, date: string): Promise<BriefSectionKey[]> {
   const persisted = new Map((await readPersistedBriefSections(db, date)).map((item) => [item.section.key, item.section.status]));
-  return BRIEF_SECTION_DEFINITIONS_V3.flatMap((definition) => persisted.get(definition.key) === "complete" ? [] : [definition.key]);
+  const missing = BRIEF_SECTION_DEFINITIONS_V3.flatMap((definition) =>
+    persisted.has(definition.key) ? [] : [definition.key]
+  );
+  const incomplete = BRIEF_SECTION_DEFINITIONS_V3.flatMap((definition) => {
+    const status = persisted.get(definition.key);
+    return status !== undefined && status !== "complete" ? [definition.key] : [];
+  });
+  // Finish every untouched module before retrying a partial/failed one. This
+  // prevents a repeatedly rate-limited section from blocking the other six.
+  return [...missing, ...incomplete];
 }
 
 type RejectedSection = { key: BriefSectionKey; error: string };
@@ -464,6 +473,7 @@ export async function generateFullMorningBrief(input: {
   date: string;
   model: string;
   sectionKeys: BriefSectionKey[];
+  schemaVersion?: MorningBrief["schemaVersion"];
   generator: BriefSectionGenerator;
   db: D1Database;
   concurrency?: number;
@@ -480,7 +490,13 @@ export async function generateFullMorningBrief(input: {
   await assertMorningBriefLease(input.lease);
   const persistedSections = await readPersistedBriefSections(input.db, input.date);
   const persistedByKey = new Map(persistedSections.map((item) => [item.section.key, item]));
-  const definitions = input.sectionKeys.some((key) => key === "technical" || key === "funding") ? BRIEF_SECTION_DEFINITIONS_V3 : LEGACY_BRIEF_SECTION_DEFINITIONS;
+  const definitions = input.schemaVersion === 3
+    ? BRIEF_SECTION_DEFINITIONS_V3
+    : input.schemaVersion === 2
+      ? LEGACY_BRIEF_SECTION_DEFINITIONS
+      : input.sectionKeys.some((key) => key === "technical" || key === "funding")
+        ? BRIEF_SECTION_DEFINITIONS_V3
+        : LEGACY_BRIEF_SECTION_DEFINITIONS;
   const results: SectionRunResult[] = Array(requestedKeys.length);
   const maxAttempts = Math.min(3, Math.max(0, input.retries ?? 2) + 1);
   const workerCount = Math.min(3, Math.max(1, input.concurrency ?? 2), requestedKeys.length);
@@ -1715,7 +1731,16 @@ export async function runPanLayerJob(
       await assertMorningBriefLease(morningBriefLease);
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
-      const deepRecovery = selectedKeys.length < BRIEF_SECTION_DEFINITIONS_V3.length;
+      const serialQwenRun = ai.provider === "qwen"
+        && executionTrigger !== "manual"
+        && options.sectionKeys === undefined;
+      // The external scheduler runs every five minutes from 07:15 to 07:55.
+      // Automatic Qwen runs therefore advance exactly one persisted module per
+      // tick instead of issuing seven concurrent provider requests.
+      const generationKeys = serialQwenRun ? selectedKeys.slice(0, 1) : selectedKeys;
+      const deepRecovery = serialQwenRun
+        ? selectedKeys.length === 1
+        : selectedKeys.length < BRIEF_SECTION_DEFINITIONS_V3.length;
       const generator: BriefSectionGenerator = ai.provider === "qwen"
         ? createQwenBriefGenerator({
           apiKey: ai.apiKey,
@@ -1740,14 +1765,15 @@ export async function runPanLayerJob(
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,
-        sectionKeys: selectedKeys,
+        sectionKeys: generationKeys,
+        schemaVersion: 3,
         generator,
         db,
         globalSnapshot: global.reconciled,
         marketContext,
         metadata: briefMetadata,
         lease: morningBriefLease,
-        concurrency: ai.provider === "qwen" ? 3 : 2,
+        concurrency: ai.provider === "qwen" ? 1 : 2,
         retries: ai.provider === "qwen" ? 0 : undefined,
         deadlineAt,
       });

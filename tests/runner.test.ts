@@ -653,6 +653,22 @@ describe("close review aggregation", () => {
     expect(requests.mapping).toBe(1);
   });
 
+  it("advances one Qwen module per automatic scheduler tick", async () => {
+    const { db, fetcher, requests } = morningBriefJobHarness([]);
+
+    await expect(runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      { DB: db, DASHSCOPE_API_KEY: "qwen" },
+      { fetcher, trigger: "cron" },
+    )).resolves.toMatchObject({
+      ok: true,
+      status: "partial",
+    });
+
+    expect(requests).toEqual({ "global-markets": 1 });
+  });
+
   it("does not call Firecrawl when the first Qwen generation succeeds", async () => {
     const { db } = morningBriefJobHarness([]);
     const calls = { qwen: 0, firecrawl: 0 };

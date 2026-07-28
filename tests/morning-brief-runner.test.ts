@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BRIEF_SECTION_DEFINITIONS, type BriefSection, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS, BRIEF_SECTION_DEFINITIONS_V3, type BriefSection, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import type { BriefSectionGenerator, GeneratedBriefSection } from "../lib/ai/morning-brief-providers";
 import { acquireJobLease, generateFullMorningBrief, MORNING_BRIEF_BATCH_DEADLINE_MS, MORNING_BRIEF_LEASE_MS, renewJobLease } from "../lib/jobs/runner";
 
@@ -141,6 +141,54 @@ describe("full morning brief runner", () => {
     await generateFullMorningBrief({ date: DATE, model: "qwen-plus", sectionKeys: BRIEF_SECTION_DEFINITIONS.map((item) => item.key), generator, db, concurrency: 3, retries: 0 });
 
     expect(maximum).toBe(3);
+  });
+
+  it("keeps the V3 seven-module envelope when a serial tick generates an overlapping legacy key", async () => {
+    const { db } = memoryD1();
+    const definition = BRIEF_SECTION_DEFINITIONS_V3[0];
+    const generatedAt = "2026-07-23T07:15:00+08:00";
+
+    const brief = await generateFullMorningBrief({
+      date: DATE,
+      model: "qwen-plus",
+      sectionKeys: ["global-markets"],
+      schemaVersion: 3,
+      generator: async () => ({
+        section: {
+          key: definition.key,
+          title: definition.title,
+          summary: "已核验的隔夜市场信息摘要。",
+          tags: ["市场"],
+          status: "complete",
+          generatedAt,
+          blocks: [{
+            type: "paragraph",
+            text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(100)}`,
+            sourceIds: ["v3-source"],
+          }],
+          sourceIds: ["v3-source"],
+        },
+        sources: [{
+          id: "v3-source",
+          title: "V3可靠来源",
+          url: "https://example.com/v3",
+          publishedAt: null,
+          retrievedAt: generatedAt,
+        }],
+      }),
+      db,
+      concurrency: 1,
+      retries: 0,
+      globalSnapshot: [],
+    });
+
+    expect(brief.schemaVersion).toBe(3);
+    expect(brief.sections).toHaveLength(7);
+    expect(brief.sections[0]).toMatchObject({
+      key: "global-markets",
+      title: "全球外围与跨资产全景",
+      status: "complete",
+    });
   });
 
   it("retries a transient section failure twice before persisting its final result", async () => {
