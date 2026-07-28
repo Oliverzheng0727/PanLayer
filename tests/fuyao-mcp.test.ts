@@ -608,13 +608,13 @@ describe("Fuyao MCP adapter", () => {
       if (tool === "get_a_share_special_data_anomal_17ac564c9ba3") {
         return mcpResult({ item: [{ thscode: "600001.SH", stock_name: "测试股份", tag_name: "涨停", analysis_content: "公开异动原因", keyword_list: ["机器人"] }] });
       }
-      if (tool === "get_a_share_index_catalog_e220748f341b") {
+      if (tool === "get_a_share_index_catalog_ths_index_list") {
         return mcpResult({ item: [{ thscode: "884218.TI", name: "机器人" }] });
       }
       if (tool === "get_a_share_index_prices_snapshot") {
         return mcpResult({ item: [{ thscode: "884218.TI", price_change_ratio_pct: 2.5, turnover: 100 }] });
       }
-      if (tool === "get_a_share_index_constit_d27621e4aae9") {
+      if (tool === "get_a_share_index_constituents_ths_stock_list") {
         return mcpResult({ item: [{ thscode: "600001.SH", ticker: "600001", name: "测试股份" }] });
       }
       return new Response("unexpected", { status: 500 });

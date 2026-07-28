@@ -870,12 +870,12 @@ export class FuyaoMcpClient {
     const [industry, concept] = await Promise.all([
       this.callEnvelope<FuyaoIndexCatalogData>(
         "a-share-index",
-        "get_a_share_index_catalog_e220748f341b",
+        "get_a_share_index_catalog_ths_index_list",
         { tag: "industry" },
       ),
       this.callEnvelope<FuyaoIndexCatalogData>(
         "a-share-index",
-        "get_a_share_index_catalog_e220748f341b",
+        "get_a_share_index_catalog_ths_index_list",
         { tag: "cn_concept" },
       ),
     ]);
@@ -982,7 +982,7 @@ export class FuyaoMcpClient {
     const constituentResults = await Promise.allSettled(matches.map((item) =>
       this.callEnvelope<FuyaoIndexConstituentData>(
         "a-share-index",
-        "get_a_share_index_constit_d27621e4aae9",
+        "get_a_share_index_constituents_ths_stock_list",
         { thscode: item.index.thscode },
       ),
     ));
