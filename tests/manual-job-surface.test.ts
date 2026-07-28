@@ -25,5 +25,7 @@ describe("automatic-only data task surface", () => {
     expect(route).toContain("isValidSchedulerAuthorization");
     expect(route).toContain("executeRemoteSchedulerTick");
     expect(route).toContain("PANLAYER_CRON_SECRET");
+    expect(route).toContain('request.headers.get("x-panlayer-action")');
+    expect(route).toContain("prepareMorningBriefRegeneration");
   });
 });

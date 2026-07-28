@@ -1796,6 +1796,50 @@ export async function runPanLayerJob(
   }
 }
 
+export async function prepareMorningBriefRegeneration(
+  db: D1Database,
+  now = new Date(),
+): Promise<{ date: string; sectionsMarked: number }> {
+  await ensureRuntimeSchema(db);
+  const { date } = beijingDateParts(now);
+  const updatedAt = now.toISOString();
+  const sectionResult = await db.prepare(
+    `UPDATE morning_brief_sections
+     SET status = 'partial',
+         error = '受保护的运维重生成已启动',
+         updated_at = ?
+     WHERE trade_date = ?`,
+  ).bind(updatedAt, date).run();
+  await db.prepare(
+    `UPDATE morning_briefs
+     SET status = 'partial',
+         updated_at = ?
+     WHERE trade_date = ?`,
+  ).bind(updatedAt, date).run();
+  await db.prepare(
+    `INSERT INTO job_checkpoints (
+       trade_date, job_key, stage, status, attempt, expected_at,
+       started_at, finished_at, next_retry_at, message, result_json, updated_at
+     ) VALUES (?, 'morning-brief', 'main', 'partial', 0, ?, NULL, NULL, ?, ?, '{}', ?)
+     ON CONFLICT(trade_date, job_key, stage) DO UPDATE SET
+       status = 'partial',
+       finished_at = NULL,
+       next_retry_at = excluded.next_retry_at,
+       message = excluded.message,
+       updated_at = excluded.updated_at`,
+  ).bind(
+    date,
+    `${date}T07:15:00+08:00`,
+    updatedAt,
+    "受保护的运维重生成已启动；后续按模块串行生成",
+    updatedAt,
+  ).run();
+  return {
+    date,
+    sectionsMarked: Number(sectionResult.meta?.changes ?? 0),
+  };
+}
+
 export function scheduledJobFromDate(now: Date): ScheduledJob | null {
   return jobForBeijingTime(beijingDateParts(now).time);
 }

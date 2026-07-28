@@ -2,7 +2,10 @@ import {
   executeRemoteSchedulerTick,
   isValidSchedulerAuthorization,
 } from "../../../../../../lib/jobs/remote-scheduler";
-import { runPanLayerJob } from "../../../../../../lib/jobs/runner";
+import {
+  prepareMorningBriefRegeneration,
+  runPanLayerJob,
+} from "../../../../../../lib/jobs/runner";
 
 interface SchedulerEnv {
   DB: D1Database;
@@ -36,6 +39,25 @@ export async function POST(request: Request) {
   const provider = providerHeader === "cloudflare" || providerHeader === "github" || providerHeader === "worker"
     ? providerHeader
     : "unknown";
+  if (request.headers.get("x-panlayer-action") === "regenerate-morning-brief") {
+    const prepared = await prepareMorningBriefRegeneration(runtimeEnv.DB, now);
+    const firstModule = await runPanLayerJob(
+      { type: "morning-brief" },
+      now,
+      runtimeEnv,
+      { trigger: "reconcile" },
+    );
+    return Response.json({
+      ok: firstModule.ok,
+      status: firstModule.status,
+      date: prepared.date,
+      sectionsMarked: prepared.sectionsMarked,
+      message: "七模块重生成已启动；本次先串行生成一个模块，其余模块由后续调度继续生成",
+      firstModule,
+    }, {
+      status: firstModule.status === "failed" ? 502 : firstModule.status === "partial" ? 207 : 200,
+    });
+  }
   const result = await executeRemoteSchedulerTick({
     db: runtimeEnv.DB,
     now,
