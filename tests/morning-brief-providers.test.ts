@@ -915,7 +915,7 @@ describe("independent morning-brief section providers", () => {
       const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
       const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
 
-      await vi.advanceTimersByTimeAsync(27_999);
+      await vi.advanceTimersByTimeAsync(54_999);
       expect(aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
 
@@ -969,7 +969,7 @@ describe("independent morning-brief section providers", () => {
       const pending = generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
       const rejected = expect(pending).rejects.toThrow(/Qwen request timed out/);
 
-      await vi.advanceTimersByTimeAsync(27_999);
+      await vi.advanceTimersByTimeAsync(54_999);
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
 

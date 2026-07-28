@@ -64,7 +64,10 @@ export const QWEN_BRIEF_SECTION_MODEL = "qwen3.7-plus";
 export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const DASHSCOPE_SECTION_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 28_000;
+// qwen3.7-plus commonly needs more than 28 seconds for a source-constrained
+// 1,200–1,400 character JSON module. Keep one request bounded, but allow enough
+// time for the model to finish before falling back to raw evidence.
+const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 55_000;
 const OPENAI_PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 
