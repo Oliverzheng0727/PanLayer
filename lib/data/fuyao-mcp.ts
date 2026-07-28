@@ -21,7 +21,9 @@ export type FuyaoMcpEndpoint = "meta" | "a-share" | "a-share-index" | "fund";
 export interface FuyaoMcpOptions {
   apiKey: string;
   baseUrl?: string;
+  restBaseUrl?: string;
   fetcher?: typeof fetch;
+  transport?: "rest-first" | "mcp-only";
 }
 
 interface FuyaoToolEnvelope<T> {
@@ -242,10 +244,34 @@ interface FuyaoIndexConstituentData {
 }
 
 const DEFAULT_FUYAO_MCP_BASE_URL = "https://fuyao.aicubes.cn/mcp";
+const DEFAULT_FUYAO_REST_BASE_URL = "https://fuyao.aicubes.cn";
 const FUYAO_PROTOCOL_VERSION = "2025-03-26";
 const FUYAO_REQUEST_TIMEOUT_MS = 12_000;
-const FUYAO_QUOTE_BATCH_SIZE = 500;
+const FUYAO_HISTORICAL_TIMEOUT_MS = 30_000;
+const FUYAO_QUOTE_BATCH_SIZE = 100;
 const MINIMUM_FUYAO_QUOTE_COVERAGE = 0.95;
+
+const FUYAO_REST_PATHS: Readonly<Record<string, string>> = {
+  get_meta_tickers_list: "/api/meta/tickers/list",
+  get_meta_tickers_search: "/api/meta/tickers/search",
+  get_a_share_prices_snapshot: "/api/a-share/prices/snapshot",
+  get_a_share_prices_historical: "/api/a-share/prices/historical",
+  get_a_share_special_data_limit_up_pool: "/api/a-share/special-data/limit-up-pool",
+  get_a_share_special_data_limit_up_ladder: "/api/a-share/special-data/limit-up-ladder",
+  get_a_share_special_data_skyrocket_list: "/api/a-share/special-data/skyrocket-list",
+  get_a_share_special_data_hot_stock_list: "/api/a-share/special-data/hot-stock-list",
+  get_a_share_special_data_dragon_tiger_list: "/api/a-share/special-data/dragon-tiger-list",
+  get_a_share_special_data_anomaly_analysis_stock: "/api/a-share/special-data/anomaly-analysis-stock",
+  get_a_share_special_data_anomal_17ac564c9ba3: "/api/a-share/special-data/anomaly-analysis-stock",
+  get_a_share_index_catalog_ths_index_list: "/api/a-share-index/catalog/ths-index-list",
+  get_a_share_index_catalog_e220748f341b: "/api/a-share-index/catalog/ths-index-list",
+  get_a_share_index_constituents_ths_stock_list: "/api/a-share-index/constituents/ths-stock-list",
+  get_a_share_index_constit_d27621e4aae9: "/api/a-share-index/constituents/ths-stock-list",
+  get_a_share_index_prices_snapshot: "/api/a-share-index/prices/snapshot",
+  get_a_share_index_prices_historical: "/api/a-share-index/prices/historical",
+  get_fund_market_snapshot: "/api/fund/market/snapshot",
+  get_fund_market_historical: "/api/fund/market/historical",
+};
 
 const INDEX_DEFINITIONS = [
   { symbol: "000001.SH", name: "上证指数" },
@@ -383,10 +409,56 @@ function parseToolPayload<T>(payload: FuyaoMcpResponse<T>): FuyaoToolEnvelope<T>
   }
 }
 
+class FuyaoRestTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FuyaoRestTransportError";
+  }
+}
+
+class FuyaoBusinessError extends Error {
+  readonly code: number;
+
+  constructor(tool: string, code: number, message: string) {
+    super(`Fuyao ${tool} code ${code}: ${message || "request failed"}`);
+    this.name = "FuyaoBusinessError";
+    this.code = code;
+  }
+}
+
+function deriveFuyaoRestBaseUrl(mcpBaseUrl: string): string {
+  try {
+    const url = new URL(mcpBaseUrl);
+    url.pathname = url.pathname.replace(/\/mcp\/?$/, "") || "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_FUYAO_REST_BASE_URL;
+  }
+}
+
+function appendRestQuery(url: URL, args: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      url.searchParams.set(key, value.join(","));
+      continue;
+    }
+    if (typeof value === "object") {
+      url.searchParams.set(key, JSON.stringify(value));
+      continue;
+    }
+    url.searchParams.set(key, String(value));
+  }
+}
+
 export class FuyaoMcpClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly restBaseUrl: string;
   private readonly fetcher: typeof fetch;
+  private readonly transport: "rest-first" | "mcp-only";
   private readonly sessions = new Map<FuyaoMcpEndpoint, Promise<string>>();
   private tickerCache = new Map<string, Promise<FuyaoTicker[]>>();
 
@@ -394,7 +466,9 @@ export class FuyaoMcpClient {
     if (!options.apiKey.trim()) throw new Error("FUYAO_API_KEY is not configured");
     this.apiKey = options.apiKey.trim();
     this.baseUrl = (options.baseUrl ?? DEFAULT_FUYAO_MCP_BASE_URL).replace(/\/+$/, "");
+    this.restBaseUrl = (options.restBaseUrl ?? deriveFuyaoRestBaseUrl(this.baseUrl)).replace(/\/+$/, "");
     this.fetcher = options.fetcher ?? fetch;
+    this.transport = options.transport ?? "rest-first";
   }
 
   private endpointUrl(endpoint: FuyaoMcpEndpoint): string {
@@ -446,7 +520,7 @@ export class FuyaoMcpClient {
     return session;
   }
 
-  private async callEnvelope<T>(
+  private async callMcpEnvelope<T>(
     endpoint: FuyaoMcpEndpoint,
     tool: string,
     args: Record<string, unknown>,
@@ -466,9 +540,74 @@ export class FuyaoMcpClient {
     if (!response.ok) throw new Error(`Fuyao MCP ${tool} ${response.status}`);
     const envelope = parseToolPayload(await response.json() as FuyaoMcpResponse<T>);
     if (envelope.code !== 0) {
-      throw new Error(`Fuyao ${tool} code ${envelope.code}: ${envelope.message || "request failed"}`);
+      throw new FuyaoBusinessError(tool, envelope.code, envelope.message);
     }
     return envelope;
+  }
+
+  private async callRestEnvelope<T>(
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<FuyaoToolEnvelope<T>> {
+    const path = FUYAO_REST_PATHS[tool];
+    if (!path) throw new FuyaoRestTransportError(`Fuyao REST mapping missing for ${tool}`);
+    const url = new URL(path, `${this.restBaseUrl}/`);
+    appendRestQuery(url, args);
+    let response: Response;
+    try {
+      response = await this.fetcher(url, {
+        method: "GET",
+        headers: {
+          "X-api-key": this.apiKey,
+          accept: "application/json",
+        },
+        signal: AbortSignal.timeout(
+          path.endsWith("/historical") ? FUYAO_HISTORICAL_TIMEOUT_MS : FUYAO_REQUEST_TIMEOUT_MS,
+        ),
+      });
+    } catch (error) {
+      throw new FuyaoRestTransportError(
+        `Fuyao REST ${tool} transport failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!response.ok) {
+      throw new FuyaoRestTransportError(`Fuyao REST ${tool} HTTP ${response.status}`);
+    }
+    let envelope: FuyaoToolEnvelope<T>;
+    try {
+      envelope = await response.json() as FuyaoToolEnvelope<T>;
+    } catch {
+      throw new FuyaoRestTransportError(`Fuyao REST ${tool} returned invalid JSON`);
+    }
+    if (!Number.isFinite(envelope.code)) {
+      throw new FuyaoRestTransportError(`Fuyao REST ${tool} returned an invalid envelope`);
+    }
+    if (envelope.code !== 0) {
+      throw new FuyaoBusinessError(tool, envelope.code, envelope.message);
+    }
+    return envelope;
+  }
+
+  private async callEnvelope<T>(
+    endpoint: FuyaoMcpEndpoint,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<FuyaoToolEnvelope<T>> {
+    if (this.transport === "mcp-only") {
+      return this.callMcpEnvelope<T>(endpoint, tool, args);
+    }
+    try {
+      return await this.callRestEnvelope<T>(tool, args);
+    } catch (error) {
+      if (error instanceof FuyaoBusinessError) throw error;
+      try {
+        return await this.callMcpEnvelope<T>(endpoint, tool, args);
+      } catch (fallbackError) {
+        const restMessage = error instanceof Error ? error.message : String(error);
+        const mcpMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error(`${restMessage}; MCP fallback failed: ${mcpMessage}`);
+      }
+    }
   }
 
   async call<T>(

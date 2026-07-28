@@ -20,6 +20,15 @@ function mcpResult(data: unknown) {
   });
 }
 
+function restResult(data: unknown, requestId = "rest-request-1") {
+  return Response.json({
+    code: 0,
+    message: "success",
+    request_id: requestId,
+    data,
+  });
+}
+
 function createFetcher(handler: (tool: string, args: Record<string, unknown>) => Response) {
   return vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -34,6 +43,112 @@ function createFetcher(handler: (tool: string, args: Record<string, unknown>) =>
     return handler(body.params?.name ?? "", body.params?.arguments ?? {});
   });
 }
+
+describe("Fuyao REST adapter", () => {
+  it("uses the documented REST endpoint and X-api-key header before MCP", async () => {
+    let requestedUrl = "";
+    let requestedHeaders: HeadersInit | undefined;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedHeaders = init?.headers;
+      return restResult({
+        item: [
+          { date_ms: Date.parse("2026-07-24T00:00:00+08:00"), close_price: 10, turnover: 100 },
+        ],
+      });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareAdjustedBars("600000.SH")).resolves.toHaveLength(1);
+
+    const url = new URL(requestedUrl);
+    expect(url.origin + url.pathname).toBe("https://fuyao.aicubes.cn/api/a-share/prices/historical");
+    expect(url.searchParams.get("thscode")).toBe("600000.SH");
+    expect(url.searchParams.get("adjust")).toBe("forward");
+    expect(new Headers(requestedHeaders).get("X-api-key")).toBe("secret");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry business errors through MCP", async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      code: 2003,
+      message: "permission denied",
+      request_id: "denied",
+      data: null,
+    }));
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareAdjustedBars("600000.SH")).rejects.toThrow("code 2003");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the compatible MCP endpoint when REST transport is unavailable", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "GET") return new Response("unavailable", { status: 503 });
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        params?: { name?: string };
+      };
+      if (body.method === "initialize") {
+        return Response.json({ jsonrpc: "2.0", id: 1, result: {} }, {
+          headers: { "Mcp-Session-Id": "session-rest-fallback" },
+        });
+      }
+      if (body.params?.name === "get_a_share_prices_historical") {
+        return mcpResult({
+          item: [
+            { date_ms: Date.parse("2026-07-24T00:00:00+08:00"), close_price: 10, turnover: 100 },
+          ],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareAdjustedBars("600000.SH")).resolves.toHaveLength(1);
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "GET")).toBe(true);
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true);
+  });
+
+  it("keeps explicit A-share snapshot batches within the official 100-symbol limit", async () => {
+    const tickers = Array.from({ length: 205 }, (_, index) => {
+      const ticker = String(600000 + index).padStart(6, "0");
+      return {
+        thscode: `${ticker}.SH`,
+        ticker,
+        name: `测试${ticker}`,
+        exchange: "SH",
+        asset_type: "a-share",
+      };
+    });
+    const snapshotSizes: number[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/meta/tickers/list") {
+        return restResult({ item: tickers });
+      }
+      if (url.pathname === "/api/a-share/prices/snapshot") {
+        const symbols = String(url.searchParams.get("thscodes") ?? "").split(",").filter(Boolean);
+        snapshotSizes.push(symbols.length);
+        return restResult({
+          item: symbols.map((symbol) => ({
+            thscode: symbol,
+            ticker: symbol.slice(0, 6),
+            last_price: 10,
+            prev_price: 9,
+            turnover: 1_000_000,
+            price_change_ratio_pct: 11.11,
+          })),
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareQuotes([], { includeST: true })).resolves.toHaveLength(205);
+    expect(snapshotSizes.toSorted((left, right) => right - left)).toEqual([100, 100, 5]);
+  });
+});
 
 describe("Fuyao MCP adapter", () => {
   it("maps verified A-share snapshots into the shared quote contract", async () => {
@@ -65,7 +180,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
     const quotes = await client.fetchAShareQuotes(["600000.SH", "300001.SZ"]);
 
     expect(quotes).toHaveLength(1);
@@ -102,7 +221,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
 
     await expect(client.fetchAShareQuotes([])).resolves.toHaveLength(1);
     await expect(client.fetchMarketAggregate([], "15:00", new Date("2026-07-27T07:00:00Z")))
@@ -129,7 +252,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
 
     await expect(client.fetchAShareAdjustedBars("600000.SH")).resolves.toEqual([
       { date: "2026-07-23", close: 9, amount: 90, pctChange: undefined },
@@ -160,7 +287,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
     const items = await client.searchEtfSnapshots("新能源电池", 5);
 
     expect(items).toEqual([expect.objectContaining({
@@ -218,7 +349,11 @@ describe("Fuyao MCP adapter", () => {
         updatedAt: "2026-07-27T15:00:00+08:00",
       },
     ];
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
     const result = await client.mergeEtfMasterCatalog(marketItems);
 
     expect(result).toMatchObject({
@@ -257,7 +392,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
 
     await expect(client.fetchFundDailyBars("510300.SH")).resolves.toEqual([{
       time: "2026-07-24",
@@ -331,7 +470,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
     const evidence = await client.fetchMorningBriefEvidence(referenceDate, new Date("2026-07-27T22:50:00Z"));
 
     expect(evidence).toMatchObject({
@@ -391,7 +534,11 @@ describe("Fuyao MCP adapter", () => {
       }
       return new Response("unexpected", { status: 500 });
     });
-    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+    const client = createFuyaoMcpClient({
+      apiKey: "secret",
+      fetcher: fetcher as typeof fetch,
+      transport: "mcp-only",
+    });
     const signals = await client.fetchStructuredMarketSignals(date, new Date("2026-07-24T08:00:00Z"));
 
     expect(signals).toMatchObject({

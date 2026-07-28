@@ -105,7 +105,7 @@ describe("ETF market bar aggregation", () => {
       "day",
       "none",
       fetcher as typeof fetch,
-      { apiKey: "secret" },
+      { apiKey: "secret", transport: "mcp-only" },
     )).resolves.toMatchObject({
       source: "扶摇 Fuyao",
       fallbackSource: null,
@@ -123,7 +123,7 @@ describe("ETF market bar aggregation", () => {
       "week",
       "none",
       fetcher as typeof fetch,
-      { apiKey: "secret" },
+      { apiKey: "secret", transport: "mcp-only" },
     )).resolves.toMatchObject({
       source: "扶摇 Fuyao（日K聚合周K）",
       appliedPeriod: "week",
@@ -155,7 +155,7 @@ describe("ETF market bar aggregation", () => {
       "day",
       "forward",
       fetcher as typeof fetch,
-      { apiKey: "secret" },
+      { apiKey: "secret", transport: "mcp-only" },
     )).resolves.toMatchObject({
       source: "东方财富",
       status: "complete",
@@ -175,7 +175,7 @@ describe("ETF market bar aggregation", () => {
       "day",
       "forward",
       fetcher as typeof fetch,
-      { apiKey: "secret" },
+      { apiKey: "secret", transport: "mcp-only" },
     )).resolves.toMatchObject({
       source: "扶摇 Fuyao（不复权）",
       fallbackSource: "扶摇 Fuyao",
@@ -396,7 +396,7 @@ describe("ETF market bar aggregation", () => {
       "minute",
       "forward",
       fetcher as typeof fetch,
-      { apiKey: "secret" },
+      { apiKey: "secret", transport: "mcp-only" },
     )).resolves.toMatchObject({
       source: "东方财富",
       appliedPeriod: "minute",
