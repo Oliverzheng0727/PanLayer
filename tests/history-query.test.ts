@@ -84,6 +84,32 @@ describe("history table query", () => {
     expect(reviewToHistoryRow(review).high20).toBe(31);
   });
 
+  it("does not expose unclassified placeholders as a historical hot sector", () => {
+    const row = reviewToHistoryRow({
+      ...review,
+      sectors: [{ name: "未分类", limitUpCount: 61, averagePct: -0.79, amountGrowthPct: null, maxStreak: 0 }],
+      comparison: {
+        brokenCount: null,
+        largeDownCount: null,
+        sealRate: null,
+        yesterdaySuccessRate: null,
+        yesterdaySuccessSampleSize: 0,
+        continuation: null,
+        marketAmount: null,
+        marketCoveragePct: null,
+        maxBoard: null,
+        brokenBoard: { count: null, rate: null, sampleSize: 0, stocks: [] },
+        mainSectors: [{ name: "未分类", limitUpCount: 61, averagePct: -0.79, amountGrowthPct: null, maxStreak: 0 }],
+        cycleLeader: null,
+        recognition: [],
+        indices: [],
+        evidence: {},
+      },
+    });
+
+    expect(row.topSector).toBe("暂缺");
+  });
+
   it("keeps unavailable values last when sorting either direction", () => {
     const descending = queryHistoryRows(rows, { sort: "marginBalance", order: "desc", sector: "", cursor: 0, limit: 30 });
     const ascending = queryHistoryRows(rows, { sort: "marginBalance", order: "asc", sector: "", cursor: 0, limit: 30 });

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { demoReview } from "../lib/data/demo";
-import { mergeCloseReviewWithExisting } from "../lib/jobs/close-review-stages";
+import {
+  CLOSE_REVIEW_CORE_STAGES,
+  isCloseReviewCoreStage,
+  mergeCloseReviewWithExisting,
+} from "../lib/jobs/close-review-stages";
 
 describe("staged close-review merge", () => {
   it("keeps a successful market structure when a retry loses board pools", () => {
@@ -62,5 +66,38 @@ describe("staged close-review merge", () => {
 
     expect(merged.comparison?.brokenCount).toBe(2);
     expect(merged.comparison?.indices).toHaveLength(1);
+  });
+
+  it("keeps new-high initialization outside the six close-review core stages", () => {
+    expect(CLOSE_REVIEW_CORE_STAGES).toHaveLength(6);
+    expect(isCloseReviewCoreStage("indices")).toBe(true);
+    expect(isCloseReviewCoreStage("new-highs")).toBe(false);
+    expect(isCloseReviewCoreStage("assemble")).toBe(false);
+  });
+
+  it("drops legacy unclassified sector placeholders during recomposition", () => {
+    const existing = structuredClone(demoReview);
+    existing.comparison = {
+      brokenCount: null,
+      largeDownCount: null,
+      sealRate: null,
+      yesterdaySuccessRate: null,
+      yesterdaySuccessSampleSize: 0,
+      continuation: null,
+      marketAmount: null,
+      marketCoveragePct: null,
+      maxBoard: null,
+      brokenBoard: { count: null, rate: null, sampleSize: 0, stocks: [] },
+      mainSectors: [{ name: "未分类", limitUpCount: 61, averagePct: -0.79, amountGrowthPct: null, maxStreak: 0 }],
+      cycleLeader: null,
+      recognition: [],
+      indices: [],
+      evidence: {},
+    };
+    const retry = structuredClone(existing);
+
+    const merged = mergeCloseReviewWithExisting(existing, retry);
+
+    expect(merged.comparison?.mainSectors).toEqual([]);
   });
 });

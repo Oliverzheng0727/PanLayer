@@ -167,6 +167,11 @@ describe("sidebar progress model", () => {
       },
     };
 
-    expect(buildSidebarProgress(health, progress, "partial").overallStatus).toBe("complete");
+    const result = buildSidebarProgress(health, progress, "partial");
+    expect(result.overallStatus).toBe("complete");
+    expect(result.tasks.find((item) => item.key === "close-review")).toMatchObject({
+      status: "complete",
+      value: "6/6",
+    });
   });
 });

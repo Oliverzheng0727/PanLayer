@@ -1,5 +1,5 @@
 import type { DailyComparison, DailyReview, RecognitionRanking } from "../domain/types";
-import { resolveReviewStructureStatus } from "../domain/market-structure";
+import { isVerifiedSectorMetric, resolveReviewStructureStatus } from "../domain/market-structure";
 
 export const HISTORY_SORT_FIELDS = [
   "date", "rising", "falling", "flat", "riseFallRatio", "limitUp", "limitDown", "consecutive",
@@ -91,6 +91,8 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
         ? `旧口径记录 · ${comparison.recognition.map((item) => item.name).join(" / ")}`
         : "新口径暂缺"
       : "新口径暂缺";
+  const verifiedMainSectors = comparison?.mainSectors.filter(isVerifiedSectorMetric) ?? [];
+  const verifiedReviewSectors = review.sectors.filter(isVerifiedSectorMetric);
   return {
     date: review.date,
     rising,
@@ -130,8 +132,10 @@ export function reviewToHistoryRow(review: DailyReview): HistoryRow {
     allTimeHigh: review.metrics.allTimeHigh,
     marginBalance: review.metrics.marginBalance,
     topSector: structureAvailable
-      ? comparison?.mainSectors.map((item) => item.name).join(" / ") || review.sectors[0]?.name || "—"
-      : "—",
+      ? verifiedMainSectors.map((item) => item.name).join(" / ")
+        || verifiedReviewSectors[0]?.name
+        || "暂缺"
+      : "暂缺",
     backfilled: review.historyMeta?.backfilled === true,
     status: review.status,
     source: review.source,

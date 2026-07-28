@@ -394,23 +394,45 @@ export function buildDailyJobHealth({
   }).map((expected) => {
     const checkpoint = checkpointByKey.get(expected.key);
     const execution = readJobExecutionMetadata(checkpoint?.resultJson);
+    const noOpCompletion = /(?:already complete|no failed or missing modules).*skipped/i
+      .test(checkpoint?.message ?? "");
+    const checkpointFinishedAt = checkpoint?.finishedAt ?? null;
+    const pollutedAutomaticCompletion = Boolean(
+      noOpCompletion
+      && execution
+      && execution.trigger !== "manual"
+      && checkpointFinishedAt
+      && execution.lastAutomaticCompletedAt === checkpointFinishedAt,
+    );
+    const firstAutomaticCompletedAt = pollutedAutomaticCompletion
+      && execution?.firstAutomaticCompletedAt === checkpointFinishedAt
+      ? null
+      : execution?.firstAutomaticCompletedAt ?? null;
+    const lastAutomaticCompletedAt = pollutedAutomaticCompletion
+      ? firstAutomaticCompletedAt
+      : execution?.lastAutomaticCompletedAt ?? null;
+    const effectiveTrigger = pollutedAutomaticCompletion
+      && !firstAutomaticCompletedAt
+      && execution?.lastManualCompletedAt
+      ? "manual" as const
+      : execution?.trigger ?? null;
     const expectedTime = new Date(expected.expectedAt).getTime();
     const graceMs = expected.key.startsWith("breadth-")
       ? breadthRecoveryWindowMs(expected.key.replace("breadth-", ""))
       : 5 * 60_000;
     const overdue = now.getTime() > expectedTime + graceMs
       && checkpoint?.status !== "complete";
-    const automaticFinishedAt = execution?.firstAutomaticCompletedAt ?? (
-      execution?.trigger === "manual" ? null : checkpoint?.finishedAt ?? null
+    const automaticFinishedAt = firstAutomaticCompletedAt ?? (
+      effectiveTrigger === "manual" || pollutedAutomaticCompletion ? null : checkpoint?.finishedAt ?? null
     );
     const effectiveFinishedAt = automaticFinishedAt ?? (
-      execution?.trigger === "manual" ? checkpoint?.finishedAt ?? null : null
+      effectiveTrigger === "manual" ? execution?.lastManualCompletedAt ?? checkpoint?.finishedAt ?? null : null
     );
     const finishedTime = effectiveFinishedAt ? new Date(effectiveFinishedAt).getTime() : null;
     const delayMinutes = finishedTime !== null && Number.isFinite(finishedTime)
       ? Math.max(0, Math.round((finishedTime - expectedTime) / 60_000))
       : overdue ? Math.max(0, Math.round((now.getTime() - expectedTime) / 60_000)) : null;
-    const timeliness = execution?.trigger === "manual" && !automaticFinishedAt
+    const timeliness = effectiveTrigger === "manual" && !automaticFinishedAt
       ? "on-time" as const
       : now.getTime() < expectedTime && !checkpoint
       ? "not-due" as const
@@ -436,9 +458,9 @@ export function buildDailyJobHealth({
       overdue,
       delayMinutes,
       timeliness,
-      trigger: execution?.trigger ?? null,
-      firstAutomaticCompletedAt: execution?.firstAutomaticCompletedAt ?? null,
-      lastAutomaticCompletedAt: execution?.lastAutomaticCompletedAt ?? null,
+      trigger: effectiveTrigger,
+      firstAutomaticCompletedAt,
+      lastAutomaticCompletedAt,
       lastManualCompletedAt: execution?.lastManualCompletedAt ?? null,
     }];
   }));

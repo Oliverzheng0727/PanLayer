@@ -78,7 +78,12 @@ import {
 } from "../history/contributions";
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
-import { mergeCloseReviewWithExisting, type CloseReviewStage } from "./close-review-stages";
+import {
+  CLOSE_REVIEW_CORE_STAGES,
+  isCloseReviewCoreStage,
+  mergeCloseReviewWithExisting,
+  type CloseReviewStage,
+} from "./close-review-stages";
 import {
   buildJobExecutionMetadata,
   expectedAtForJob,
@@ -942,6 +947,7 @@ export async function runPanLayerJob(
     status: "partial" | "complete" | "failed",
     message: string,
     result: Record<string, unknown> = {},
+    countsAsCompletion = true,
   ) => {
     const finishedAt = new Date().toISOString();
     await recordJobCheckpoint(db, {
@@ -960,7 +966,11 @@ export async function runPanLayerJob(
         checkpointAttempt,
       ),
       message,
-      resultJson: JSON.stringify(checkpointResult(result, finishedAt, status === "complete")),
+      resultJson: JSON.stringify(checkpointResult(
+        result,
+        finishedAt,
+        status === "complete" && countsAsCompletion,
+      )),
     });
   };
   const finishCloseStage = async (
@@ -1695,16 +1705,23 @@ export async function runPanLayerJob(
         `收盘复盘 ${review.status}`,
         { status: review.status, breadthCaptured: review.breadthMeta?.captured ?? review.breadth.length },
       );
-      finalStatus = review.status === "complete" ? "complete" : "partial";
       const closeStageRows = await db.prepare(
         `SELECT stage, status FROM job_checkpoints
           WHERE trade_date = ? AND job_key = 'close-review'
             AND stage NOT IN ('main', 'assemble')`,
       ).bind(date).all<{ stage: string; status: string }>();
       const closeStages = closeStageRows.results ?? [];
-      const closeStageCompleted = closeStages.filter((item) => item.status === "complete").length;
+      const coreCloseStages = closeStages.filter((item) => isCloseReviewCoreStage(item.stage));
+      const closeStageCompleted = coreCloseStages.filter((item) => item.status === "complete").length;
+      const coreFailed = coreCloseStages.some((item) => item.status === "failed");
+      const coreComplete = CLOSE_REVIEW_CORE_STAGES.every((stage) =>
+        coreCloseStages.some((item) => item.stage === stage && item.status === "complete")
+      );
+      finalStatus = coreFailed ? "failed" : coreComplete ? "complete" : "partial";
+      const newHighStage = closeStages.find((item) => item.stage === "new-highs");
       finalMessage =
-        `收盘复盘 ${review.status}；阶段 ${closeStageCompleted}/${closeStages.length || 7}；` +
+        `收盘复盘核心 ${finalStatus}；阶段 ${closeStageCompleted}/${CLOSE_REVIEW_CORE_STAGES.length}；` +
+        `${newHighStage?.status === "complete" ? "新高已核验" : "新高后台初始化中"}；` +
         `盘中快照 ${review.breadthMeta?.captured ?? review.breadth.length}/6`;
     } else {
       const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
@@ -1725,7 +1742,7 @@ export async function runPanLayerJob(
       }
       if (!options.mode && shouldSkipMorningBrief(existing?.status, Boolean(options.force), existingSchemaVersion, existingSectionCount)) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='already complete; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
-        await finishCheckpoint("complete", "already complete; skipped");
+        await finishCheckpoint("complete", "already complete; skipped", {}, false);
         return { ok: true, status: "complete", message: `${label} already complete; skipped` };
       }
       const selectedKeys = options.sectionKeys
@@ -1734,7 +1751,7 @@ export async function runPanLayerJob(
           : BRIEF_SECTION_DEFINITIONS_V3.map((section) => section.key));
       if (selectedKeys.length === 0) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
-        await finishCheckpoint("complete", "no failed or missing modules; skipped");
+        await finishCheckpoint("complete", "no failed or missing modules; skipped", {}, false);
         return { ok: true, status: "complete", message: `${label} no failed or missing modules; skipped` };
       }
       const snapshotFetcher = createDeadlineAwareBufferedFetcher(fetcher, deadlineAt);

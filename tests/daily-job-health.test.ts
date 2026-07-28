@@ -66,4 +66,40 @@ describe("daily job health panel", () => {
     expect(html).not.toContain("· 延迟");
     expect(html).toContain("非交易日");
   });
+
+  it("shows six core close stages complete while new highs continue in background", () => {
+    const completeStage = { status: "complete", finishedAt: "2026-07-28T08:20:00Z", nextRetryAt: null, message: "" };
+    const html = renderToStaticMarkup(React.createElement(DailyJobHealthPanel, {
+      health: {
+        tradeDate: "2026-07-28",
+        generatedAt: "2026-07-28T10:00:00Z",
+        marketSession: true,
+        jobs: {
+          "close-review": {
+            status: "partial", expectedAt: "2026-07-28T16:10:00+08:00",
+            finishedAt: "2026-07-28T08:20:00Z", nextRetryAt: null,
+            message: "新高后台初始化中", attempt: 1, overdue: false,
+          },
+        },
+        stages: {
+          "close-review:quotes": completeStage,
+          "close-review:board-pools": completeStage,
+          "close-review:signals": completeStage,
+          "close-review:recognition": completeStage,
+          "close-review:aggregate": completeStage,
+          "close-review:indices": completeStage,
+          "close-review:new-highs": {
+            status: "partial", finishedAt: "2026-07-28T08:20:00Z",
+            nextRetryAt: "2026-07-28T09:20:00Z", message: "初始化中",
+          },
+        },
+      },
+      newHighProgress: { targetDate: "2026-07-28", completed: 702, target: 5320, failed: 67, remaining: 4618, coveragePct: 13.2, minimumTarget: 5000, universeComplete: true, ready: false, complete: false, updatedAt: null },
+    }));
+
+    expect(html).toContain(">完成<");
+    expect(html).toContain("核心阶段 6/6");
+    expect(html).toContain("新高由后台独立初始化");
+    expect(html).not.toContain("阶段 6/7");
+  });
 });

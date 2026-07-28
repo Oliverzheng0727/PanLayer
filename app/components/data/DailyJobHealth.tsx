@@ -1,6 +1,7 @@
 import type { DailyJobHealth } from "../../../lib/data/repository";
 import type { NewHighProgress } from "../../../lib/history/new-high-progress";
 import { breadthProgressDetail } from "../../../lib/jobs/sidebar-progress";
+import { isCloseReviewCoreStage } from "../../../lib/jobs/close-review-stages";
 import { clockTime } from "./LiveDataStatus";
 
 const statusLabel = {
@@ -24,10 +25,15 @@ export function DailyJobHealthPanel({
     job.status === "complete" || job.status === "partial"
   )).length;
   const close = health.jobs["close-review"];
-  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) =>
-    key.startsWith("close-review:") && key !== "close-review:assemble"
-  );
+  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) => {
+    const stage = key.replace("close-review:", "");
+    return key.startsWith("close-review:") && isCloseReviewCoreStage(stage);
+  });
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
+  const newHighCloseStage = health.stages?.["close-review:new-highs"];
+  const closeBackgroundOnly = closeStages.length > 0
+    && closeStages.every(([, stage]) => stage.status === "complete")
+    && Boolean(newHighCloseStage && newHighCloseStage.status !== "complete");
   const brief = health.jobs["morning-brief"];
   const automaticBriefTime = brief?.lastAutomaticCompletedAt ?? (
     brief?.trigger === "cron" || brief?.trigger === "reconcile" ? brief.finishedAt : null
@@ -58,11 +64,15 @@ export function DailyJobHealthPanel({
     },
     {
       label: "收盘复盘",
-      value: marketSession ? close ? statusLabel[close.status] : "等待" : "不适用",
+      value: marketSession
+        ? closeBackgroundOnly ? "完成" : close ? statusLabel[close.status] : "等待"
+        : "不适用",
       detail: !marketSession
         ? "中国市场休市，等待下一个交易日"
         : closeStages.length > 0
-        ? `阶段 ${closeStagesComplete}/${closeStages.length} · ${close?.message || "自动补跑中"}`
+        ? `核心阶段 ${closeStagesComplete}/${closeStages.length} · ${
+          closeBackgroundOnly ? "新高由后台独立初始化" : close?.message || "自动补跑中"
+        }`
         : close?.message || "等待 16:10",
     },
     {

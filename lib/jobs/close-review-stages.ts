@@ -1,4 +1,5 @@
 import type { DailyComparison, DailyReview } from "../domain/types";
+import { isVerifiedSectorMetric } from "../domain/market-structure";
 
 export type CloseReviewStage =
   | "quotes"
@@ -10,6 +11,21 @@ export type CloseReviewStage =
   | "new-highs"
   | "assemble";
 
+export const CLOSE_REVIEW_CORE_STAGES = [
+  "quotes",
+  "board-pools",
+  "signals",
+  "recognition",
+  "aggregate",
+  "indices",
+] as const satisfies readonly CloseReviewStage[];
+
+const CLOSE_REVIEW_CORE_STAGE_SET = new Set<string>(CLOSE_REVIEW_CORE_STAGES);
+
+export function isCloseReviewCoreStage(stage: string): boolean {
+  return CLOSE_REVIEW_CORE_STAGE_SET.has(stage);
+}
+
 function preferNumber(current: number | null | undefined, previous: number | null | undefined) {
   return current ?? previous ?? null;
 }
@@ -18,8 +34,16 @@ function mergeComparison(
   previous: DailyComparison | undefined,
   current: DailyComparison | undefined,
 ): DailyComparison | undefined {
-  if (!previous) return current;
-  if (!current) return previous;
+  if (!previous) {
+    return current
+      ? { ...current, mainSectors: current.mainSectors.filter(isVerifiedSectorMetric) }
+      : undefined;
+  }
+  if (!current) {
+    return { ...previous, mainSectors: previous.mainSectors.filter(isVerifiedSectorMetric) };
+  }
+  const currentMainSectors = current.mainSectors.filter(isVerifiedSectorMetric);
+  const previousMainSectors = previous.mainSectors.filter(isVerifiedSectorMetric);
   return {
     ...current,
     brokenCount: preferNumber(current.brokenCount, previous.brokenCount),
@@ -34,7 +58,7 @@ function mergeComparison(
     brokenBoard: current.brokenBoard.sampleSize > 0 || current.brokenBoard.count !== null
       ? current.brokenBoard
       : previous.brokenBoard,
-    mainSectors: current.mainSectors.length > 0 ? current.mainSectors : previous.mainSectors,
+    mainSectors: currentMainSectors.length > 0 ? currentMainSectors : previousMainSectors,
     cycleLeader: current.cycleLeader ?? previous.cycleLeader,
     recognition: current.recognition.length > 0 ? current.recognition : previous.recognition,
     indices: current.indices.length > 0 ? current.indices : previous.indices,

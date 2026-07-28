@@ -1,6 +1,7 @@
 import type { DailyJobHealth } from "../data/repository";
 import type { DailyReview } from "../domain/types";
 import type { NewHighProgress } from "../history/new-high-progress";
+import { isCloseReviewCoreStage } from "./close-review-stages";
 
 export type SidebarProgressStatus =
   | "pending"
@@ -124,17 +125,18 @@ export function buildSidebarProgress(
     item.status === "complete" || item.status === "partial"
   )).length;
   const close = health.jobs["close-review"];
-  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) =>
-    key.startsWith("close-review:") && key !== "close-review:assemble"
-  );
+  const closeStages = Object.entries(health.stages ?? {}).filter(([key]) => {
+    const stage = key.replace("close-review:", "");
+    return key.startsWith("close-review:") && isCloseReviewCoreStage(stage);
+  });
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
-  const coreCloseStages = closeStages.filter(([key]) => !key.endsWith(":new-highs"));
-  const closePartialIsBackgroundOnly = close?.status === "partial"
-    && coreCloseStages.length > 0
-    && coreCloseStages.every(([, stage]) => stage.status === "complete")
-    && closeStages.some(([key, stage]) => key.endsWith(":new-highs") && stage.status !== "complete");
+  const newHighCloseStage = health.stages?.["close-review:new-highs"];
+  const closePartialIsBackgroundOnly = closeStages.length > 0
+    && closeStages.every(([, stage]) => stage.status === "complete")
+    && Boolean(newHighCloseStage && newHighCloseStage.status !== "complete");
   const effectiveCompletedDue = completedDue + (
     closePartialIsBackgroundOnly
+    && close?.status !== "complete"
     && dueJobs.some(([key]) => key === "close-review")
       ? 1
       : 0
@@ -165,7 +167,9 @@ export function buildSidebarProgress(
           ? "complete"
           : "pending";
   const breadthStatus = aggregateBreadthStatus(breadthJobs, now, marketSession);
-  const closeStatus = marketSession ? normalizeJobStatus(close) : "closed";
+  const closeStatus = marketSession
+    ? closePartialIsBackgroundOnly ? "complete" : normalizeJobStatus(close)
+    : "closed";
   const briefStatus = normalizeJobStatus(brief);
   const etfStatus = marketSession ? normalizeJobStatus(etf) : "closed";
   const newHighStatus: SidebarProgressStatus = newHighProgress.complete
