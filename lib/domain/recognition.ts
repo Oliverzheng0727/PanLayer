@@ -129,7 +129,11 @@ export function buildRecognitionRanking({
       filters.excludedAmount += 1;
       continue;
     }
-    if (!Number.isFinite(quote.turnoverRate) || quote.turnoverRate <= MINIMUM_TURNOVER) {
+    if (
+      quote.turnoverRate === null
+      || !Number.isFinite(quote.turnoverRate)
+      || quote.turnoverRate <= MINIMUM_TURNOVER
+    ) {
       filters.excludedTurnover += 1;
       continue;
     }

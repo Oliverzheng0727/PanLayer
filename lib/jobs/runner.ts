@@ -1129,15 +1129,11 @@ export async function runPanLayerJob(
               const cached = adjustedBarsCache.get(symbol);
               if (cached) return cached;
               const request = (async () => {
-              const [fuyaoBars, eastmoneyBars] = await Promise.all([
-                fuyao.fetchAShareAdjustedBars(symbol, now).catch(() => []),
-                provider.getAdjustedBars(symbol).catch(() => []),
-              ]);
-              if (fuyaoBars.length === 0) return eastmoneyBars;
-              if (eastmoneyBars.length === 0) return fuyaoBars;
-              const merged = new Map(eastmoneyBars.map((bar) => [bar.date, bar]));
-              fuyaoBars.forEach((bar) => merged.set(bar.date, bar));
-              return [...merged.values()].toSorted((left, right) => left.date.localeCompare(right.date));
+                const fuyaoBars = await fuyao
+                  .fetchAShareAdjustedBars(symbol, now, { fullHistory: true })
+                  .catch(() => []);
+                if (fuyaoBars.length > 0) return fuyaoBars;
+                return provider.getAdjustedBars(symbol).catch(() => []);
               })();
               adjustedBarsCache.set(symbol, request);
               return request;
@@ -1489,6 +1485,7 @@ export async function runPanLayerJob(
               || quote.isST
               || quote.isNoLimitDay
               || quote.amount < 300_000_000
+              || quote.turnoverRate === null
               || quote.turnoverRate <= 8
               || !popularitySymbols.has(quote.symbol)
             ) return [];

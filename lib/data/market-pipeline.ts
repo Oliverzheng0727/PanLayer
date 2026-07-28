@@ -93,7 +93,9 @@ export async function runDomesticPipeline({
                 sector: metadata.sector || quote.sector,
                 firstLimitTime: metadata.firstLimitTime,
                 limitStreak: metadata.limitStreak,
-                turnoverRate: metadata.turnoverRate > 0 ? metadata.turnoverRate : quote.turnoverRate,
+                turnoverRate: metadata.turnoverRate !== null && metadata.turnoverRate > 0
+                  ? metadata.turnoverRate
+                  : quote.turnoverRate,
                 listingDate: metadata.listingDate ?? quote.listingDate ?? null,
               }
             : quote;

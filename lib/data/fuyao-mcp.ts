@@ -121,6 +121,7 @@ interface FuyaoPriceRow {
   turnover?: number;
   volume?: number;
   price_change_ratio_pct?: number;
+  turnover_ratio_pct?: number;
 }
 
 type FuyaoIndexRow = FuyaoPriceRow;
@@ -260,7 +261,9 @@ const FUYAO_REST_PATHS: Readonly<Record<string, string>> = {
   get_a_share_special_data_limit_up_ladder: "/api/a-share/special-data/limit-up-ladder",
   get_a_share_special_data_skyrocket_list: "/api/a-share/special-data/skyrocket-list",
   get_a_share_special_data_hot_stock_list: "/api/a-share/special-data/hot-stock-list",
+  get_a_share_special_data_hot_stock_list_history: "/api/a-share/special-data/hot-stock-list-history",
   get_a_share_special_data_dragon_tiger_list: "/api/a-share/special-data/dragon-tiger-list",
+  get_a_share_special_data_anomaly_analysis_list: "/api/a-share/special-data/anomaly-analysis-list",
   get_a_share_special_data_anomaly_analysis_stock: "/api/a-share/special-data/anomaly-analysis-stock",
   get_a_share_special_data_anomal_17ac564c9ba3: "/api/a-share/special-data/anomaly-analysis-stock",
   get_a_share_index_catalog_ths_index_list: "/api/a-share-index/catalog/ths-index-list",
@@ -349,7 +352,7 @@ function quoteFromPriceRow(row: FuyaoPriceRow, name: string): Quote | null {
     low: finiteNumber(row.low_price, price),
     pctChange: finiteNumber(row.price_change_ratio_pct),
     amount: finiteNumber(row.turnover),
-    turnoverRate: 0,
+    turnoverRate: null,
     limitUpPrice: roundPrice(previousClose * (1 + meta.limitRate)),
     limitDownPrice: roundPrice(previousClose * (1 - meta.limitRate)),
     sector: "未分类",
@@ -643,6 +646,21 @@ export class FuyaoMcpClient {
     return data.item ?? [];
   }
 
+  private fetchHotStockEnvelope(date: string, now = new Date()): Promise<FuyaoToolEnvelope<FuyaoHotStockData>> {
+    if (date === beijingDate(now)) {
+      return this.callEnvelope<FuyaoHotStockData>(
+        "a-share",
+        "get_a_share_special_data_hot_stock_list",
+        { period: "day" },
+      );
+    }
+    return this.callEnvelope<FuyaoHotStockData>(
+      "a-share",
+      "get_a_share_special_data_hot_stock_list_history",
+      { date },
+    );
+  }
+
   async fetchAShareQuotes(
     symbols: string[],
     options: { includeST?: boolean } = {},
@@ -713,33 +731,52 @@ export class FuyaoMcpClient {
   async fetchAShareAdjustedBars(
     symbol: string,
     now = new Date(),
-    options: { lookbackDays?: number } = {},
+    options: { lookbackDays?: number; fullHistory?: boolean } = {},
   ): Promise<AdjustedBar[]> {
     const end = now.getTime();
     const lookbackDays = Math.max(45, options.lookbackDays ?? 10 * 365);
-    const start = end - lookbackDays * 24 * 60 * 60 * 1_000;
-    const data = await this.call<FuyaoHistoricalData>(
-      "a-share",
-      "get_a_share_prices_historical",
-      {
-        thscode: securityMeta(symbol).symbol,
-        interval: "1d",
-        adjust: "forward",
-        start,
-        end,
-        offset: 0,
-      },
-    );
-    const bars = (data.item ?? []).flatMap((row) => {
+    const start = options.fullHistory
+      ? Date.parse("1990-01-01T00:00:00+08:00")
+      : end - lookbackDays * 24 * 60 * 60 * 1_000;
+    const maximumWindowMs = 10 * 365 * 24 * 60 * 60 * 1_000;
+    const windows: Array<{ start: number; end: number }> = [];
+    for (let cursor = start; cursor < end; cursor += maximumWindowMs + 1) {
+      windows.push({ start: cursor, end: Math.min(end, cursor + maximumWindowMs) });
+    }
+    const rows: FuyaoHistoricalRow[] = [];
+    for (const window of windows) {
+      try {
+        const data = await this.call<FuyaoHistoricalData>(
+          "a-share",
+          "get_a_share_prices_historical",
+          {
+            thscode: securityMeta(symbol).symbol,
+            interval: "1d",
+            adjust: "forward",
+            start: window.start,
+            end: window.end,
+            offset: 0,
+          },
+        );
+        rows.push(...(data.item ?? []));
+      } catch (error) {
+        if (options.fullHistory && error instanceof FuyaoBusinessError && error.code === 3002) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    const bars = [...new Map(rows.flatMap((row) => {
       const close = finiteNumber(row.close_price);
       if (!row.date_ms || close <= 0) return [];
-      return [{
-        date: dateFromMilliseconds(row.date_ms),
+      const date = dateFromMilliseconds(row.date_ms);
+      return [[date, {
+        date,
         close,
         volume: row.volume === undefined ? undefined : finiteNumber(row.volume),
         amount: row.turnover === undefined ? undefined : finiteNumber(row.turnover),
-      }];
-    }).toSorted((left, right) => left.date.localeCompare(right.date));
+      }] as const];
+    })).values()].toSorted((left, right) => left.date.localeCompare(right.date));
     return bars.map((bar, index) => ({
       ...bar,
       pctChange: index > 0 && bars[index - 1].close > 0
@@ -795,11 +832,16 @@ export class FuyaoMcpClient {
       previousLimitStreak: Math.max(0, finiteNumber(item.continue_day_cnt, 1) - 1),
       firstLimitTime: item.limit_up_time?.trim() || null,
     }));
-    const total = finiteNumber(first.data.pagination?.total, valid.length);
-    const status = total > 0 && valid.length === total ? "complete" : valid.length > 0 ? "partial" : "failed";
+    const sourceTotal = finiteNumber(first.data.pagination?.total, raw.length);
+    const sourceCoveragePct = sourceTotal > 0
+      ? Number((raw.length / sourceTotal * 100).toFixed(2))
+      : null;
+    const status = sourceTotal === 0 || raw.length >= sourceTotal
+      ? "complete"
+      : raw.length > 0 ? "partial" : "failed";
     return {
       items,
-      total,
+      total: valid.length,
       requestIds: envelopes.flatMap((item) => item.request_id ? [item.request_id] : []),
       evidence: signalEvidence({
         requestId: first.request_id,
@@ -807,9 +849,11 @@ export class FuyaoMcpClient {
         receivedAt,
         rawCount: raw.length,
         validCount: valid.length,
-        coveragePct: total > 0 ? Number((valid.length / total * 100).toFixed(2)) : null,
+        coveragePct: sourceCoveragePct,
         status,
-        message: status === "complete" ? "扶摇涨停池完整" : `扶摇涨停池 ${valid.length}/${total}`,
+        message: status === "complete"
+          ? `扶摇涨停池完整；源记录 ${raw.length}，剔除ST后 ${valid.length}`
+          : `扶摇涨停池源记录 ${raw.length}/${sourceTotal}，剔除ST后 ${valid.length}`,
       }),
     };
   }
@@ -870,6 +914,62 @@ export class FuyaoMcpClient {
           validCount: 0,
           status: "partial",
           message: "扶摇板块目录可用，但涨停原因未匹配到标准行业或概念指数",
+        }),
+      };
+    }
+    if (date !== beijingDate(now)) {
+      const target = Date.parse(`${date}T00:00:00+08:00`);
+      const start = target - 7 * 24 * 60 * 60 * 1_000;
+      const historicalResults = await Promise.allSettled(matches.map((item) =>
+        this.callEnvelope<FuyaoHistoricalData>(
+          "a-share-index",
+          "get_a_share_index_prices_historical",
+          { thscode: item.index.thscode, interval: "1d", start, end: target },
+        ),
+      ));
+      const sectors = matches.flatMap((item, index): SectorMetric[] => {
+        const result = historicalResults[index];
+        if (result.status !== "fulfilled") return [];
+        const rows = (result.value.data.item ?? [])
+          .toSorted((left, right) => left.date_ms - right.date_ms);
+        const row = rows.find((candidate) => dateFromMilliseconds(candidate.date_ms) === date);
+        if (!row) return [];
+        const previous = rows.filter((candidate) => candidate.date_ms < row.date_ms).at(-1);
+        const close = finiteNumber(row.close_price);
+        const previousClose = finiteNumber(previous?.close_price);
+        const averagePct = close > 0 && previousClose > 0
+          ? Number(((close / previousClose - 1) * 100).toFixed(6))
+          : 0;
+        return [{
+          name: item.index.name || item.reason,
+          limitUpCount: item.stocks.length,
+          averagePct,
+          amountGrowthPct: null,
+          maxStreak: Math.max(0, ...item.stocks.map((stock) => stock.limitStreak)),
+        }];
+      }).toSorted((left, right) =>
+        right.limitUpCount - left.limitUpCount
+        || right.averagePct - left.averagePct
+        || right.maxStreak - left.maxStreak
+        || left.name.localeCompare(right.name, "zh-CN"));
+      const requestIds = [
+        industry.request_id,
+        concept.request_id,
+        ...historicalResults.flatMap((result) =>
+          result.status === "fulfilled" && result.value.request_id ? [result.value.request_id] : []),
+      ].filter((item): item is string => Boolean(item));
+      return {
+        sectors,
+        requestIds,
+        evidence: signalEvidence({
+          requestId: requestIds[0],
+          marketTime: `${date}T15:00:00+08:00`,
+          receivedAt: now.toISOString(),
+          rawCount: matches.length,
+          validCount: sectors.length,
+          coveragePct: Number((sectors.length / Math.max(1, matches.length) * 100).toFixed(2)),
+          status: sectors.length > 0 ? "partial" : "failed",
+          message: "扶摇历史板块指数已按当日涨停原因匹配；未使用当前成分股回推历史",
         }),
       };
     }
@@ -948,7 +1048,7 @@ export class FuyaoMcpClient {
         ? Promise.resolve(limitUpSnapshot)
         : this.fetchLimitUpPoolSnapshot(date, now),
       this.callEnvelope<FuyaoLadderData>("a-share", "get_a_share_special_data_limit_up_ladder", {}),
-      this.callEnvelope<FuyaoHotStockData>("a-share", "get_a_share_special_data_hot_stock_list", { period: "day" }),
+      this.fetchHotStockEnvelope(date, now),
       this.callEnvelope<FuyaoHotStockData>("a-share", "get_a_share_special_data_skyrocket_list", { period: "day" }),
       this.callEnvelope<FuyaoDragonTigerData>("a-share", "get_a_share_special_data_dragon_tiger_list", {
         board_type: "all",
@@ -980,8 +1080,8 @@ export class FuyaoMcpClient {
         receivedAt,
         rawCount: count,
         validCount: count,
-        status: "complete",
-        message: "扶摇近30交易日连板矩阵已匹配当前交易日",
+        status: "partial",
+        message: "扶摇近30交易日连板矩阵仅作趋势证据；官方每个板位最多返回4只，完整名单以涨停池为准",
       });
     } else {
       const message = ladderResult.status === "rejected" && ladderResult.reason instanceof Error
@@ -1012,7 +1112,9 @@ export class FuyaoMcpClient {
       rawCount: hotResult.status === "fulfilled" ? hotResult.value.data.item?.length ?? 0 : 0,
       validCount: hotStocks.length,
       status: hotResult.status === "fulfilled" ? "complete" : "failed",
-      message: hotResult.status === "fulfilled" ? "扶摇24小时热股榜" : "扶摇热股榜失败",
+      message: hotResult.status === "fulfilled"
+        ? date === beijingDate(now) ? "扶摇24小时热股榜" : `扶摇${date}历史热股榜`
+        : "扶摇热股榜失败",
     });
 
     const skyrocket = skyrocketResult.status === "fulfilled"
@@ -1091,13 +1193,44 @@ export class FuyaoMcpClient {
         status: "failed",
         message,
       });
-    } else if (anomalySymbols.length > 0) {
+    } else if (date !== beijingDate(now)) {
+      const message = "扶摇异动原因仅提供当日数据，未使用当前异动回填历史日期";
+      evidence.anomalies = signalEvidence({
+        marketTime,
+        receivedAt,
+        rawCount: 0,
+        validCount: 0,
+        status: "partial",
+        message,
+      });
+    } else {
       try {
-        const anomaly = await this.callEnvelope<FuyaoAnomalyData>(
-          "a-share",
-          "get_a_share_special_data_anomal_17ac564c9ba3",
-          { thscodes: anomalySymbols.join(",") },
-        );
+        let usedFullList = false;
+        let anomaly: FuyaoToolEnvelope<FuyaoAnomalyData>;
+        if (this.transport !== "mcp-only") {
+          try {
+            anomaly = await this.callRestEnvelope<FuyaoAnomalyData>(
+              "get_a_share_special_data_anomaly_analysis_list",
+              {},
+            );
+            usedFullList = true;
+          } catch (listError) {
+            if (anomalySymbols.length === 0) throw listError;
+            anomaly = await this.callEnvelope<FuyaoAnomalyData>(
+              "a-share",
+              "get_a_share_special_data_anomal_17ac564c9ba3",
+              { thscodes: anomalySymbols.join(",") },
+            );
+          }
+        } else if (anomalySymbols.length > 0) {
+          anomaly = await this.callEnvelope<FuyaoAnomalyData>(
+            "a-share",
+            "get_a_share_special_data_anomal_17ac564c9ba3",
+            { thscodes: anomalySymbols.join(",") },
+          );
+        } else {
+          throw new Error("无可查询异动标的，且 MCP 模式不提供全量异动列表");
+        }
         anomalies = (anomaly.data.item ?? []).map((item) => ({
           symbol: securityMeta(item.thscode).symbol,
           name: item.stock_name?.trim() || securityMeta(item.thscode).code,
@@ -1111,19 +1244,21 @@ export class FuyaoMcpClient {
           requestId: anomaly.request_id,
           marketTime,
           receivedAt,
-          rawCount: anomalySymbols.length,
+          rawCount: usedFullList ? anomaly.data.item?.length ?? 0 : anomalySymbols.length,
           validCount: anomalies.length,
-          coveragePct: Number((anomalies.length / Math.max(1, anomalySymbols.length) * 100).toFixed(2)),
-          status: anomalies.length > 0 ? "complete" : "partial",
-          message: "扶摇异动原因仅作为客观标签",
+          coveragePct: usedFullList
+            ? 100
+            : Number((anomalies.length / Math.max(1, anomalySymbols.length) * 100).toFixed(2)),
+          status: usedFullList ? "complete" : anomalies.length > 0 ? "partial" : "failed",
+          message: usedFullList
+            ? "扶摇当日全量异动列表，仅作为客观标签"
+            : "扶摇候选股票异动原因（降级），仅作为客观标签",
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`异动原因：${message}`);
         evidence.anomalies = signalEvidence({ marketTime, receivedAt, rawCount: anomalySymbols.length, validCount: 0, status: "failed", message });
       }
-    } else {
-      evidence.anomalies = signalEvidence({ marketTime, receivedAt, rawCount: 0, validCount: 0, status: "partial", message: "无可查询异动标的" });
     }
 
     let sectors: SectorMetric[] = [];
@@ -1151,7 +1286,8 @@ export class FuyaoMcpClient {
       evidence.sectors = signalEvidence({ marketTime, receivedAt, rawCount: 0, validCount: 0, status: "failed", message });
     }
 
-    const status = datasetSuccess === datasetTotal
+    const hasPartialEvidence = Object.values(evidence).some((item) => item.status === "partial");
+    const status = datasetSuccess === datasetTotal && !hasPartialEvidence
       ? "complete"
       : datasetSuccess === 0 ? "failed" : "partial";
     return {
@@ -1183,6 +1319,9 @@ export class FuyaoMcpClient {
         { thscodes: INDEX_DEFINITIONS.map((item) => item.symbol).join(",") },
       );
       const bySymbol = new Map((data.item ?? []).map((item) => [securityMeta(item.thscode).symbol, item]));
+      const sourceMarketTime = data.timestamp
+        ? new Date(data.timestamp).toISOString()
+        : `${date}T15:00:00+08:00`;
       return INDEX_DEFINITIONS.map((definition) => {
         const row = bySymbol.get(definition.symbol);
         return {
@@ -1191,7 +1330,7 @@ export class FuyaoMcpClient {
           price: row ? finiteNumber(row.last_price) : null,
           pctChange: row ? finiteNumber(row.price_change_ratio_pct) : null,
           amount: row ? finiteNumber(row.turnover) : null,
-          marketTime: `${date}T15:00:00+08:00`,
+          marketTime: sourceMarketTime,
           receivedAt,
           source: "扶摇 Fuyao",
           status: row ? "complete" as const : "failed" as const,
@@ -1255,19 +1394,10 @@ export class FuyaoMcpClient {
     const errors: string[] = [];
     let datasetSuccess = 0;
     const datasetTotal = 5;
-    const dateMs = Date.parse(`${referenceDate}T00:00:00+08:00`);
-
-    const [indicesResult, poolResult, ladderResult, hotResult, dragonResult] = await Promise.allSettled([
+    const [indicesResult, poolResult, hotResult, dragonResult] = await Promise.allSettled([
       this.fetchIndexSnapshots(referenceDate, now),
-      this.callEnvelope<FuyaoLimitUpPoolData>("a-share", "get_a_share_special_data_limit_up_pool", {
-        date_ms: dateMs,
-        page: 1,
-        size: 200,
-        sort_field: "continue_day_cnt",
-        sort_dir: "desc",
-      }),
-      this.callEnvelope<FuyaoLadderData>("a-share", "get_a_share_special_data_limit_up_ladder", {}),
-      this.callEnvelope<FuyaoHotStockData>("a-share", "get_a_share_special_data_hot_stock_list", { period: "day" }),
+      this.fetchLimitUpPoolSnapshot(referenceDate, now),
+      this.fetchHotStockEnvelope(referenceDate, now),
       this.callEnvelope<FuyaoDragonTigerData>("a-share", "get_a_share_special_data_dragon_tiger_list", {
         board_type: "all",
         date: referenceDate,
@@ -1283,54 +1413,46 @@ export class FuyaoMcpClient {
       : `指数：${indices.length}/${INDEX_DEFINITIONS.length}`);
 
     let limitUpPool: FuyaoMorningBriefEvidence["limitUpPool"] = null;
+    let ladder: FuyaoMorningBriefEvidence["ladder"] = null;
     if (poolResult.status === "fulfilled") {
-      datasetSuccess += 1;
-      if (poolResult.value.request_id) requestIds.push(poolResult.value.request_id);
-      const rows = (poolResult.value.data.item ?? []).filter((item) => !item.is_st);
+      datasetSuccess += 2;
+      requestIds.push(...poolResult.value.requestIds);
+      const rows = poolResult.value.items;
       limitUpPool = {
-        total: finiteNumber(poolResult.value.data.pagination?.total, rows.length),
+        total: rows.length,
         leaders: rows.slice(0, 20).map((item) => ({
-          symbol: securityMeta(item.thscode).symbol,
+          symbol: securityMeta(item.code).symbol,
           name: item.name,
-          streak: Math.max(1, finiteNumber(item.continue_day_cnt, 1)),
-          firstLimitTime: item.limit_up_time ?? null,
-          reason: item.limit_up_reason ?? null,
-          sealMoney: item.seal_money === undefined ? null : finiteNumber(item.seal_money),
+          streak: Math.max(1, item.limitStreak),
+          firstLimitTime: item.firstLimitTime,
+          reason: item.industry === "未分类" ? null : item.industry,
+          sealMoney: null,
         })),
+      };
+      const counts = {
+        two: rows.filter((item) => item.limitStreak === 2).length,
+        three: rows.filter((item) => item.limitStreak === 3).length,
+        four: rows.filter((item) => item.limitStreak === 4).length,
+        five: rows.filter((item) => item.limitStreak === 5).length,
+        six: rows.filter((item) => item.limitStreak === 6).length,
+        sevenPlus: rows.filter((item) => item.limitStreak >= 7).length,
+      };
+      const leaders = rows
+        .filter((item) => item.limitStreak >= 2)
+        .map((item) => ({
+          symbol: securityMeta(item.code).symbol,
+          name: item.name,
+          height: item.limitStreak,
+        }))
+        .toSorted((left, right) => right.height - left.height || left.symbol.localeCompare(right.symbol));
+      ladder = {
+        highest: leaders[0]?.height ?? 0,
+        counts,
+        leaders: leaders.slice(0, 20),
       };
     } else {
       errors.push(`涨停池：${poolResult.reason instanceof Error ? poolResult.reason.message : String(poolResult.reason)}`);
-    }
-
-    let ladder: FuyaoMorningBriefEvidence["ladder"] = null;
-    if (ladderResult.status === "fulfilled") {
-      if (ladderResult.value.request_id) requestIds.push(ladderResult.value.request_id);
-      const target = ladderResult.value.data.item?.find((item) => item.date === referenceDate);
-      if (target) {
-        datasetSuccess += 1;
-        const groups: Array<[keyof NonNullable<FuyaoMorningBriefEvidence["ladder"]>["counts"], string, number]> = [
-          ["two", "two_board", 2],
-          ["three", "three_board", 3],
-          ["four", "four_board", 4],
-          ["five", "five_board", 5],
-          ["six", "six_board", 6],
-          ["sevenPlus", "seven_over", 7],
-        ];
-        const leaders = groups.flatMap(([, group, minimum]) => (target.boards?.[group] ?? []).map((item) => ({
-          symbol: securityMeta(item.thscode).symbol,
-          name: item.name,
-          height: Math.max(minimum, finiteNumber(item.board_num, minimum)),
-        }))).toSorted((left, right) => right.height - left.height || left.symbol.localeCompare(right.symbol));
-        ladder = {
-          highest: leaders[0]?.height ?? 0,
-          counts: Object.fromEntries(groups.map(([key, group]) => [key, target.boards?.[group]?.length ?? 0])) as NonNullable<FuyaoMorningBriefEvidence["ladder"]>["counts"],
-          leaders: leaders.slice(0, 20),
-        };
-      } else {
-        errors.push(`连板梯队：${referenceDate} 无对应记录`);
-      }
-    } else {
-      errors.push(`连板梯队：${ladderResult.reason instanceof Error ? ladderResult.reason.message : String(ladderResult.reason)}`);
+      errors.push("连板梯队：完整梯队依赖当日涨停池，当前不可用");
     }
 
     const hotStocks = hotResult.status === "fulfilled"
@@ -1478,7 +1600,9 @@ export class FuyaoMcpClient {
       amount: finiteNumber(row.turnover),
       averageAmount20: null,
       scale: null,
-      turnoverRate: null,
+      turnoverRate: row.turnover_ratio_pct === undefined
+        ? null
+        : finiteNumber(row.turnover_ratio_pct),
       status: "active",
       updatedAt: new Date(data.timestamp ?? Date.now()).toISOString(),
     };

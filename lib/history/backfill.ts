@@ -93,7 +93,7 @@ function poolItemToQuote(item: HistoricalPoolItem): Quote {
     low: previousClose,
     pctChange: item.pctChange ?? 0,
     amount: item.amount ?? 0,
-    turnoverRate: 0,
+    turnoverRate: null,
     limitUpPrice: price,
     limitDownPrice: previousClose * (1 - meta.limitRate),
     sector: item.industry || "未分类",

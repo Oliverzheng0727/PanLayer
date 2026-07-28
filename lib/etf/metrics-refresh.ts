@@ -204,6 +204,7 @@ export async function runEtfMetricsRefreshBatch({
               price: quote.price,
               pctChange: quote.pctChange,
               amount: quote.amount,
+              turnoverRate: quote.turnoverRate,
               updatedAt: quote.updatedAt,
             }
           : item;

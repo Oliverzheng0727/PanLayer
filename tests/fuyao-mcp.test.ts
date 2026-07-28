@@ -148,6 +148,88 @@ describe("Fuyao REST adapter", () => {
     await expect(client.fetchAShareQuotes([], { includeST: true })).resolves.toHaveLength(205);
     expect(snapshotSizes.toSorted((left, right) => right - left)).toEqual([100, 100, 5]);
   });
+
+  it("splits full-history adjusted bars into official ten-year windows", async () => {
+    const windows: Array<{ start: number; end: number }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      windows.push({
+        start: Number(url.searchParams.get("start")),
+        end: Number(url.searchParams.get("end")),
+      });
+      return restResult({
+        item: [{
+          date_ms: Number(url.searchParams.get("end")),
+          close_price: windows.length,
+          volume: 100,
+        }],
+      });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    const bars = await client.fetchAShareAdjustedBars(
+      "600000.SH",
+      new Date("2026-07-28T00:00:00Z"),
+      { fullHistory: true },
+    );
+
+    expect(windows.length).toBeGreaterThan(1);
+    expect(windows.every((window) => window.end - window.start <= 10 * 365 * 86_400_000)).toBe(true);
+    expect(bars.length).toBe(windows.length);
+  });
+
+  it("uses the REST-only full anomaly list before candidate fallback", async () => {
+    const requestedPaths: string[] = [];
+    const date = "2026-07-24";
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      requestedPaths.push(url.pathname);
+      if (url.pathname.endsWith("/limit-up-pool")) {
+        return restResult({ pagination: { total: 0, pages: 1 }, item: [] });
+      }
+      if (url.pathname.endsWith("/limit-up-ladder")) {
+        return restResult({ item: [{ date, boards: {} }] });
+      }
+      if (url.pathname.endsWith("/hot-stock-list") || url.pathname.endsWith("/skyrocket-list")) {
+        return restResult({ item: [] });
+      }
+      if (url.pathname.endsWith("/dragon-tiger-list")) {
+        return restResult({ stock_items: [] });
+      }
+      if (url.pathname.endsWith("/anomaly-analysis-list")) {
+        return restResult({
+          item: [{
+            thscode: "600001.SH",
+            stock_name: "测试股份",
+            tag_name: "快速拉升",
+            analysis_content: "公开异动原因",
+            keyword_list: ["机器人"],
+          }],
+        });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    const signals = await client.fetchStructuredMarketSignals(
+      date,
+      new Date("2026-07-24T08:00:00Z"),
+      undefined,
+      { disabledDatasets: new Set(["sectors"]) },
+    );
+
+    expect(requestedPaths).toContain("/api/a-share/special-data/anomaly-analysis-list");
+    expect(requestedPaths).not.toContain("/api/a-share/special-data/anomaly-analysis-stock");
+    expect(signals.anomalies[0]).toMatchObject({
+      symbol: "600001.SH",
+      title: "快速拉升",
+      keywords: ["机器人"],
+    });
+    expect(signals.evidence.anomalies).toMatchObject({
+      status: "complete",
+      coveragePct: 100,
+    });
+  });
 });
 
 describe("Fuyao MCP adapter", () => {
@@ -196,6 +278,7 @@ describe("Fuyao MCP adapter", () => {
       price: 10,
       previousClose: 9,
       amount: 1_000_000,
+      turnoverRate: null,
       sector: "未分类",
     });
     expect(fetcher.mock.calls.some((call) => String(call[1]?.body).includes("secret"))).toBe(false);
@@ -282,6 +365,7 @@ describe("Fuyao MCP adapter", () => {
             last_price: 1.234,
             price_change_ratio_pct: 1.25,
             turnover: 88_000_000,
+            turnover_ratio_pct: 6.75,
           }],
         });
       }
@@ -302,6 +386,7 @@ describe("Fuyao MCP adapter", () => {
       price: 1.234,
       pctChange: 1.25,
       amount: 88_000_000,
+      turnoverRate: 6.75,
     })]);
   });
 
@@ -450,7 +535,7 @@ describe("Fuyao MCP adapter", () => {
           }],
         });
       }
-      if (tool === "get_a_share_special_data_hot_stock_list") {
+      if (tool === "get_a_share_special_data_hot_stock_list_history") {
         return mcpResult({
           item: [{ thscode: "600001.SH", name: "测试股份", rank: 1, rank_change: 2, heat: "1234" }],
         });
@@ -544,7 +629,7 @@ describe("Fuyao MCP adapter", () => {
     expect(signals).toMatchObject({
       provider: "扶摇 Fuyao",
       referenceDate: date,
-      status: "complete",
+      status: "partial",
       datasetSuccess: 7,
       datasetTotal: 7,
     });

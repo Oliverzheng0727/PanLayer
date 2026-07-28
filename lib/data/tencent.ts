@@ -304,7 +304,7 @@ export async function refreshEtfCatalogFromTencent(
       price: quote.price,
       pctChange: quote.pctChange,
       amount: quote.amount,
-      turnoverRate: quote.turnoverRate || item.turnoverRate,
+      turnoverRate: quote.turnoverRate ?? item.turnoverRate,
       updatedAt,
     } : item;
   });

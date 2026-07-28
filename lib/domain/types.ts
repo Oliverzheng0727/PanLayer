@@ -15,7 +15,7 @@ export interface Quote {
   low: number;
   pctChange: number;
   amount: number;
-  turnoverRate: number;
+  turnoverRate: number | null;
   limitUpPrice: number;
   limitDownPrice: number;
   sector: string;
