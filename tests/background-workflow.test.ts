@@ -31,6 +31,9 @@ describe("production background workflow", () => {
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
     expect(route).toContain('action === "continue-morning-brief"');
+    expect(route).toContain('normalizeSchedulerProvider(request.headers.get("x-panlayer-scheduler"))');
+    expect(route.match(/\{ trigger: "manual" \}/g)).toHaveLength(2);
+    expect(route).not.toContain('{ trigger: "reconcile" }');
 
     expect(viteConfig).toContain('"17 * * * *"');
     expect(viteConfig).toContain('"50,55 22 * * *"');

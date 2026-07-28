@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   executeRemoteSchedulerTick,
   isValidSchedulerAuthorization,
+  normalizeSchedulerProvider,
   planRemoteSchedulerJobs,
   recordSchedulerHeartbeat,
 } from "../lib/jobs/remote-scheduler";
@@ -30,6 +31,14 @@ describe("remote scheduler", () => {
     expect(isValidSchedulerAuthorization("Bearer wrong-secret", "scheduler-secret")).toBe(false);
     expect(isValidSchedulerAuthorization(null, "scheduler-secret")).toBe(false);
     expect(isValidSchedulerAuthorization("Bearer scheduler-secret", "")).toBe(false);
+  });
+
+  it("keeps known scheduler providers and labels legacy authenticated callers as workers", () => {
+    expect(normalizeSchedulerProvider("cloudflare")).toBe("cloudflare");
+    expect(normalizeSchedulerProvider("github")).toBe("github");
+    expect(normalizeSchedulerProvider("worker")).toBe("worker");
+    expect(normalizeSchedulerProvider("unknown")).toBe("worker");
+    expect(normalizeSchedulerProvider(null)).toBe("worker");
   });
 
   it("plans the evening new-high batch and outstanding catch-up work", () => {

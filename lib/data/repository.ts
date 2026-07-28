@@ -241,7 +241,7 @@ export function buildSchedulerHeartbeat(
       receivedAt,
       provider: parsed.provider === "cloudflare" || parsed.provider === "github" || parsed.provider === "worker"
         ? parsed.provider
-        : "unknown",
+        : "worker",
       status,
       message: typeof parsed.message === "string" ? parsed.message : "",
       stale,
@@ -741,8 +741,8 @@ export async function readDataHealth() {
       FROM brief_fetch_runs ORDER BY fetch_date DESC, source_tier ASC, finished_at DESC LIMIT 20`)
       .all<HealthNewsRun>().catch(() => ({ results: [] })),
     readDailyJobCheckpoints(db, tradeDate).catch(() => []),
-    db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1")
-      .bind(tradeDate).first<{ payload: string }>().catch(() => null),
+    db.prepare("SELECT payload, status FROM daily_reviews WHERE trade_date <= ? AND status = 'complete' ORDER BY trade_date DESC LIMIT 1")
+      .bind(tradeDate).first<{ payload: string; status: string }>().catch(() => null),
     db.prepare("SELECT value FROM bootstrap_state WHERE key = 'scheduler-heartbeat'")
       .first<{ value: string }>().catch(() => null),
     db.prepare("SELECT payload, updated_at FROM morning_briefs WHERE trade_date = ?")
@@ -752,7 +752,12 @@ export async function readDataHealth() {
   ]);
   let latestReview: DailyReview | null = null;
   try {
-    latestReview = latestReviewRow?.payload ? JSON.parse(latestReviewRow.payload) as DailyReview : null;
+    const parsed = latestReviewRow?.payload
+      ? JSON.parse(latestReviewRow.payload) as DailyReview
+      : null;
+    latestReview = latestReviewRow?.status === "complete" && parsed?.status === "complete"
+      ? parsed
+      : null;
   } catch {
     latestReview = null;
   }

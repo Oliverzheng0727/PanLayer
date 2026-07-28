@@ -178,4 +178,22 @@ describe("persisted data health", () => {
     expect(current).toMatchObject({ status: "complete", stale: false });
     expect(stale).toMatchObject({ status: "failed", stale: true });
   });
+
+  it("normalizes legacy unlabeled scheduler heartbeats to the internal worker", () => {
+    const heartbeat = buildSchedulerHeartbeat(
+      JSON.stringify({
+        receivedAt: "2026-07-24T08:20:00.000Z",
+        provider: "unknown",
+        status: "complete",
+        message: "idle",
+      }),
+      new Date("2026-07-24T08:25:00.000Z"),
+    );
+
+    expect(heartbeat).toMatchObject({
+      provider: "worker",
+      status: "complete",
+      stale: false,
+    });
+  });
 });

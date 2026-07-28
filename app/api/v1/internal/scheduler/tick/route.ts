@@ -1,6 +1,7 @@
 import {
   executeRemoteSchedulerTick,
   isValidSchedulerAuthorization,
+  normalizeSchedulerProvider,
 } from "../../../../../../lib/jobs/remote-scheduler";
 import {
   prepareMorningBriefRegeneration,
@@ -36,10 +37,7 @@ export async function POST(request: Request) {
   const now = Number.isFinite(scheduledAt) && scheduledAt > 0
     ? new Date(scheduledAt)
     : new Date();
-  const providerHeader = request.headers.get("x-panlayer-scheduler");
-  const provider = providerHeader === "cloudflare" || providerHeader === "github" || providerHeader === "worker"
-    ? providerHeader
-    : "unknown";
+  const provider = normalizeSchedulerProvider(request.headers.get("x-panlayer-scheduler"));
   const action = request.headers.get("x-panlayer-action");
   if (action === "regenerate-morning-brief") {
     const prepared = await prepareMorningBriefRegeneration(runtimeEnv.DB, now);
@@ -47,7 +45,7 @@ export async function POST(request: Request) {
       { type: "morning-brief" },
       now,
       runtimeEnv,
-      { trigger: "reconcile" },
+      { trigger: "manual" },
     );
     return Response.json({
       ok: firstModule.ok,
@@ -65,7 +63,7 @@ export async function POST(request: Request) {
       { type: "morning-brief" },
       now,
       runtimeEnv,
-      { trigger: "reconcile" },
+      { trigger: "manual" },
     );
     return Response.json({
       ok: nextModule.ok,

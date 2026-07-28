@@ -23,6 +23,14 @@ export interface SchedulerHeartbeat {
 export type SchedulerJobStatus = "running" | "partial" | "complete" | "failed";
 export type SchedulerExecutionTrigger = "cron" | "reconcile";
 
+export function normalizeSchedulerProvider(
+  provider: string | null | undefined,
+): SchedulerHeartbeat["provider"] {
+  return provider === "cloudflare" || provider === "github" || provider === "worker"
+    ? provider
+    : "worker";
+}
+
 export interface SchedulerRunContext {
   trigger: SchedulerExecutionTrigger;
   scheduledAt: string;
@@ -53,7 +61,7 @@ export async function executeRemoteSchedulerTick({
   now,
   runJob,
   loadCheckpoints = readDailyJobCheckpoints,
-  provider = "unknown",
+  provider = "worker",
 }: {
   db: D1Database;
   now: Date;
