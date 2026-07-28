@@ -163,6 +163,112 @@ describe("independent morning-brief section providers", () => {
     }));
   });
 
+  it("normalizes qwen3.7-plus news-item field variants without dropping citations", async () => {
+    const section = modelSection("risk");
+    const provider: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              ...section,
+              blocks: [
+                {
+                  type: "news-item",
+                  title: "隔夜条件变化",
+                  fact: `${section.blocks[1].text.slice(0, 520)}。`,
+                  condition: "来源所述条件仍需盘前数据核验。",
+                  impact: "只记录客观影响，不推断未来涨跌。",
+                  sector: "相关板块",
+                  mapping: "未形成可验证映射",
+                  publishedAt: null,
+                  verificationStatus: "部分",
+                  sourceIds: ["ref_1"],
+                },
+                {
+                  type: "news-item",
+                  eventFact: "另一项已核验事实",
+                  excerpt: "原文短摘录",
+                  coreImpact: "影响保持客观描述。",
+                  sector: ["市场"],
+                  objectiveMapping: "未形成可验证映射",
+                  publishedAt: null,
+                  verificationStatus: "verified",
+                  sourceIds: ["ref_1"],
+                },
+                {
+                  type: "news-item",
+                  text: "补充的 cited prose。",
+                  sourceIds: ["ref_1"],
+                },
+              ],
+            }),
+          },
+        }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/news-variants" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret",
+      fetcher: provider,
+      globalSnapshot: [],
+    });
+
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({
+      type: "news-item",
+      event: "隔夜条件变化",
+      sectors: ["相关板块"],
+      leaderMap: ["未形成可验证映射"],
+      verification: "partial",
+      sourceIds: ["risk_ref_1"],
+    }));
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({
+      type: "news-item",
+      event: "另一项已核验事实",
+      sectors: ["市场"],
+      verification: "verified",
+    }));
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({
+      type: "paragraph",
+      text: "补充的 cited prose。",
+      sourceIds: ["risk_ref_1"],
+    }));
+  });
+
+  it("records uncovered required topics as unavailable instead of inventing facts", async () => {
+    const section = modelSection("global-markets");
+    section.blocks[1].text = section.blocks[1].text
+      .replace("道琼斯、", "")
+      .replace("标普、", "")
+      .replace("黄金、", "")
+      .replace("工业金属", "");
+    const provider: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(section) } }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/coverage" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-markets",
+      apiKey: "secret",
+      fetcher: provider,
+      globalSnapshot: [],
+    });
+
+    expect(result.section.status).toBe("complete");
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({
+      type: "callout",
+      tone: "missing",
+      text: expect.stringContaining("道琼斯、标普、黄金、工业金属"),
+      sourceIds: [],
+      provenance: { kind: "unavailable", label: "模块覆盖核验" },
+    }));
+  });
+
   it("accepts only short Qwen bare-string headings and keeps uncited prose invalid", async () => {
     const section = modelSection("global-markets");
     const provider = (blocks: unknown[]): typeof fetch => async () => new Response(JSON.stringify({
@@ -570,7 +676,13 @@ describe("independent morning-brief section providers", () => {
 
     const missingTermAfterRemoval = modelSection("mapping");
     missingTermAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、利好、利空。${"客观事实与盘面映射。".repeat(140)}热点板块排名第一的内需映射由模型给出。`, sourceIds: ["ref_1"] }];
-    await expect(generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(missingTermAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 })).rejects.toThrow(/覆盖不完整/);
+    const missingTermResult = await generateQwenBriefSection({ date: "2026-07-23", key: "mapping", apiKey: "secret", fetcher: provider(missingTermAfterRemoval), globalSnapshot: [], marketContext: context, attempt: 3 });
+    expect(missingTermResult.section.blocks).toContainEqual(expect.objectContaining({
+      type: "callout",
+      tone: "missing",
+      text: expect.stringContaining("内需"),
+      provenance: { kind: "unavailable", label: "模块覆盖核验" },
+    }));
 
     const tooShortAfterRemoval = modelSection("mapping");
     tooShortAfterRemoval.blocks = [{ type: "paragraph", text: `指数、成交额、涨跌停、连板、资金、ETF、利好、利空、内需。${"客观事实与盘面映射。".repeat(55)}热点板块排名第一${"虚构排名内容".repeat(130)}。`, sourceIds: ["ref_1"] }];

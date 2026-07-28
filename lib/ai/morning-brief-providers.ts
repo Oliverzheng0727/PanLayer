@@ -275,6 +275,18 @@ function stringArray(value: unknown, label: string, minimum = 0): string[] {
   return value;
 }
 
+function optionalStringArray(value: unknown, label: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  return stringArray(value, label).map((item) => item.trim()).filter(Boolean);
+}
+
+function newsVerification(value: unknown): "verified" | "partial" | "unverified" {
+  if (value === "verified" || value === "已核验" || value === "cross-checked") return "verified";
+  if (value === "partial" || value === "部分" || value === "partially-verified") return "partial";
+  return "unverified";
+}
+
 function qwenSourcedText(text: string, value: unknown): { text: string; sourceIds: string[] } {
   const inlineSourceIds = [...text.matchAll(/\[ref_(\d+)\]/g)].map((match) => `ref_${match[1]}`);
   const cleanedText = text.replace(/\s*\[ref_\d+\]/g, "").trim();
@@ -387,25 +399,24 @@ function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"):
       };
     }
     if (block.type === "news-item") {
-      const event = blockText(block, ["event", "fact", "title"]);
-      const excerpt = blockText(block, ["excerpt", "originalExcerpt", "quote"]);
+      const event = blockText(block, ["event", "eventFact", "title", "fact"]);
+      const excerpt = blockText(block, ["excerpt", "originalExcerpt", "quote", "fact", "condition"]);
       const impact = blockText(block, ["impact", "coreImpact"]);
       if (event === null || excerpt === null || impact === null) {
-        // qwen3.7-plus occasionally returns a compact news item with
-        // { title, content, sourceIds }. Preserve the cited prose as a normal
-        // paragraph instead of rejecting the entire module; source validation
-        // remains unchanged and uncited compact blocks are still rejected.
+        // qwen3.7-plus sometimes emits a compact cited news item instead of the
+        // requested expanded schema. Keep the cited text as prose; source
+        // validation is unchanged and uncited compact blocks remain invalid.
         const compactContent = qwenCompatible ? blockText(block, ["content", "text"]) : null;
-        if (event !== null && compactContent !== null) {
-          const parsed = sourcedText(`${event}：${compactContent}`, block[citationField], citationField);
+        if (compactContent !== null) {
+          const parsed = sourcedText(event !== null ? `${event}：${compactContent}` : compactContent, block[citationField], citationField);
           return { type: "paragraph", ...parsed };
         }
         throw invalidStructure("block", String(index + 1), block);
       }
-      const sectors = stringArray(block.sectors ?? block.sectorMapping, "sectors");
-      const leaderMap = stringArray(block.leaderMap ?? block.leaders, "leaderMap");
+      const sectors = optionalStringArray(block.sectors ?? block.sectorMapping ?? block.sector, "sectors");
+      const leaderMap = optionalStringArray(block.leaderMap ?? block.leaders ?? block.mapping ?? block.objectiveMapping, "leaderMap");
       const publishedAt = block.publishedAt === null || typeof block.publishedAt === "string" ? block.publishedAt as string | null : null;
-      const verification = block.verification === "verified" || block.verification === "partial" || block.verification === "unverified" ? block.verification : "unverified";
+      const verification = newsVerification(block.verification ?? block.verificationStatus);
       const parsed = sourcedText(`${event}\n${excerpt}\n${impact}`, block[citationField], citationField);
       return { type: "news-item", event, excerpt, impact, sectors, leaderMap, publishedAt, verification, sourceIds: parsed.sourceIds };
     }
@@ -1106,6 +1117,22 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   assertNoModelRankingClaims(key, modelText, normalized.title);
   assertNarrativeSnapshotIntegrity(modelText, globalSnapshot);
   const blocks = [...modelBlocks, ...marketContextBlocks(key, marketContext), ...snapshotBlocks(key, globalSnapshot)];
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key && item.title === normalized.title)
+    ?? LEGACY_BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key && item.title === normalized.title)
+    ?? BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key);
+  const renderedText = blocks.flatMap((block) => {
+    if (block.type === "heading" || block.type === "paragraph" || block.type === "callout") return [block.text];
+    if (block.type === "bullets") return block.items.map((item) => item.text);
+    if (block.type === "table") return [...block.columns, ...block.rows.flat()];
+    return [block.event, block.excerpt, block.impact, ...block.sectors, ...block.leaderMap];
+  }).join("");
+  const missingTerms = definition?.requiredTerms.filter((term) => !renderedText.includes(term)) ?? [];
+  if (missingTerms.length > 0) {
+    blocks.push(contextUnavailableCallout(
+      "模块覆盖核验",
+      `${missingTerms.join("、")}：截至本次采集窗口未形成可验证更新，相关项目保留为暂缺，不使用旧值或推测补齐。`,
+    ));
+  }
   const section: BriefSection = {
     ...normalized,
     blocks,
