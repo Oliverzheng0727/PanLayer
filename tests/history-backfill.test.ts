@@ -127,7 +127,20 @@ describe("history review backfill", () => {
       brokenBoard: { count: 1, rate: 50, sampleSize: 2 },
     });
     expect(review.status).toBe("partial");
-    expect(review.historyMeta).toEqual({ backfilled: true, receivedAt: "2026-07-23T08:00:00.000Z" });
+    expect(review.historyMeta).toMatchObject({
+      backfilled: true,
+      receivedAt: "2026-07-23T08:00:00.000Z",
+      schemaVersion: 2,
+      fields: {
+        boardPools: { status: "complete" },
+        indices: { status: "partial" },
+        marginBalance: { status: "complete" },
+        breadth: { status: "pending" },
+        marketAmount: { status: "pending" },
+        newHighs: { status: "pending" },
+        recognition: { status: "unavailable" },
+      },
+    });
   });
 
   it("keeps pool-derived fields null when the public pool archive cannot reach an older date", () => {
@@ -206,7 +219,7 @@ describe("history review backfill", () => {
     expect(JSON.parse(fixture.getProgress()!).completed).toHaveLength(6);
   });
 
-  it("seeds a larger target from already backfilled dates instead of downloading them again", async () => {
+  it("seeds a field-audited date without downloading it again", async () => {
     const existing = buildBackfilledReview(
       "2026-07-22",
       pools,

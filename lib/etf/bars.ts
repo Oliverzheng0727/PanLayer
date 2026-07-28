@@ -1,4 +1,5 @@
 import { createFuyaoMcpClient, type FuyaoMcpOptions } from "../data/fuyao-mcp";
+import { fetchTencentAdjustedMarketBars } from "../data/tencent";
 
 export type BarPeriod = "minute" | "day" | "week" | "month";
 export type Adjustment = "none" | "forward";
@@ -335,6 +336,26 @@ export async function loadEtfBarsWithFallback(
     eastmoneyError = error;
   }
 
+  let tencentForwardError: unknown;
+  if (adjustment === "forward") {
+    try {
+      const daily = sanitizeMarketBars(await fetchTencentAdjustedMarketBars(symbol, fetcher));
+      const bars = period === "day" ? daily : aggregateBars(daily, period);
+      if (bars.length === 0) throw new Error("empty market bars");
+      return {
+        bars,
+        source: "腾讯证券（前复权）",
+        fallbackSource: "腾讯证券",
+        status: "complete",
+        appliedAdjustment: "forward",
+        appliedPeriod: period,
+        message: `东方财富前复权${periodLabel}不可用，已由腾讯前复权接管`,
+      };
+    } catch (error) {
+      tencentForwardError = error;
+    }
+  }
+
   if (fuyaoOptions && adjustment === "forward") {
     try {
       return {
@@ -344,7 +365,7 @@ export async function loadEtfBarsWithFallback(
         status: "partial",
         appliedAdjustment: "none",
         appliedPeriod: period,
-        message: `东方财富前复权${periodLabel}不可用；扶摇仅提供不复权数据，当前K线未冒充前复权`,
+        message: `东方财富与腾讯前复权${periodLabel}不可用；扶摇仅提供不复权数据，当前K线未冒充前复权`,
       };
     } catch {
       // Continue to public unadjusted fallbacks.
@@ -383,7 +404,10 @@ export async function loadEtfBarsWithFallback(
     };
   } catch (fallbackError) {
     const primaryError = adjustment === "none" && fuyaoOptions ? fuyaoPrimaryError : eastmoneyError;
-    const primaryMessage = primaryError instanceof Error ? primaryError.message : "primary source failed";
+    const primaryMessage = [
+      primaryError instanceof Error ? primaryError.message : "primary source failed",
+      tencentForwardError instanceof Error ? `Tencent: ${tencentForwardError.message}` : "",
+    ].filter(Boolean).join("; ");
     const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : "fallback source failed";
     throw new Error(`ETF bars unavailable: ${primaryMessage}; ${fallbackMessage}`);
   }

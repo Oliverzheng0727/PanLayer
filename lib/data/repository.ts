@@ -8,6 +8,10 @@ import {
   type NewHighProgress,
 } from "../history/new-high-progress";
 import { readNewHighProgressSnapshot } from "../history/new-high-d1-store";
+import {
+  readHistoryContributionProgress,
+  type HistoryContributionProgress,
+} from "../history/contributions";
 import { reconcileGlobalPoints } from "./global/reconcile";
 import type { GlobalPoint } from "./global/types";
 import {
@@ -207,6 +211,18 @@ export interface DailyJobHealth {
     message: string;
   }>;
   fields?: Record<string, DailyFieldHealth>;
+  background?: {
+    historyContribution: HistoryContributionProgress | null;
+    historyFields: {
+      dates: number;
+      fields: Record<string, {
+        complete: number;
+        partial: number;
+        pending: number;
+        unavailable: number;
+      }>;
+    } | null;
+  };
 }
 
 export interface SchedulerHeartbeatHealth {
@@ -376,11 +392,17 @@ export function buildDailyJobHealth({
       : 5 * 60_000;
     const overdue = now.getTime() > expectedTime + graceMs
       && checkpoint?.status !== "complete";
-    const finishedTime = checkpoint?.finishedAt ? new Date(checkpoint.finishedAt).getTime() : null;
+    const automaticFinishedAt = execution?.firstAutomaticCompletedAt ?? (
+      execution?.trigger === "manual" ? null : checkpoint?.finishedAt ?? null
+    );
+    const effectiveFinishedAt = automaticFinishedAt ?? (
+      execution?.trigger === "manual" ? checkpoint?.finishedAt ?? null : null
+    );
+    const finishedTime = effectiveFinishedAt ? new Date(effectiveFinishedAt).getTime() : null;
     const delayMinutes = finishedTime !== null && Number.isFinite(finishedTime)
       ? Math.max(0, Math.round((finishedTime - expectedTime) / 60_000))
       : overdue ? Math.max(0, Math.round((now.getTime() - expectedTime) / 60_000)) : null;
-    const timeliness = execution?.trigger === "manual"
+    const timeliness = execution?.trigger === "manual" && !automaticFinishedAt
       ? "on-time" as const
       : now.getTime() < expectedTime && !checkpoint
       ? "not-due" as const
@@ -418,6 +440,7 @@ export function buildDailyJobHealth({
     }]));
   const persistedBrief = artifacts?.morningBrief;
   if (persistedBrief?.valid && jobs["morning-brief"]?.status !== "complete") {
+    const automaticBriefAt = jobs["morning-brief"].firstAutomaticCompletedAt;
     jobs["morning-brief"] = {
       ...jobs["morning-brief"],
       status: "complete",
@@ -425,11 +448,11 @@ export function buildDailyJobHealth({
       nextRetryAt: null,
       message: "早参已生成并通过结构校验",
       overdue: false,
-      delayMinutes: persistedBrief.updatedAt
-        ? Math.max(0, Math.round((new Date(persistedBrief.updatedAt).getTime() - new Date(jobs["morning-brief"].expectedAt).getTime()) / 60_000))
+      delayMinutes: automaticBriefAt
+        ? Math.max(0, Math.round((new Date(automaticBriefAt).getTime() - new Date(jobs["morning-brief"].expectedAt).getTime()) / 60_000))
         : null,
-      timeliness: persistedBrief.updatedAt
-        && new Date(persistedBrief.updatedAt).getTime() > new Date(jobs["morning-brief"].expectedAt).getTime() + 15 * 60_000
+      timeliness: automaticBriefAt
+        && new Date(automaticBriefAt).getTime() > new Date(jobs["morning-brief"].expectedAt).getTime() + 15 * 60_000
           ? "delayed"
           : "on-time",
       trigger: jobs["morning-brief"].trigger ?? null,
@@ -732,7 +755,7 @@ export async function readDataHealth() {
     ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
     daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
   };
-  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow, etfCatalogRow] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow, etfCatalogRow, historyMetaRows] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -749,6 +772,8 @@ export async function readDataHealth() {
       .bind(tradeDate).first<{ payload: string; updated_at: string }>().catch(() => null),
     db.prepare("SELECT source, status, received_at FROM etf_catalog_cache WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1")
       .bind(tradeDate).first<{ source: string; status: string; received_at: string }>().catch(() => null),
+    db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120")
+      .bind(tradeDate).all<{ payload: string }>().catch(() => ({ results: [] })),
   ]);
   let latestReview: DailyReview | null = null;
   try {
@@ -785,6 +810,29 @@ export async function readDataHealth() {
   daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
   daily.latestCompletedTradeDate = latestReview?.date ?? null;
   daily.fields = buildDailyFieldHealth(latestReview, progress);
+  daily.background = {
+    historyContribution: await readHistoryContributionProgress(db, latestReview?.date ?? tradeDate)
+      .catch(() => null),
+    historyFields: (() => {
+      const records = (historyMetaRows.results ?? []).flatMap((row) => {
+        try {
+          const fields = (JSON.parse(row.payload) as DailyReview).historyMeta?.fields;
+          return fields ? [fields] : [];
+        } catch {
+          return [];
+        }
+      });
+      if (records.length === 0) return null;
+      const fields: Record<string, { complete: number; partial: number; pending: number; unavailable: number }> = {};
+      for (const record of records) {
+        for (const [key, item] of Object.entries(record)) {
+          fields[key] ??= { complete: 0, partial: 0, pending: 0, unavailable: 0 };
+          fields[key][item.status] += 1;
+        }
+      }
+      return { dates: records.length, fields };
+    })(),
+  };
   daily.fields.fuyaoEtf = {
     status: etfCatalogRow?.source.includes("扶摇 Fuyao")
       ? etfCatalogRow.status === "complete" ? "complete" : "partial"

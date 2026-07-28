@@ -114,3 +114,49 @@ export async function fetchThsPopularitySnapshot(
     };
   }
 }
+
+export async function persistThsPopularitySnapshot(
+  db: D1Database,
+  date: string,
+  snapshot: PopularitySnapshot,
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO structured_market_signals
+      (trade_date, dataset, provider, payload, status, market_time, received_at)
+     VALUES (?, 'ths-popularity', '同花顺热榜', ?, ?, ?, ?)
+     ON CONFLICT(trade_date, dataset, provider) DO UPDATE SET
+       payload=excluded.payload,
+       status=excluded.status,
+       market_time=excluded.market_time,
+       received_at=excluded.received_at`,
+  ).bind(
+    date,
+    JSON.stringify(snapshot),
+    snapshot.status,
+    snapshot.marketTime,
+    snapshot.receivedAt,
+  ).run();
+}
+
+export async function readThsPopularitySnapshot(
+  db: D1Database,
+  date: string,
+): Promise<PopularitySnapshot | null> {
+  const row = await db.prepare(
+    `SELECT payload
+       FROM structured_market_signals
+      WHERE trade_date = ? AND dataset = 'ths-popularity' AND provider = '同花顺热榜'
+      LIMIT 1`,
+  ).bind(date).first<{ payload: string }>();
+  if (!row?.payload) return null;
+  try {
+    const parsed = JSON.parse(row.payload) as Partial<PopularitySnapshot>;
+    return typeof parsed.source === "string"
+      && typeof parsed.receivedAt === "string"
+      && Array.isArray(parsed.items)
+      ? parsed as PopularitySnapshot
+      : null;
+  } catch {
+    return null;
+  }
+}

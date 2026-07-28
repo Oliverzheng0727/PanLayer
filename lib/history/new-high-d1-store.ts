@@ -350,7 +350,26 @@ export async function patchBackfilledReviewHighCounts(
       continue;
     }
     const counts = await createD1NewHighStateStore(db).countDetails(row.trade_date);
-    const patched = applyNewHighCountsToReview(review, counts);
+    const verifiedAt = new Date().toISOString();
+    const highPatched = applyNewHighCountsToReview(review, counts);
+    const patched: DailyReview = {
+      ...highPatched,
+      historyMeta: {
+        ...(highPatched.historyMeta ?? { backfilled: true, receivedAt: verifiedAt }),
+        schemaVersion: 2,
+        receivedAt: verifiedAt,
+        fields: {
+          ...highPatched.historyMeta?.fields,
+          newHighs: {
+            status: "complete",
+            source: "全市场前复权日K新高状态",
+            coveragePct: 100,
+            reason: null,
+            verifiedAt,
+          },
+        },
+      },
+    };
     statements.push(
       db.prepare(
         "UPDATE daily_reviews SET payload = ?, updated_at = ? WHERE trade_date = ?",

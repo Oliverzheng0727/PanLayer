@@ -185,6 +185,40 @@ describe("ETF market bar aggregation", () => {
     });
   });
 
+  it("uses Tencent qfq OHLC bars before any unadjusted fallback", async () => {
+    const fetcher = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("eastmoney.com")) return new Response("unavailable", { status: 520 });
+      if (url.includes("web.ifzq.gtimg.cn")) {
+        return Response.json({
+          code: 0,
+          data: {
+            sh511880: {
+              qfqday: [
+                ["2026-07-21", "99.10", "99.20", "99.30", "99.00", "1000", "99200"],
+                ["2026-07-22", "99.20", "99.25", "99.35", "99.15", "1200", "119100"],
+              ],
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected public request ${url}`);
+    };
+
+    await expect(loadEtfBarsWithFallback(
+      "511880",
+      "day",
+      "forward",
+      fetcher as typeof fetch,
+    )).resolves.toMatchObject({
+      source: "腾讯证券（前复权）",
+      fallbackSource: "腾讯证券",
+      status: "complete",
+      appliedAdjustment: "forward",
+      bars: [{ time: "2026-07-21" }, { time: "2026-07-22" }],
+    });
+  });
+
   it("maps Eastmoney minute trend fields to OHLCV correctly", async () => {
     const fetcher = async () => new Response(JSON.stringify({ data: { trends: ["2026-07-22 09:31,4.761,4.775,4.779,4.751,271280,129163542.000,4.7565"] } }));
     await expect(fetchEastmoneyMinuteBars("510300", fetcher as typeof fetch)).resolves.toEqual([{

@@ -160,7 +160,7 @@ export interface RecognitionRankingItem {
 }
 
 export interface RecognitionRanking {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   status: "complete" | "partial" | "failed";
   referenceDate: string;
   marketTime: string;
@@ -253,6 +253,14 @@ export interface DailyReview {
   historyMeta?: {
     backfilled: boolean;
     receivedAt: string;
+    schemaVersion?: 2;
+    fields?: Record<string, {
+      status: "complete" | "partial" | "pending" | "unavailable";
+      source: string;
+      coveragePct: number | null;
+      reason: string | null;
+      verifiedAt: string;
+    }>;
   };
   structuredSignals?: StructuredMarketSignals;
   recognitionRanking?: RecognitionRanking;

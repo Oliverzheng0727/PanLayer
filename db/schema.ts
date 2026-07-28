@@ -166,6 +166,20 @@ export const newHighBootstrapFailures = sqliteTable("new_high_bootstrap_failures
   index("new_high_bootstrap_retry_idx").on(table.nextRetryAt, table.attempts),
 ]);
 
+export const historyBarContributions = sqliteTable("history_bar_contributions", {
+  symbol: text("symbol").primaryKey(),
+  name: text("name").notNull(),
+  isST: integer("is_st", { mode: "boolean" }).notNull(),
+  firstDate: text("first_date").notNull(),
+  targetDate: text("target_date").notNull(),
+  barsJson: text("bars_json").notNull(),
+  source: text("source").notNull(),
+  status: text("status").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("history_contribution_progress_idx").on(table.targetDate, table.status),
+]);
+
 export const marketSourceAudits = sqliteTable("market_source_audits", {
   tradeDate: text("trade_date").notNull(),
   snapshotTime: text("snapshot_time").notNull(),

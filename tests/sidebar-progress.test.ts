@@ -147,4 +147,26 @@ describe("sidebar progress model", () => {
       expect.objectContaining({ key: "tier2-firecrawl", status: "partial", detail: "Firecrawl 2/3 sources" }),
     ]));
   });
+
+  it("keeps background new-high initialization from turning completed daily data partial", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-24",
+      generatedAt: "2026-07-24T09:00:00Z",
+      marketSession: true,
+      jobs: {
+        "close-review": job("partial", "2026-07-24T16:10:00+08:00", "收盘数据完整，新高初始化中"),
+      },
+      stages: {
+        "close-review:quotes": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:board-pools": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:signals": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:recognition": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:aggregate": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:indices": { status: "complete", finishedAt: null, nextRetryAt: null, message: "" },
+        "close-review:new-highs": { status: "partial", finishedAt: null, nextRetryAt: null, message: "初始化中" },
+      },
+    };
+
+    expect(buildSidebarProgress(health, progress, "partial").overallStatus).toBe("complete");
+  });
 });

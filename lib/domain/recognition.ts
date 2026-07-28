@@ -244,7 +244,7 @@ export function buildRecognitionRanking({
     : barSuccessCount < bars.length || hotStatus === "partial" ? "partial" : "complete";
   const barSources = [...new Set(bars.map((item) => item.source).filter(Boolean))];
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status,
     referenceDate: date,
     marketTime: `${date}T15:00:00+08:00`,

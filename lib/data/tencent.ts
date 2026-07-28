@@ -7,7 +7,7 @@ const TENCENT_KLINE_TIMEOUT_MS = 6_000;
 
 function securityMeta(code: string, prefix?: string): { exchange: Exchange; board: Board; limitRate: number } {
   if (prefix === "bj" || /^(4|8|9)/.test(code)) return { exchange: "BJ", board: "BEIJING", limitRate: 0.3 };
-  if (prefix === "sh" || /^6/.test(code)) {
+  if (prefix === "sh" || /^(5|6)/.test(code)) {
     return /^688/.test(code)
       ? { exchange: "SH", board: "STAR", limitRate: 0.2 }
       : { exchange: "SH", board: "MAIN", limitRate: 0.1 };
@@ -178,6 +178,84 @@ export async function fetchTencentAdjustedBars(
 
   const bars = [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
   if (bars.length === 0) throw new Error("Tencent K-line returned no valid bars");
+  return bars;
+}
+
+export interface TencentAdjustedMarketBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  amount: number;
+}
+
+export async function fetchTencentAdjustedMarketBars(
+  symbol: string,
+  fetcher: typeof fetch = fetch,
+  options: { pageSize?: number; maxPages?: number } = {},
+): Promise<TencentAdjustedMarketBar[]> {
+  const marketCode = toTencentCode(symbol);
+  const pageSize = Math.min(640, Math.max(2, options.pageSize ?? 640));
+  const maxPages = Math.min(16, Math.max(1, options.maxPages ?? 4));
+  const byDate = new Map<string, TencentAdjustedMarketBar>();
+  let endDate = "";
+  let previousEarliest = "";
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const url = new URL(TENCENT_KLINE_URL);
+    url.searchParams.set("param", `${marketCode},day,,${endDate},${pageSize},qfq`);
+    const response = await fetcher(url, {
+      headers: {
+        accept: "application/json",
+        referer: "https://gu.qq.com/",
+        "user-agent": "PanLayer/1.0",
+      },
+      signal: AbortSignal.timeout(TENCENT_KLINE_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Tencent K-line ${response.status}`);
+    const payload = await response.json() as {
+      code?: number;
+      data?: Record<string, { qfqday?: Array<Array<string | number>> }>;
+    };
+    if (payload.code !== undefined && payload.code !== 0) {
+      throw new Error(`Tencent K-line code ${payload.code}`);
+    }
+    const rows = payload.data?.[marketCode]?.qfqday ?? [];
+    if (!Array.isArray(rows) || rows.length === 0) break;
+    for (const row of rows) {
+      const time = String(row[0] ?? "");
+      const open = Number(row[1]);
+      const close = Number(row[2]);
+      const high = Number(row[3]);
+      const low = Number(row[4]);
+      const volume = Number(row[5]);
+      const amount = Number(row[8] ?? row[6] ?? 0);
+      if (
+        /^\d{4}-\d{2}-\d{2}$/.test(time)
+        && [open, close, high, low].every((value) => Number.isFinite(value) && value > 0)
+        && high >= Math.max(open, close, low)
+        && low <= Math.min(open, close, high)
+      ) {
+        byDate.set(time, {
+          time,
+          open,
+          high,
+          low,
+          close,
+          volume: Number.isFinite(volume) && volume >= 0 ? volume : 0,
+          amount: Number.isFinite(amount) && amount >= 0 ? amount : 0,
+        });
+      }
+    }
+    const earliest = String(rows[0]?.[0] ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(earliest) || earliest === previousEarliest || rows.length < pageSize) break;
+    previousEarliest = earliest;
+    endDate = previousDate(earliest);
+  }
+  const bars = [...byDate.values()].toSorted((left, right) => left.time.localeCompare(right.time));
+  if (bars.length === 0) throw new Error("Tencent qfq returned no valid OHLC bars");
   return bars;
 }
 

@@ -46,7 +46,11 @@ import type { BoardPools, IndexSnapshot, MarketAggregate } from "../data/provide
 import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
-import { fetchThsPopularitySnapshot } from "../data/ths-popularity";
+import {
+  fetchThsPopularitySnapshot,
+  persistThsPopularitySnapshot,
+  readThsPopularitySnapshot,
+} from "../data/ths-popularity";
 import { applyStructuredSignalFallbacks } from "../data/structured-signal-fallback";
 import {
   closeProviderCircuit,
@@ -66,6 +70,11 @@ import {
   patchBackfilledReviewHighCounts,
   refreshNewHighProgressSnapshot,
 } from "../history/new-high-d1-store";
+import {
+  HISTORY_CONTRIBUTION_SCHEMA_STATEMENTS,
+  patchHistoricalReviewsFromContributions,
+  runHistoryContributionBatch,
+} from "../history/contributions";
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 import { mergeCloseReviewWithExisting, type CloseReviewStage } from "./close-review-stages";
@@ -743,6 +752,7 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS new_high_states_progress_idx ON new_high_states(status, initialized_through)`,
   `CREATE TABLE IF NOT EXISTS new_high_bootstrap_failures (symbol TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL, next_retry_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS new_high_bootstrap_retry_idx ON new_high_bootstrap_failures(next_retry_at, attempts)`,
+  ...HISTORY_CONTRIBUTION_SCHEMA_STATEMENTS,
   `CREATE TABLE IF NOT EXISTS market_source_audits (trade_date TEXT NOT NULL, snapshot_time TEXT NOT NULL, source TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, raw_count INTEGER NOT NULL, valid_count INTEGER NOT NULL, invalid_count INTEGER NOT NULL, coverage_pct REAL NOT NULL, direction_agreement_pct REAL, price_agreement_pct REAL, breadth_difference INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, snapshot_time, source))`,
   `CREATE TABLE IF NOT EXISTS global_market_snapshots (trade_date TEXT NOT NULL, symbol TEXT NOT NULL, label TEXT NOT NULL, provider TEXT NOT NULL, market_time TEXT, received_at TEXT NOT NULL, value REAL, previous_close REAL, pct_change REAL, period TEXT NOT NULL, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '', PRIMARY KEY (trade_date, symbol, provider))`,
   FUYAO_MARKET_EVIDENCE_SCHEMA_STATEMENT,
@@ -1112,23 +1122,39 @@ export async function runPanLayerJob(
         }
         await persistStockUniverse(db, universe, new Date().toISOString());
       }
+      const adjustedBarsCache = new Map<string, Promise<Awaited<ReturnType<typeof provider.getAdjustedBars>>>>();
+      const adjustedBarProvider = fuyao
+        ? {
+            getAdjustedBars: (symbol: string) => {
+              const cached = adjustedBarsCache.get(symbol);
+              if (cached) return cached;
+              const request = (async () => {
+              const [fuyaoBars, eastmoneyBars] = await Promise.all([
+                fuyao.fetchAShareAdjustedBars(symbol, now).catch(() => []),
+                provider.getAdjustedBars(symbol).catch(() => []),
+              ]);
+              if (fuyaoBars.length === 0) return eastmoneyBars;
+              if (eastmoneyBars.length === 0) return fuyaoBars;
+              const merged = new Map(eastmoneyBars.map((bar) => [bar.date, bar]));
+              fuyaoBars.forEach((bar) => merged.set(bar.date, bar));
+              return [...merged.values()].toSorted((left, right) => left.date.localeCompare(right.date));
+              })();
+              adjustedBarsCache.set(symbol, request);
+              return request;
+            },
+          }
+        : {
+            getAdjustedBars: (symbol: string) => {
+              const cached = adjustedBarsCache.get(symbol);
+              if (cached) return cached;
+              const request = provider.getAdjustedBars(symbol);
+              adjustedBarsCache.set(symbol, request);
+              return request;
+            },
+          };
       const progress = await runNewHighBootstrapBatch({
         store,
-        provider: fuyao
-          ? {
-              getAdjustedBars: async (symbol: string) => {
-                const [fuyaoBars, eastmoneyBars] = await Promise.all([
-                  fuyao.fetchAShareAdjustedBars(symbol, now).catch(() => []),
-                  provider.getAdjustedBars(symbol).catch(() => []),
-                ]);
-                if (fuyaoBars.length === 0) return eastmoneyBars;
-                if (eastmoneyBars.length === 0) return fuyaoBars;
-                const merged = new Map(eastmoneyBars.map((bar) => [bar.date, bar]));
-                fuyaoBars.forEach((bar) => merged.set(bar.date, bar));
-                return [...merged.values()].toSorted((left, right) => left.date.localeCompare(right.date));
-              },
-            }
-          : provider,
+        provider: adjustedBarProvider,
         targetDate,
         batchSize: 40,
         concurrency: 3,
@@ -1141,10 +1167,26 @@ export async function runPanLayerJob(
       if (coveragePct >= 95 && snapshot.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
+      const historyDates = await store.listBackfillDates(targetDate);
+      const contributionProgress = await runHistoryContributionBatch({
+        db,
+        provider: adjustedBarProvider,
+        targetDate,
+        backfillDates: historyDates.slice(-120),
+        source: fuyao
+          ? "扶摇 Fuyao / 东方财富 / 腾讯前复权日K"
+          : "东方财富 / 腾讯前复权日K",
+        batchSize: 40,
+        concurrency: 4,
+      });
+      const contributionPatch = contributionProgress.coveragePct >= 95
+        ? await patchHistoricalReviewsFromContributions({ db, targetDate })
+        : null;
       const message =
         `new-high-bootstrap ${snapshot.completed}/${snapshot.target}; ` +
         `remaining ${remaining}; failed ${snapshot.failed}; ` +
-        `coverage ${coveragePct}%`;
+        `coverage ${coveragePct}%；历史贡献 ${contributionProgress.completed}/${contributionProgress.target}` +
+        `${contributionPatch ? `；回写 ${contributionPatch.patched} 日` : ""}`;
       const status = newHighBootstrapRunStatus({
         remaining,
         failed: snapshot.failed,
@@ -1159,14 +1201,21 @@ export async function runPanLayerJob(
         ...snapshot,
         remaining,
         coveragePct,
+        historyContribution: contributionProgress,
+        historyContributionPatch: contributionPatch,
       });
       return { ok: true, status, message };
     } else if (job.type === "etf-metrics-refresh") {
+      const frozenPopularity = await readThsPopularitySnapshot(db, date);
+      if (!frozenPopularity || frozenPopularity.items.length === 0) {
+        const popularity = await fetchThsPopularitySnapshot(date, now, fetcher);
+        await persistThsPopularitySnapshot(db, date, popularity);
+      }
       const progress = await runEtfMetricsRefreshBatch({
         db,
         date,
         fetcher,
-        batchSize: 12,
+        batchSize: 48,
         fuyaoApiKey: env.FUYAO_API_KEY,
         fuyaoBaseUrl: env.FUYAO_MCP_BASE_URL,
       });
@@ -1357,7 +1406,12 @@ export async function runPanLayerJob(
               items: [],
               message: "结构化信号与辨识度榜已完成，跳过重复热榜请求",
             })
-          : fetchThsPopularitySnapshot(date, now, fetcher),
+          : readThsPopularitySnapshot(db, date).then(async (snapshot) => {
+              if (snapshot?.items.length) return snapshot;
+              const fetched = await fetchThsPopularitySnapshot(date, now, fetcher);
+              await persistThsPopularitySnapshot(db, date, fetched);
+              return fetched;
+            }),
         reuseSignals ? Promise.resolve([]) : provider.getSectors(date).catch(() => []),
       ]);
       const [anomalyCircuit, sectorCircuit] = fuyao

@@ -12,7 +12,7 @@ export type SidebarProgressStatus =
   | "closed";
 
 export interface SidebarProgressTask {
-  key: "tier1-rss" | "tier2-firecrawl" | "fuyao" | "breadth" | "close-review" | "new-high" | "morning-brief" | "etf" | "etf-history";
+  key: "tier1-rss" | "tier2-firecrawl" | "fuyao" | "breadth" | "close-review" | "new-high" | "history-contribution" | "morning-brief" | "etf" | "etf-history";
   label: string;
   status: SidebarProgressStatus;
   value: string;
@@ -128,17 +128,31 @@ export function buildSidebarProgress(
     key.startsWith("close-review:") && key !== "close-review:assemble"
   );
   const closeStagesComplete = closeStages.filter(([, stage]) => stage.status === "complete").length;
+  const coreCloseStages = closeStages.filter(([key]) => !key.endsWith(":new-highs"));
+  const closePartialIsBackgroundOnly = close?.status === "partial"
+    && coreCloseStages.length > 0
+    && coreCloseStages.every(([, stage]) => stage.status === "complete")
+    && closeStages.some(([key, stage]) => key.endsWith(":new-highs") && stage.status !== "complete");
+  const effectiveCompletedDue = completedDue + (
+    closePartialIsBackgroundOnly
+    && dueJobs.some(([key]) => key === "close-review")
+      ? 1
+      : 0
+  );
   const brief = health.jobs["morning-brief"];
   const etf = health.jobs["etf-metrics-refresh"];
   const etfHistory = health.stages?.["etf-metrics-refresh:history-metrics"];
   const failed = dueJobs.some(([, item]) => item.status === "failed");
   const running = dueJobs.some(([, item]) => item.status === "running");
-  const partial = dueJobs.some(([, item]) => item.status === "partial" || item.overdue);
+  const partial = dueJobs.some(([key, item]) => (
+    (item.status === "partial" && !(key === "close-review" && closePartialIsBackgroundOnly))
+    || item.overdue
+  ));
   const delayed = dueJobs.some(([, item]) => item.status === "complete" && item.timeliness === "delayed");
   // A weekend page reads the latest completed market review (usually Friday).
   // Its status must not turn the current closed day red; only today's due
   // jobs participate in the aggregate status on a non-trading day.
-  const reviewAffectsStatus = marketSession;
+  const reviewAffectsStatus = marketSession && !closePartialIsBackgroundOnly;
   const overallStatus: SidebarProgressStatus = failed || (reviewAffectsStatus && reviewStatus === "failed")
     ? "failed"
     : running
@@ -147,7 +161,7 @@ export function buildSidebarProgress(
         ? "partial"
         : delayed
           ? "delayed"
-        : dueJobs.length > 0 && completedDue === dueJobs.length
+        : dueJobs.length > 0 && effectiveCompletedDue === dueJobs.length
           ? "complete"
           : "pending";
   const breadthStatus = aggregateBreadthStatus(breadthJobs, now, marketSession);
@@ -161,6 +175,17 @@ export function buildSidebarProgress(
       : newHighProgress.failed > 0
         ? "partial"
       : "pending";
+  const historyContribution = health.background?.historyContribution;
+  const historyFieldDates = health.background?.historyFields?.dates ?? 0;
+  const historyContributionStatus: SidebarProgressStatus = !historyContribution
+    ? "pending"
+    : historyContribution.coveragePct >= 95
+      ? "complete"
+      : historyContribution.completed > 0
+        ? "running"
+        : historyContribution.failed > 0
+          ? "partial"
+          : "pending";
   const fuyaoFields = Object.entries(health.fields ?? {})
     .filter(([key]) => key.startsWith("fuyao"));
   const fuyaoComplete = fuyaoFields.filter(([, item]) => item.status === "complete").length;
@@ -180,9 +205,9 @@ export function buildSidebarProgress(
     .at(-1) ?? null;
 
   return {
-    completedDue,
+    completedDue: effectiveCompletedDue,
     dueTotal: dueJobs.length,
-    percentage: dueJobs.length === 0 ? 0 : Math.round(completedDue / dueJobs.length * 100),
+    percentage: dueJobs.length === 0 ? 0 : Math.round(effectiveCompletedDue / dueJobs.length * 100),
     overallStatus,
     breadthCompleted,
     breadthExpected: 6,
@@ -257,6 +282,19 @@ export function buildSidebarProgress(
         value: `${newHighProgress.completed}/${newHighProgress.target}`,
         detail: `覆盖 ${newHighProgress.coveragePct.toFixed(2)}%${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
         updatedAt: newHighProgress.updatedAt,
+        nextRetryAt: health.jobs["new-high-bootstrap"]?.nextRetryAt ?? null,
+      },
+      {
+        key: "history-contribution",
+        label: "历史宽度与成交额",
+        status: historyContributionStatus,
+        value: historyContribution
+          ? `${historyContribution.completed}/${historyContribution.target}`
+          : "等待",
+        detail: historyContribution
+          ? `覆盖 ${historyContribution.coveragePct.toFixed(2)}% · 字段核验 ${historyFieldDates}/120 日${historyContribution.failed ? ` · 可重试失败 ${historyContribution.failed}` : ""}`
+          : "达到95%后回写最近120个交易日",
+        updatedAt: historyContribution?.updatedAt ?? null,
         nextRetryAt: health.jobs["new-high-bootstrap"]?.nextRetryAt ?? null,
       },
       {

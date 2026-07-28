@@ -12,7 +12,7 @@ import {
   type HistoricalPoolItem,
 } from "./backfill-sources";
 
-const PROGRESS_KEY = "history-backfill-v5-evidence-safe";
+const PROGRESS_KEY = "history-backfill-v6-field-aware";
 const NEW_HIGH_BACKFILL_SCOPE_KEY = "new-high-backfill-history-days";
 const EMPTY_POOLS: HistoricalBoardPools = {
   limitUp: [],
@@ -20,6 +20,38 @@ const EMPTY_POOLS: HistoricalBoardPools = {
   limitDown: [],
   yesterdayLimitUp: [],
 };
+
+type HistoryFieldState = NonNullable<DailyReview["historyMeta"]>["fields"] extends infer T
+  ? T extends Record<string, infer V> ? V : never
+  : never;
+
+function historyField(
+  status: HistoryFieldState["status"],
+  source: string,
+  verifiedAt: string,
+  options: { coveragePct?: number | null; reason?: string | null } = {},
+): HistoryFieldState {
+  return {
+    status,
+    source,
+    coveragePct: options.coveragePct ?? null,
+    reason: options.reason ?? null,
+    verifiedAt,
+  };
+}
+
+function immediateHistoryFieldsComplete(review: DailyReview): boolean {
+  const fields = review.historyMeta?.fields;
+  if (fields) {
+    return ["boardPools", "indices", "marginBalance"].every((key) => {
+      const status = fields[key]?.status;
+      return status === "complete" || status === "partial" || status === "unavailable";
+    });
+  }
+  return review.structure?.status === "complete"
+    && (review.comparison?.indices.length ?? 0) >= 5
+    && review.metrics.marginBalance !== null;
+}
 
 export interface HistoryBackfillProgress {
   target: number;
@@ -135,7 +167,33 @@ export function buildBackfilledReview(
       source: poolSource,
       receivedAt,
     }),
-    historyMeta: { backfilled: true, receivedAt },
+    historyMeta: {
+      backfilled: true,
+      receivedAt,
+      schemaVersion: 2,
+      fields: {
+        boardPools: historyField("complete", poolSource, receivedAt, { coveragePct: 100 }),
+        indices: historyField(
+          indices.length >= 5 ? "complete" : "partial",
+          indices.map((item) => item.source).filter(Boolean).join(" / ") || "东方财富历史指数",
+          receivedAt,
+          {
+            coveragePct: Number((Math.min(5, indices.length) / 5 * 100).toFixed(2)),
+            reason: indices.length >= 5 ? null : `仅取得 ${indices.length}/5 个指数`,
+          },
+        ),
+        marginBalance: historyField(
+          marginBalance !== null ? "complete" : "unavailable",
+          "东方财富两融历史",
+          receivedAt,
+          { coveragePct: marginBalance !== null ? 100 : 0, reason: marginBalance !== null ? null : "历史两融数据暂不可用" },
+        ),
+        breadth: historyField("pending", "全市场历史日K聚合", receivedAt, { reason: "等待全市场日K覆盖率达到95%" }),
+        marketAmount: historyField("pending", "全市场历史日K聚合", receivedAt, { reason: "等待含ST全A成交额覆盖率达到95%" }),
+        newHighs: historyField("pending", "前复权日K初始化", receivedAt, { reason: "等待新高初始化覆盖率达到95%" }),
+        recognition: historyField("unavailable", "当日热榜快照", receivedAt, { reason: "未保存对应交易日热榜时不可反推" }),
+      },
+    },
   };
 }
 
@@ -221,7 +279,36 @@ export function buildEvidenceOnlyBackfilledReview(
       recognition: [],
       evidence,
     },
-    historyMeta: { backfilled: true, receivedAt },
+    historyMeta: {
+      backfilled: true,
+      receivedAt,
+      schemaVersion: 2,
+      fields: {
+        boardPools: historyField("unavailable", "东方财富历史四池", receivedAt, {
+          coveragePct: 0,
+          reason: unavailableReason,
+        }),
+        indices: historyField(
+          indices.length >= 5 ? "complete" : "partial",
+          indices.map((item) => item.source).filter(Boolean).join(" / ") || "东方财富历史指数",
+          receivedAt,
+          {
+            coveragePct: Number((Math.min(5, indices.length) / 5 * 100).toFixed(2)),
+            reason: indices.length >= 5 ? null : `仅取得 ${indices.length}/5 个指数`,
+          },
+        ),
+        marginBalance: historyField(
+          marginBalance !== null ? "complete" : "unavailable",
+          "东方财富两融历史",
+          receivedAt,
+          { coveragePct: marginBalance !== null ? 100 : 0, reason: marginBalance !== null ? null : "历史两融数据暂不可用" },
+        ),
+        breadth: historyField("pending", "全市场历史日K聚合", receivedAt, { reason: "等待全市场日K覆盖率达到95%" }),
+        marketAmount: historyField("pending", "全市场历史日K聚合", receivedAt, { reason: "等待含ST全A成交额覆盖率达到95%" }),
+        newHighs: historyField("pending", "前复权日K初始化", receivedAt, { reason: "等待新高初始化覆盖率达到95%" }),
+        recognition: historyField("unavailable", "当日热榜快照", receivedAt, { reason: "未保存对应交易日热榜时不可反推" }),
+      },
+    },
   };
 }
 
@@ -257,7 +344,19 @@ function mergeEvidenceOnlyBackfill(
       marginBalance: existing.metrics.marginBalance ?? backfilled.metrics.marginBalance,
     },
     comparison,
-    historyMeta: existing.historyMeta ?? backfilled.historyMeta,
+    historyMeta: {
+      ...(backfilled.historyMeta ?? { backfilled: true, receivedAt: backfilled.updatedAt }),
+      ...(existing.historyMeta ?? {}),
+      schemaVersion: 2,
+      fields: {
+        ...backfilled.historyMeta?.fields,
+        ...existing.historyMeta?.fields,
+        ...(existingIndices.length === 0 ? { indices: backfilled.historyMeta?.fields?.indices } : {}),
+        ...(existing.metrics.marginBalance === null
+          ? { marginBalance: backfilled.historyMeta?.fields?.marginBalance }
+          : {}),
+      },
+    },
   };
 }
 
@@ -331,7 +430,20 @@ export function mergeBackfilledStructure(
     leaders: backfilled.leaders,
     structure: backfilled.structure,
     comparison,
-    historyMeta: existing.historyMeta ?? backfilled.historyMeta,
+    historyMeta: {
+      ...(backfilled.historyMeta ?? { backfilled: true, receivedAt: backfilled.updatedAt }),
+      ...(existing.historyMeta ?? {}),
+      schemaVersion: 2,
+      fields: {
+        ...backfilled.historyMeta?.fields,
+        ...existing.historyMeta?.fields,
+        boardPools: backfilled.historyMeta?.fields?.boardPools,
+        ...(preserveExistingIndices ? {} : { indices: backfilled.historyMeta?.fields?.indices }),
+        ...(existing.metrics.marginBalance !== null
+          ? {}
+          : { marginBalance: backfilled.historyMeta?.fields?.marginBalance }),
+      },
+    },
   };
 }
 
@@ -362,11 +474,9 @@ async function loadProgress(db: D1Database, endDate: string, days: number, fetch
       if (!dateSet.has(item.trade_date)) return [];
       try {
         const review = JSON.parse(item.payload) as DailyReview;
-        const alreadyBackfilled = review.historyMeta?.backfilled === true;
-        const verifiedCloseReview = review.status !== "demo"
-          && review.structure?.status === "complete"
-          && Boolean(review.comparison);
-        return alreadyBackfilled || verifiedCloseReview ? [item.trade_date] : [];
+        return immediateHistoryFieldsComplete(review)
+          ? [item.trade_date]
+          : [];
       } catch {
         return [];
       }
@@ -522,7 +632,7 @@ export async function runHistoryBackfillBatch({
             : mergeEvidenceOnlyBackfill(existing, backfilled)
           : backfilled;
         await persistBackfilledReview(db, review);
-        return { date, completed: true };
+        return { date, completed: immediateHistoryFieldsComplete(review) };
       } catch {
         return { date, completed: false };
       }
