@@ -28,6 +28,10 @@ on:
         options:
           - tick
           - regenerate-morning-brief
+      scheduled_time:
+        description: Optional Unix milliseconds used only for protected catch-up runs
+        required: false
+        type: string
 
 concurrency:
   group: panlayer-background
@@ -42,10 +46,15 @@ jobs:
         env:
           PANLAYER_CRON_SECRET: ${{ secrets.PANLAYER_CRON_SECRET }}
           PANLAYER_ACTION: ${{ inputs.action || 'tick' }}
+          PANLAYER_SCHEDULED_TIME: ${{ inputs.scheduled_time || '' }}
         run: |
           action_header=()
+          scheduled_header=()
           if [ "${PANLAYER_ACTION}" = "regenerate-morning-brief" ]; then
             action_header=(-H "X-PanLayer-Action: regenerate-morning-brief")
+          fi
+          if [ -n "${PANLAYER_SCHEDULED_TIME}" ]; then
+            scheduled_header=(-H "X-PanLayer-Scheduled-Time: ${PANLAYER_SCHEDULED_TIME}")
           fi
           response="$(
             curl --fail-with-body --silent --show-error \
@@ -56,6 +65,7 @@ jobs:
             -H "Authorization: Bearer ${PANLAYER_CRON_SECRET}" \
             -H "X-PanLayer-Scheduler: github" \
             "${action_header[@]}" \
+            "${scheduled_header[@]}" \
             "https://panlayer.online/api/v1/internal/scheduler/tick"
           )"
           printf '%s\n' "$response"

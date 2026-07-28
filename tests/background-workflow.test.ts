@@ -22,6 +22,8 @@ describe("production background workflow", () => {
     expect(workflow).toContain("PANLAYER_CRON_SECRET");
     expect(workflow).toContain("regenerate-morning-brief");
     expect(workflow).toContain("X-PanLayer-Action: regenerate-morning-brief");
+    expect(workflow).toContain("scheduled_time");
+    expect(workflow).toContain("X-PanLayer-Scheduled-Time");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
