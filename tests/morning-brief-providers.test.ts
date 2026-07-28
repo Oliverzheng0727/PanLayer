@@ -237,6 +237,48 @@ describe("independent morning-brief section providers", () => {
     }));
   });
 
+  it("removes investment-advice language from every news-item field on the final Qwen attempt", async () => {
+    const section = modelSection("global-industry");
+    const provider: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              ...section,
+              blocks: [
+                {
+                  type: "news-item",
+                  event: `${section.blocks[1].text.slice(0, 520)}。建议买入相关个股。`,
+                  excerpt: "原文短摘录保持客观。仓位建议为半仓。",
+                  impact: "客观影响仍需数据核验。可低吸相关方向。",
+                  sectors: ["算力", "建议关注人形机器人"],
+                  leaderMap: ["未形成可验证映射", "推荐配置相关股票"],
+                  publishedAt: null,
+                  verification: "partial",
+                  sourceIds: ["ref_1"],
+                },
+              ],
+            }),
+          },
+        }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/advice-filter" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-industry",
+      apiKey: "secret",
+      fetcher: provider,
+      globalSnapshot: [],
+    });
+    const serialized = JSON.stringify(result.section.blocks);
+
+    expect(result.section.status).toBe("complete");
+    expect(serialized).toContain("客观影响仍需数据核验");
+    expect(serialized).not.toMatch(/建议买入|仓位建议|低吸|建议关注|推荐配置/);
+  });
+
   it("records uncovered required topics as unavailable instead of inventing facts", async () => {
     const section = modelSection("global-markets");
     section.blocks[1].text = section.blocks[1].text

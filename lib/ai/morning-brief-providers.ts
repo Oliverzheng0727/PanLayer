@@ -917,8 +917,18 @@ function normalizeFinalQwenSection(parsed: ParsedSection, key: BriefSectionKey, 
       return items.length ? [{ ...block, items }] : [];
     }
     if (block.type === "news-item") {
-      const text = normalizeText([block.event, block.excerpt, block.impact, ...block.sectors, ...block.leaderMap].join("。"));
-      return text ? [block] : [];
+      const event = normalizeText(block.event) || "该项事件表述含非客观指令，已省略原表述。";
+      const excerpt = normalizeText(block.excerpt) || "该项原文摘录含非客观指令，已省略原表述。";
+      const impact = normalizeText(block.impact) || "该项影响表述含非客观指令，已省略原表述。";
+      const sectors = block.sectors.flatMap((item) => {
+        const text = normalizeText(item);
+        return text ? [text] : [];
+      });
+      const leaderMap = block.leaderMap.flatMap((item) => {
+        const text = normalizeText(item);
+        return text ? [text] : [];
+      });
+      return [{ ...block, event, excerpt, impact, sectors, leaderMap }];
     }
     return [block];
   });
