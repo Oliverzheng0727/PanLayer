@@ -50,8 +50,8 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
     async batch() { return []; },
   } as unknown as D1Database;
   const fetcher: typeof fetch = async (_input, init) => {
-    const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
-    const prompt = request.input.messages[1].content;
+    const request = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    const prompt = request.messages[1].content;
     const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
     if (definition) requests[definition.key] = (requests[definition.key] ?? 0) + 1;
     if (!definition || failedKeys.includes(definition.key)) {
@@ -257,8 +257,8 @@ describe("close review aggregation", () => {
         if (String(input).includes("snapshot-hang")) return new Promise((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
         });
-        const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
-        const definition = BRIEF_SECTION_DEFINITIONS.find((item) => request.input.messages[1].content.includes(`key 必须为 "${item.key}"`))!;
+        const request = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+        const definition = BRIEF_SECTION_DEFINITIONS.find((item) => request.messages[1].content.includes(`key 必须为 "${item.key}"`))!;
         generated += 1;
         return qwenResponse(definition.key);
       };
@@ -313,7 +313,7 @@ describe("close review aggregation", () => {
       const reached = new Promise<void>((resolve) => { entered = resolve; });
       const snapshot = { raw: [{ key: "sp500", label: "标普500", provider: "test", value: 630.2, previousClose: 625.1, pctChange: .8, marketTime: "2026-07-22", receivedAt: "2026-07-23T00:00:00Z", period: "daily", status: "ok" as const, message: "" }], reconciled: [] };
       vi.mocked(loadGlobalOvernightSnapshot).mockImplementationOnce(async () => { entered(); await blocked; return snapshot; }).mockImplementationOnce(async () => snapshot);
-      const fetcher: typeof fetch = async (_input, init) => qwenResponse(BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key);
+      const fetcher: typeof fetch = async (_input, init) => qwenResponse(BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).messages[1].content.includes(`key 必须为 "${item.key}"`))!.key);
       const oldRun = runPanLayerJob({ type: "morning-brief" }, at, { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] });
       await reached;
       vi.setSystemTime(new Date("2026-07-22T23:31:00Z"));
@@ -341,7 +341,7 @@ describe("close review aggregation", () => {
       const reached = new Promise<void>((resolve) => { entered = resolve; });
       let calls = 0;
       const fetcher: typeof fetch = async (_input, init) => {
-        const key = BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).input.messages[1].content.includes(`key 必须为 "${item.key}"`))!.key;
+        const key = BRIEF_SECTION_DEFINITIONS.find((item) => JSON.parse(String(init?.body)).messages[1].content.includes(`key 必须为 "${item.key}"`))!.key;
         calls += 1;
         if (calls === 1) { entered(); await blocked; return qwenResponse(key, 503); }
         return qwenResponse(key);
@@ -699,7 +699,7 @@ describe("close review aggregation", () => {
   it("calls Firecrawl once and performs one search-disabled Qwen correction after failure", async () => {
     const { db } = morningBriefJobHarness([]);
     const calls = { qwen: 0, firecrawl: 0 };
-    const qwenBodies: Array<{ parameters: { enable_search: boolean }; input: { messages: Array<{ content: string }> } }> = [];
+    const qwenBodies: Array<{ enable_search: boolean; messages: Array<{ content: string }> }> = [];
     const fetcher: typeof fetch = async (input, init) => {
       if (String(input).includes("firecrawl.example")) {
         calls.firecrawl += 1;
@@ -755,9 +755,9 @@ describe("close review aggregation", () => {
 
     expect(result.ok).toBe(true);
     expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
-    expect(qwenBodies[0].parameters.enable_search).toBe(true);
-    expect(qwenBodies[1].parameters.enable_search).toBe(false);
-    expect(qwenBodies[1].input.messages[1].content).toContain("firecrawl_risk_1");
+    expect(qwenBodies[0].enable_search).toBe(true);
+    expect(qwenBodies[1].enable_search).toBe(false);
+    expect(qwenBodies[1].messages[1].content).toContain("firecrawl_risk_1");
   });
 
   it("uses Firecrawl at most once when the correction also fails", async () => {
@@ -863,8 +863,8 @@ describe("close review aggregation", () => {
     const requests: string[] = [];
     let calls = 0;
     const fetcher: typeof fetch = async (_input, init) => {
-      const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
-      const prompt = request.input.messages[1].content;
+      const request = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+      const prompt = request.messages[1].content;
       requests.push(prompt);
       calls += 1;
       const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`))!;

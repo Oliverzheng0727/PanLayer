@@ -84,12 +84,10 @@ describe("Qwen morning brief generation", () => {
     let requestUrl = "";
     let requestBody: {
       model?: string;
-      input?: { messages?: Array<{ role?: string; content?: string }> };
-      parameters?: {
-        enable_search?: boolean;
-        search_options?: Record<string, unknown>;
-        response_format?: unknown;
-      };
+      messages?: Array<{ role?: string; content?: string }>;
+      enable_search?: boolean;
+      search_options?: Record<string, unknown>;
+      response_format?: unknown;
     } = {};
     const qwenBrief = structuredClone(validBrief);
     qwenBrief.sections.forEach((section, index) => {
@@ -99,16 +97,14 @@ describe("Qwen morning brief generation", () => {
       requestUrl = String(input);
       requestBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
-        output: {
-          choices: [{ message: { content: JSON.stringify(qwenBrief) }, finish_reason: "stop" }],
-          search_info: {
-            search_results: Array.from({ length: 5 }, (_, index) => ({
-              index: index + 1,
-              title: `来源${index}`,
-              url: `https://example.com/${index}`,
-              published_time: "2026-07-22T06:00:00+08:00",
-            })),
-          },
+        choices: [{ message: { content: JSON.stringify(qwenBrief) }, finish_reason: "stop" }],
+        search_info: {
+          search_results: Array.from({ length: 5 }, (_, index) => ({
+            index: index + 1,
+            title: `来源${index}`,
+            url: `https://example.com/${index}`,
+            published_time: "2026-07-22T06:00:00+08:00",
+          })),
         },
       }));
     };
@@ -120,19 +116,19 @@ describe("Qwen morning brief generation", () => {
       globalSnapshot: [],
     });
 
-    expect(requestUrl).toBe("https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation");
+    expect(requestUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
     expect(requestBody.model).toBe("qwen-plus");
-    expect(requestBody.parameters?.enable_search).toBe(true);
-    expect(requestBody.parameters?.search_options).toMatchObject({
+    expect(requestBody.enable_search).toBe(true);
+    expect(requestBody.search_options).toMatchObject({
       search_strategy: "turbo",
       forced_search: true,
       enable_source: true,
       enable_citation: true,
       citation_format: "[ref_<number>]",
     });
-    expect(requestBody.parameters?.response_format).toEqual({ type: "json_object" });
-    expect(requestBody.input?.messages?.map((message) => message.content).join(" ")).toContain("JSON");
-    expect(requestBody.input?.messages?.map((message) => message.content).join(" ")).not.toContain("qwen-test-key");
+    expect(requestBody.response_format).toEqual({ type: "json_object" });
+    expect(requestBody.messages?.map((message) => message.content).join(" ")).toContain("JSON");
+    expect(requestBody.messages?.map((message) => message.content).join(" ")).not.toContain("qwen-test-key");
     expect(result.sources[0]).toMatchObject({
       id: "ref_1",
       title: "来源0",

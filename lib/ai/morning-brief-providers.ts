@@ -61,7 +61,8 @@ export interface ProviderSectionInput {
 }
 
 export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
-export const DASHSCOPE_SECTION_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
+export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+export const DASHSCOPE_SECTION_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const QWEN_PROVIDER_REQUEST_TIMEOUT_MS = 28_000;
 const OPENAI_PROVIDER_REQUEST_TIMEOUT_MS = 18_000;
@@ -1191,51 +1192,61 @@ async function qwenGenerationPayload(
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: QWEN_BRIEF_SECTION_MODEL,
-      input: {
-        messages: [
-          { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
-          { role: "user", content: prompt },
-        ],
-      },
-      parameters: {
-        result_format: "message",
-        response_format: { type: "json_object" },
-        max_tokens: 4096,
-        temperature: 0.2,
-        enable_thinking: false,
-        enable_search: nativeSearch,
-        ...(nativeSearch ? {
-          search_options: {
-            search_strategy: "turbo",
-            forced_search: true,
-            enable_source: true,
-            enable_citation: true,
-            citation_format: "[ref_<number>]",
-            freshness: 7,
-          },
-        } : {}),
-      },
+      messages: [
+        { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
+        { role: "user", content: prompt },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: 4096,
+      temperature: 0.2,
+      enable_thinking: false,
+      enable_search: nativeSearch,
+      ...(nativeSearch ? {
+        search_options: {
+          search_strategy: "turbo",
+          forced_search: true,
+          enable_source: true,
+          enable_citation: true,
+          citation_format: "[ref_<number>]",
+          freshness: 7,
+        },
+      } : {}),
     }),
   }, "Qwen", deadlineAt);
   if (!response.ok) {
-    const detail = isRecord(payload) && (typeof payload.message === "string" || typeof payload.code === "string")
-      ? (payload.message ?? payload.code)
-      : `HTTP ${response.status}`;
-    throw new Error(`DashScope Generation API ${detail}`);
+    const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+    const detail = typeof error?.message === "string"
+      ? error.message
+      : isRecord(payload) && typeof payload.message === "string"
+        ? payload.message
+        : isRecord(payload) && typeof payload.code === "string"
+          ? payload.code
+          : `HTTP ${response.status}`;
+    throw new Error(`DashScope compatible Chat Completions API ${detail}`);
   }
   return payload;
 }
 
 function qwenText(payload: unknown): string {
-  const value = payload as { output?: { choices?: Array<{ message?: { content?: unknown } }> } };
-  const text = value.output?.choices?.[0]?.message?.content;
+  const value = payload as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+    output?: { choices?: Array<{ message?: { content?: unknown } }> };
+  };
+  const text = value.choices?.[0]?.message?.content ?? value.output?.choices?.[0]?.message?.content;
   if (typeof text !== "string") throw new Error("DashScope response did not include structured output text");
   return text;
 }
 
 function qwenSearchResults(payload: unknown): ProviderSearchResult[] {
-  const value = payload as { output?: { search_info?: { search_results?: unknown } } };
-  return Array.isArray(value.output?.search_info?.search_results) ? value.output.search_info.search_results.filter(isRecord) : [];
+  const value = payload as {
+    search_info?: { search_results?: unknown };
+    choices?: Array<{ message?: { search_info?: { search_results?: unknown } } }>;
+    output?: { search_info?: { search_results?: unknown } };
+  };
+  const results = value.search_info?.search_results
+    ?? value.choices?.[0]?.message?.search_info?.search_results
+    ?? value.output?.search_info?.search_results;
+  return Array.isArray(results) ? results.filter(isRecord) : [];
 }
 
 type OpenAISearchSource = Pick<ProviderSearchResult, "url" | "published_time" | "publish_time" | "published_at" | "publishedAt">;

@@ -45,7 +45,8 @@ const REQUIRED_SECTIONS = [
 const RECOMMENDATION_LANGUAGE = /建议(买入|卖出|加仓|减仓)|买点|卖点|仓位建议|收益承诺/;
 
 export const QWEN_MORNING_BRIEF_MODEL = "qwen-plus";
-export const DASHSCOPE_GENERATION_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
+export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+export const DASHSCOPE_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 
 export function validateLegacyMorningBrief(input: LegacyMorningBrief): { ok: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -166,10 +167,13 @@ interface QwenSearchResult {
 }
 
 interface QwenGenerationPayload {
+  choices?: Array<{ message?: { content?: string; search_info?: { search_results?: QwenSearchResult[] } }; finish_reason?: string }>;
+  search_info?: { search_results?: QwenSearchResult[] };
   output?: {
     choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
     search_info?: { search_results?: QwenSearchResult[] };
   };
+  error?: { code?: string; message?: string; type?: string };
   code?: string;
   message?: string;
 }
@@ -210,38 +214,37 @@ export async function generateQwenMorningBrief({
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: QWEN_MORNING_BRIEF_MODEL,
-      input: {
-        messages: [
-          { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
-          { role: "user", content: prompt },
-        ],
-      },
-      parameters: {
-        result_format: "message",
-        response_format: { type: "json_object" },
-        enable_thinking: false,
-        enable_search: true,
-        search_options: {
-          search_strategy: "turbo",
-          forced_search: true,
-          enable_source: true,
-          enable_citation: true,
-          citation_format: "[ref_<number>]",
-          freshness: 7,
-        },
+      messages: [
+        { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
+        { role: "user", content: prompt },
+      ],
+      response_format: { type: "json_object" },
+      enable_thinking: false,
+      enable_search: true,
+      search_options: {
+        search_strategy: "turbo",
+        forced_search: true,
+        enable_source: true,
+        enable_citation: true,
+        citation_format: "[ref_<number>]",
+        freshness: 7,
       },
     }),
   });
   const payload = await response.json() as QwenGenerationPayload;
   if (!response.ok) {
-    const detail = payload.message || payload.code || `HTTP ${response.status}`;
-    throw new Error(`DashScope Generation API ${detail}`);
+    const detail = payload.error?.message || payload.message || payload.code || `HTTP ${response.status}`;
+    throw new Error(`DashScope compatible Chat Completions API ${detail}`);
   }
-  const text = payload.output?.choices?.[0]?.message?.content;
+  const text = payload.choices?.[0]?.message?.content ?? payload.output?.choices?.[0]?.message?.content;
   if (!text) throw new Error("DashScope response did not include structured output text");
   const brief = JSON.parse(text) as LegacyMorningBrief;
   const generatedSources = new Map((brief.sources ?? []).map((source) => [source.url, source]));
-  brief.sources = (payload.output?.search_info?.search_results ?? [])
+  const searchResults = payload.search_info?.search_results
+    ?? payload.choices?.[0]?.message?.search_info?.search_results
+    ?? payload.output?.search_info?.search_results
+    ?? [];
+  brief.sources = searchResults
     .filter((source): source is QwenSearchResult & { index: number; title: string; url: string } =>
       Number.isFinite(source.index) && Boolean(source.title) && Boolean(source.url))
     .map((source) => ({

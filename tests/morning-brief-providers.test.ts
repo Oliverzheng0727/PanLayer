@@ -51,7 +51,7 @@ describe("independent morning-brief section providers", () => {
   it("tells the provider that a weekend brief is for a closed A-share session", async () => {
     let prompt = "";
     const fetcher: typeof fetch = async (_input, init) => {
-      prompt = JSON.parse(String(init?.body)).input.messages[1].content;
+      prompt = JSON.parse(String(init?.body)).messages[1].content;
       return new Response(JSON.stringify({
         output: {
           choices: [{ message: { content: JSON.stringify(modelSection("risk")) } }],
@@ -82,7 +82,7 @@ describe("independent morning-brief section providers", () => {
   it("forbids ranked-context terms in mapping and risk model prose", async () => {
     let prompt = "";
     const fetcher: typeof fetch = async (_input, init) => {
-      prompt = JSON.parse(String(init?.body)).input.messages[1].content;
+      prompt = JSON.parse(String(init?.body)).messages[1].content;
       return new Response(JSON.stringify({
         output: { choices: [{ message: { content: JSON.stringify(modelSection("mapping")) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/context" }] } },
       }));
@@ -144,8 +144,9 @@ describe("independent morning-brief section providers", () => {
 
   it("uses only supplied Firecrawl sources during Qwen correction", async () => {
     let body: {
-      input: { messages: Array<{ content: string }> };
-      parameters: { enable_search: boolean; search_options?: unknown };
+      messages: Array<{ content: string }>;
+      enable_search: boolean;
+      search_options?: unknown;
     } | undefined;
     let calls = 0;
     const externalId = "firecrawl_global-markets_1";
@@ -182,11 +183,11 @@ describe("independent morning-brief section providers", () => {
     });
 
     expect(calls).toBe(1);
-    expect(body?.parameters.enable_search).toBe(false);
-    expect(body?.parameters.search_options).toBeUndefined();
-    expect(body?.input.messages[1].content).toContain(externalId);
-    expect(body?.input.messages[1].content).toContain("不可信数据");
-    expect(body?.input.messages[1].content).not.toContain("qwen-secret");
+    expect(body?.enable_search).toBe(false);
+    expect(body?.search_options).toBeUndefined();
+    expect(body?.messages[1].content).toContain(externalId);
+    expect(body?.messages[1].content).toContain("不可信数据");
+    expect(body?.messages[1].content).not.toContain("qwen-secret");
     expect(result.section.sourceIds).toEqual([externalId]);
     expect(result.sources).toEqual([expect.objectContaining({
       id: externalId,
@@ -638,7 +639,7 @@ describe("independent morning-brief section providers", () => {
   it("adds bounded actionable retry feedback and literal coverage requirements to provider prompts", async () => {
     let prompt = "";
     const fetcher: typeof fetch = async (_input, init) => {
-      prompt = JSON.parse(String(init?.body)).input.messages[1].content;
+      prompt = JSON.parse(String(init?.body)).messages[1].content;
       return new Response(JSON.stringify({
         output: { choices: [{ message: { content: JSON.stringify(modelSection("global-industry")) } }], search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/retry" }] } },
       }));
@@ -708,14 +709,21 @@ describe("independent morning-brief section providers", () => {
     }
   });
   it("asks Qwen for exactly one sourced section and namespaces its search references", async () => {
-    let request: { parameters?: { enable_search?: boolean; enable_thinking?: boolean; max_tokens?: number; temperature?: number }; input?: { messages?: Array<{ content?: string }> } } = {};
-    const fetcher: typeof fetch = async (_input, init) => {
+    let requestUrl = "";
+    let request: {
+      enable_search?: boolean;
+      enable_thinking?: boolean;
+      max_tokens?: number;
+      temperature?: number;
+      response_format?: unknown;
+      messages?: Array<{ content?: string }>;
+    } = {};
+    const fetcher: typeof fetch = async (input, init) => {
+      requestUrl = String(input);
       request = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
-        output: {
-          choices: [{ message: { content: JSON.stringify(modelSection("global-industry")) } }],
-          search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/source", published_time: "2026-07-23T07:15:00+08:00" }] },
-        },
+        choices: [{ message: { content: JSON.stringify(modelSection("global-industry")) } }],
+        search_info: { search_results: [{ index: 1, title: "可信来源", url: "https://example.com/source", published_time: "2026-07-23T07:15:00+08:00" }] },
       }));
     };
 
@@ -727,13 +735,19 @@ describe("independent morning-brief section providers", () => {
       fetcher,
     });
 
-    expect(request.parameters?.enable_search).toBe(true);
-    expect(request.parameters).toMatchObject({ enable_thinking: false, max_tokens: 4096, temperature: 0.2 });
-    expect(request.input?.messages?.[1]?.content).toContain("global-industry");
-    expect(request.input?.messages?.[1]?.content).toContain("6 至 7 个有事实内容的 paragraph 或 bullet item");
-    expect(request.input?.messages?.[1]?.content).toContain("180 至 230 个中文字符");
-    expect(request.input?.messages?.[1]?.content).toContain("每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组");
-    expect(request.input?.messages?.[1]?.content).not.toContain("secret");
+    expect(requestUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
+    expect(request.enable_search).toBe(true);
+    expect(request).toMatchObject({
+      enable_thinking: false,
+      max_tokens: 4096,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    });
+    expect(request.messages?.[1]?.content).toContain("global-industry");
+    expect(request.messages?.[1]?.content).toContain("6 至 7 个有事实内容的 paragraph 或 bullet item");
+    expect(request.messages?.[1]?.content).toContain("180 至 230 个中文字符");
+    expect(request.messages?.[1]?.content).toContain("每个 paragraph、callout 和 bullet item 都必须有非空 sourceIds JSON 字符串数组");
+    expect(request.messages?.[1]?.content).not.toContain("secret");
     expect(result.sources[0]?.id).toBe("global-industry_ref_1");
     expect(JSON.stringify(result.section)).toContain("global-industry_ref_1");
     expect(result.section.status).toBe("complete");
@@ -812,7 +826,7 @@ describe("independent morning-brief section providers", () => {
   it("supplements only short Qwen drafts with independently namespaced sources", async () => {
     const short = { ...modelSection("risk"), blocks: [{ type: "paragraph", text: "情绪、观察、持续性、风险、关键。", sourceIds: ["ref_1"] }] };
     const supplement = modelSection("risk");
-    const requests: Array<{ input?: { messages?: Array<{ content?: string }> } }> = [];
+    const requests: Array<{ messages?: Array<{ content?: string }> }> = [];
     const fetcher: typeof fetch = async (_input, init) => {
       requests.push(JSON.parse(String(init?.body)));
       const section = requests.length === 1 ? short : supplement;
@@ -822,8 +836,8 @@ describe("independent morning-brief section providers", () => {
     };
     const result = await generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher, globalSnapshot: [] });
     expect(requests).toHaveLength(2);
-    expect(requests[1].input?.messages?.[1]?.content).toContain("只补充新的事实");
-    expect(requests[1].input?.messages?.[1]?.content).toContain("缺口字符数");
+    expect(requests[1].messages?.[1]?.content).toContain("只补充新的事实");
+    expect(requests[1].messages?.[1]?.content).toContain("缺口字符数");
     expect(result.sources.map((source) => source.id)).toEqual(["risk_ref_1", "risk_supp_ref_1"]);
     expect(JSON.stringify(result.section.blocks)).toContain("risk_supp_ref_1");
     const mergedContentLength = result.section.blocks.flatMap((block) => {
