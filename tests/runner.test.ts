@@ -641,7 +641,7 @@ describe("close review aggregation", () => {
     await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
       .resolves.toMatchObject({ ok: true, message: expect.stringContaining("partial") });
 
-    expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "failed modules: mapping" });
+    expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "incomplete modules: mapping" });
   });
 
   it("keeps Qwen at one external attempt per module for a multi-module batch", async () => {
@@ -866,19 +866,19 @@ describe("close review aggregation", () => {
     };
 
     await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk"] }))
-      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
+      .resolves.toMatchObject({ ok: true, status: "partial", message: expect.stringContaining("partial") });
 
     expect(calls).toBe(1);
     expect(requests).toHaveLength(1);
   });
 
-  it("persists a failed morning job run and names every failed module", async () => {
+  it("persists a readable partial fallback and names every incomplete module", async () => {
     const failedKeys = BRIEF_SECTION_DEFINITIONS_V3.map((item) => item.key);
     const { db, fetcher, jobUpdates } = morningBriefJobHarness(failedKeys);
 
     await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))
-      .resolves.toMatchObject({ ok: false, message: expect.stringContaining("failed") });
+      .resolves.toMatchObject({ ok: true, status: "partial", message: expect.stringContaining("partial") });
 
-    expect(jobUpdates.at(-1)).toEqual({ status: "failed", message: `failed modules: ${failedKeys.join(", ")}` });
+    expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: `incomplete modules: ${failedKeys.join(", ")}` });
   });
 });

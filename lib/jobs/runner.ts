@@ -1,10 +1,10 @@
-import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, type BriefBlock, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { validateBriefPublication } from "../ai/morning-brief-validation";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
 import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
 import { collectTier1News } from "../ai/news-intake/collector";
-import { selectBriefSourceBundle } from "../ai/news-intake/bundle-selector";
+import { selectBriefSourceBundle, type SelectedBriefSource } from "../ai/news-intake/bundle-selector";
 import { loadTier1NewsConfig } from "../ai/news-intake/config";
 import {
   NEWS_INTAKE_SCHEMA_STATEMENTS,
@@ -159,6 +159,64 @@ export function shouldSkipMorningBrief(
   return existingSchemaVersion === 3 && existingSectionCount === BRIEF_SECTION_DEFINITIONS_V3.length;
 }
 
+function verifiedEvidenceFallbackSection(input: {
+  key: BriefSectionKey;
+  sources: SelectedBriefSource[];
+  diagnostic: unknown;
+}): GeneratedBriefSection {
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((section) => section.key === input.key);
+  if (!definition) throw new Error(`Unknown brief section key: ${input.key}`);
+  const generatedAt = beijingTimestamp();
+  const sources = input.sources.slice(0, 8).map((source) => {
+    const published = source.publishedAt ? new Date(source.publishedAt) : null;
+    const retrieved = source.retrievedAt ? new Date(source.retrievedAt) : new Date();
+    return {
+      id: source.id,
+      title: source.title,
+      url: source.url,
+      publishedAt: published && !Number.isNaN(published.getTime()) ? published.toISOString() : null,
+      retrievedAt: beijingTimestamp(Number.isNaN(retrieved.getTime()) ? new Date() : retrieved),
+    };
+  });
+  const sourceIds = sources.map((source) => source.id);
+  const blocks: BriefBlock[] = [];
+  if (sources.length > 0) {
+    blocks.push(
+      { type: "heading", text: "已核验资讯原文" },
+      {
+        type: "bullets",
+        items: input.sources.slice(0, sources.length).map((source) => ({
+          text: `事件事实：${source.title}。原文短摘录：${source.content.slice(0, 360)}`,
+          sourceIds: [source.id],
+        })),
+      },
+    );
+  }
+  blocks.push({
+    type: "callout",
+    tone: "missing",
+    text: sources.length > 0
+      ? `AI深度整理暂缺，当前先展示已核验原文证据；系统将自动补全。原因：${sanitizeMorningBriefDiagnostic(input.diagnostic)}`
+      : `本模块暂未查到可验证更新，系统将自动补全。原因：${sanitizeMorningBriefDiagnostic(input.diagnostic)}`,
+    sourceIds: [],
+  });
+  return {
+    section: {
+      key: input.key,
+      title: definition.title,
+      summary: sources.length > 0
+        ? `生成服务暂时不可用，已切换为 ${sources.length} 条已核验资讯的可读证据视图。`
+        : "当前未查到可靠更新，模块已保留并等待自动补全。",
+      tags: ["证据兜底", "自动补全"],
+      status: "partial",
+      generatedAt,
+      blocks,
+      sourceIds,
+    },
+    sources,
+  };
+}
+
 function createQwenBriefGenerator(input: {
   apiKey: string;
   openAIApiKey?: string;
@@ -188,7 +246,13 @@ function createQwenBriefGenerator(input: {
     // entire batch budget and starve later modules. The scheduler retries only
     // failed modules five minutes later, when the deeper fallbacks below are
     // enabled.
-    if (!input.deepRecovery) throw primaryError;
+    if (!input.deepRecovery) {
+      return verifiedEvidenceFallbackSection({
+        key: sectionInput.key,
+        sources: bundleSources,
+        diagnostic: primaryError,
+      });
+    }
     if (bundleSources.length > 0) {
       const remaining = sectionInput.deadlineAt === undefined
         ? Number.POSITIVE_INFINITY
@@ -257,10 +321,14 @@ function createQwenBriefGenerator(input: {
           fetcher: input.fetcher,
         });
       } catch (fallbackError) {
-        throw new Error(`${primaryDiagnostic}; OpenAI fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
+        primaryError = new Error(`${primaryDiagnostic}; OpenAI fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
       }
     }
-    throw primaryError;
+    return verifiedEvidenceFallbackSection({
+      key: sectionInput.key,
+      sources: bundleSources,
+      diagnostic: primaryError,
+    });
   };
 }
 
@@ -1658,7 +1726,17 @@ export async function runPanLayerJob(
           newsBundle,
           deepRecovery,
         })
-        : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
+        : async ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => {
+          try {
+            return await generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
+          } catch (error) {
+            return verifiedEvidenceFallbackSection({
+              key,
+              sources: selectBriefSourceBundle(newsBundle, key, sectionDate),
+              diagnostic: error,
+            });
+          }
+        };
       const brief = await generateFullMorningBrief({
         date,
         model: ai.model,
@@ -1675,9 +1753,9 @@ export async function runPanLayerJob(
       });
       finalStatus = brief.status;
       const failedKeys = brief.sections
-        .filter((section) => section.status === "failed")
+        .filter((section) => section.status !== "complete")
         .map((section) => section.key);
-      finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
+      finalMessage = failedKeys.length > 0 ? `incomplete modules: ${failedKeys.join(", ")}` : "";
     }
     if (run?.id) await db.prepare("UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?").bind(finalStatus, finalMessage, new Date().toISOString(), run.id).run();
     await finishCheckpoint(finalStatus, finalMessage);

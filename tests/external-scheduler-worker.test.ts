@@ -70,7 +70,7 @@ describe("independent Cloudflare scheduler worker", () => {
     expect(config).toContain('"compatibility_date": "2026-07-24"');
     expect(config).toContain('"workers_dev": false');
     expect(config).toContain('"50,55 22 * * *"');
-    expect(config).toContain('"15,20,25,30 23,0 * * *"');
+    expect(config).toContain('"15-55/5 23 * * *"');
     expect(config).toContain('"30 17 * * *"');
     expect(config).toContain('"0,10,20,25-30 1-8 * * MON-FRI"');
     expect(config.match(/"[^\"]+\* \* [A-Z*-]+"/g)).toHaveLength(5);
