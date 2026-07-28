@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, BRIEF_SECTION_DEFINITIONS_V3, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, prepareMorningBriefRegeneration, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -445,6 +445,38 @@ describe("close review aggregation", () => {
     expect(shouldSkipMorningBrief("complete", false, 2, 5)).toBe(false);
     expect(shouldSkipMorningBrief("complete", false, 3, 5)).toBe(false);
     expect(shouldSkipMorningBrief("complete", false, 3, 7)).toBe(true);
+  });
+
+  it("removes prior module rows before a protected serial regeneration", async () => {
+    const statements: Array<{ sql: string; values: unknown[] }> = [];
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...bound: unknown[]) {
+            values = bound;
+            return this;
+          },
+          async run() {
+            statements.push({ sql, values });
+            return { meta: { changes: sql.startsWith("DELETE FROM morning_brief_sections") ? 7 : 1 } };
+          },
+        };
+      },
+      async batch() {
+        return [];
+      },
+    } as unknown as D1Database;
+
+    await expect(prepareMorningBriefRegeneration(
+      db,
+      new Date("2026-07-28T04:00:00Z"),
+    )).resolves.toEqual({ date: "2026-07-28", sectionsMarked: 7 });
+    expect(statements[0]).toMatchObject({
+      sql: "DELETE FROM morning_brief_sections WHERE trade_date = ?",
+      values: ["2026-07-28"],
+    });
+    expect(statements.some(({ sql }) => sql.startsWith("UPDATE morning_brief_sections"))).toBe(false);
   });
 
   it("prefers Qwen and keeps OpenAI as an optional fallback", () => {

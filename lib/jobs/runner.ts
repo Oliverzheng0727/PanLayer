@@ -1803,13 +1803,13 @@ export async function prepareMorningBriefRegeneration(
   await ensureRuntimeSchema(db);
   const { date } = beijingDateParts(now);
   const updatedAt = now.toISOString();
+  // Remove the previous module rows instead of marking every row partial.
+  // The serial scheduler always prioritizes missing modules before retrying a
+  // partial one, so deleting them lets a protected regeneration advance
+  // through all seven modules rather than retrying module 01 indefinitely.
   const sectionResult = await db.prepare(
-    `UPDATE morning_brief_sections
-     SET status = 'partial',
-         error = '受保护的运维重生成已启动',
-         updated_at = ?
-     WHERE trade_date = ?`,
-  ).bind(updatedAt, date).run();
+    "DELETE FROM morning_brief_sections WHERE trade_date = ?",
+  ).bind(date).run();
   await db.prepare(
     `UPDATE morning_briefs
      SET status = 'partial',
