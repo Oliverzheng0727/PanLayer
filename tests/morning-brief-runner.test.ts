@@ -266,7 +266,7 @@ describe("full morning brief runner", () => {
   });
 
   it("keeps the production batch deadline below the lease stale window", () => {
-    expect(MORNING_BRIEF_BATCH_DEADLINE_MS).toBe(110_000);
+    expect(MORNING_BRIEF_BATCH_DEADLINE_MS).toBe(150_000);
     expect(MORNING_BRIEF_BATCH_DEADLINE_MS).toBeLessThan(MORNING_BRIEF_LEASE_MS);
   });
 });

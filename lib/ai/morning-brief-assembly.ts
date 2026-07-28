@@ -67,11 +67,11 @@ export function failedBriefSection(key: BriefSectionKey, error: string, generate
   return {
     key,
     title: definition.title,
-    summary: "该模块生成失败，内容暂缺。",
+    summary: "该模块暂未完成，系统将自动重试。",
     tags: [],
     status: "failed",
     generatedAt,
-    blocks: [{ type: "callout", tone: "missing", text: `模块生成失败，内容暂缺：${detail}`, sourceIds: [] }],
+    blocks: [{ type: "callout", tone: "missing", text: `本模块正在等待自动补全；当前失败原因：${detail}`, sourceIds: [] }],
     sourceIds: [],
   };
 }

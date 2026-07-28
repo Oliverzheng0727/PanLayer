@@ -264,6 +264,12 @@ export function nextRetryAtForCheckpoint(
   if (key.startsWith("breadth-")) {
     return breadthRetryAtForAttempt(now, attempt);
   }
+  // The external scheduler has dedicated 07:20/07:25/07:30 recovery ticks.
+  // Keep morning-brief retries aligned with them; the runner only regenerates
+  // failed or missing modules, so completed content is never charged twice.
+  if (key === "morning-brief") {
+    return new Date(now.getTime() + 5 * 60_000).toISOString();
+  }
   if (
     status === "partial"
     && (key === "new-high-bootstrap" || key === "etf-metrics-refresh" || key === "history-backfill")

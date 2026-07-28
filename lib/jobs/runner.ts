@@ -78,13 +78,16 @@ import {
 } from "./checkpoints";
 
 const MINIMUM_ALL_A_UNIVERSE = 5_000;
-// The 110s batch deadline stays below the 180s stale lease window, so a live job cannot be reclaimed.
+// Initial generation gives every module one fair provider slot. Targeted recovery
+// runs may use the remaining time for source/provider fallbacks, while the batch
+// still finishes before the 180s stale lease window.
 export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
-export const MORNING_BRIEF_BATCH_DEADLINE_MS = 110 * 1_000;
+export const MORNING_BRIEF_BATCH_DEADLINE_MS = 150 * 1_000;
 const GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS = 8 * 1_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
 const FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS = 40 * 1_000;
 const QWEN_BUNDLE_RETRY_MINIMUM_REMAINING_MS = 30 * 1_000;
+const OPENAI_FALLBACK_MINIMUM_REMAINING_MS = 32 * 1_000;
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -158,10 +161,12 @@ export function shouldSkipMorningBrief(
 
 function createQwenBriefGenerator(input: {
   apiKey: string;
+  openAIApiKey?: string;
   firecrawlApiKey?: string;
   firecrawlEndpoint?: string;
   fetcher: typeof fetch;
   newsBundle?: import("../ai/news-intake/types").NewsBundle;
+  deepRecovery?: boolean;
 }): BriefSectionGenerator {
   const fallbackUsed = new Set<BriefSectionKey>();
   return async (sectionInput) => {
@@ -179,6 +184,11 @@ function createQwenBriefGenerator(input: {
     } catch (error) {
       primaryError = error;
     }
+    // A seven-module first pass must not let one slow module consume the
+    // entire batch budget and starve later modules. The scheduler retries only
+    // failed modules five minutes later, when the deeper fallbacks below are
+    // enabled.
+    if (!input.deepRecovery) throw primaryError;
     if (bundleSources.length > 0) {
       const remaining = sectionInput.deadlineAt === undefined
         ? Number.POSITIVE_INFINITY
@@ -202,43 +212,55 @@ function createQwenBriefGenerator(input: {
     const remaining = sectionInput.deadlineAt === undefined
       ? Number.POSITIVE_INFINITY
       : sectionInput.deadlineAt - Date.now();
-    if (!input.firecrawlApiKey
-      || fallbackUsed.has(sectionInput.key)
-      || remaining < FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS) {
-      throw primaryError;
+    if (input.firecrawlApiKey
+      && !fallbackUsed.has(sectionInput.key)
+      && remaining >= FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS) {
+      fallbackUsed.add(sectionInput.key);
+      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
+      try {
+        const externalSources = await searchFirecrawlBriefSources({
+          date: sectionInput.date,
+          key: sectionInput.key,
+          apiKey: input.firecrawlApiKey,
+          endpoint: input.firecrawlEndpoint,
+          fetcher: input.fetcher,
+          deadlineAt: sectionInput.deadlineAt,
+        });
+        if (externalSources.length === 0) {
+          throw new Error("Firecrawl fallback returned no usable sources");
+        }
+        const supplementedSources = [...bundleSources, ...externalSources]
+          .filter((source, index, all) => all.findIndex((item) => item.id === source.id || item.url === source.url) === index);
+        return await generateQwenBriefSection({
+          ...sectionInput,
+          attempt: Math.max(sectionInput.attempt, bundleSources.length > 0 ? 3 : 2),
+          previousError: primaryDiagnostic,
+          apiKey: input.apiKey,
+          fetcher: input.fetcher,
+          externalSources: supplementedSources,
+        });
+      } catch (fallbackError) {
+        primaryError = new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
+      }
     }
-    fallbackUsed.add(sectionInput.key);
-    const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
-    let externalSources;
-    try {
-      externalSources = await searchFirecrawlBriefSources({
-        date: sectionInput.date,
-        key: sectionInput.key,
-        apiKey: input.firecrawlApiKey,
-        endpoint: input.firecrawlEndpoint,
-        fetcher: input.fetcher,
-        deadlineAt: sectionInput.deadlineAt,
-      });
-    } catch (fallbackSearchError) {
-      throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackSearchError)}`);
+    const openAIRemaining = sectionInput.deadlineAt === undefined
+      ? Number.POSITIVE_INFINITY
+      : sectionInput.deadlineAt - Date.now();
+    if (input.openAIApiKey && openAIRemaining >= OPENAI_FALLBACK_MINIMUM_REMAINING_MS) {
+      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
+      try {
+        return await generateOpenAIBriefSection({
+          ...sectionInput,
+          attempt: Math.max(sectionInput.attempt, 2),
+          previousError: primaryDiagnostic,
+          apiKey: input.openAIApiKey,
+          fetcher: input.fetcher,
+        });
+      } catch (fallbackError) {
+        throw new Error(`${primaryDiagnostic}; OpenAI fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
+      }
     }
-    if (externalSources.length === 0) {
-      throw new Error(`${primaryDiagnostic}; Firecrawl fallback returned no usable sources`);
-    }
-    const supplementedSources = [...bundleSources, ...externalSources]
-      .filter((source, index, all) => all.findIndex((item) => item.id === source.id || item.url === source.url) === index);
-    try {
-      return await generateQwenBriefSection({
-        ...sectionInput,
-        attempt: Math.max(sectionInput.attempt, bundleSources.length > 0 ? 3 : 2),
-        previousError: primaryDiagnostic,
-        apiKey: input.apiKey,
-        fetcher: input.fetcher,
-        externalSources: supplementedSources,
-      });
-    } catch (fallbackGenerationError) {
-      throw new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackGenerationError)}`);
-    }
+    throw primaryError;
   };
 }
 
@@ -1569,7 +1591,10 @@ export async function runPanLayerJob(
         await finishCheckpoint("complete", "already complete; skipped");
         return { ok: true, status: "complete", message: `${label} already complete; skipped` };
       }
-      const selectedKeys = options.mode === "failed" ? await failedOrMissingBriefSectionKeys(db, date) : options.sectionKeys ?? BRIEF_SECTION_DEFINITIONS_V3.map((section) => section.key);
+      const selectedKeys = options.sectionKeys
+        ?? (options.mode === "failed" || existingSchemaVersion !== undefined
+          ? await failedOrMissingBriefSectionKeys(db, date)
+          : BRIEF_SECTION_DEFINITIONS_V3.map((section) => section.key));
       if (selectedKeys.length === 0) {
         if (run?.id) await db.prepare("UPDATE job_runs SET status='complete', message='no failed or missing modules; skipped', finished_at=? WHERE id=?").bind(new Date().toISOString(), run.id).run();
         await finishCheckpoint("complete", "no failed or missing modules; skipped");
@@ -1622,14 +1647,17 @@ export async function runPanLayerJob(
       await assertMorningBriefLease(morningBriefLease);
       await persistGlobalPoints(db, date, global.raw, morningBriefLease);
       const ai = resolveMorningBriefProvider(env);
+      const deepRecovery = selectedKeys.length < BRIEF_SECTION_DEFINITIONS_V3.length;
       const generator: BriefSectionGenerator = ai.provider === "qwen"
         ? createQwenBriefGenerator({
           apiKey: ai.apiKey,
+          openAIApiKey: env.OPENAI_API_KEY,
           firecrawlApiKey: env.FIRECRAWL_API_KEY,
-           firecrawlEndpoint: env.FIRECRAWL_API_URL,
-           fetcher,
-           newsBundle,
-         })
+          firecrawlEndpoint: env.FIRECRAWL_API_URL,
+          fetcher,
+          newsBundle,
+          deepRecovery,
+        })
         : ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => generateOpenAIBriefSection({ date: sectionDate, key, attempt, previousError, apiKey: ai.apiKey, fetcher, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline });
       const brief = await generateFullMorningBrief({
         date,
@@ -1646,11 +1674,8 @@ export async function runPanLayerJob(
         deadlineAt,
       });
       finalStatus = brief.status;
-      // Keep the job-run message compatible with the original five-module
-      // operational dashboard. V3 technical/funding failures remain present
-      // in the persisted brief and coverage metadata, so no failure is hidden.
       const failedKeys = brief.sections
-        .filter((section) => section.status === "failed" && (section.key === "global-markets" || section.key === "global-industry" || section.key === "domestic" || section.key === "mapping" || section.key === "risk"))
+        .filter((section) => section.status === "failed")
         .map((section) => section.key);
       finalMessage = failedKeys.length > 0 ? `failed modules: ${failedKeys.join(", ")}` : "";
     }

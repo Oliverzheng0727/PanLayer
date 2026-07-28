@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BRIEF_SECTION_DEFINITIONS, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS, BRIEF_SECTION_DEFINITIONS_V3, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
 import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
@@ -52,7 +52,7 @@ function morningBriefJobHarness(failedKeys: BriefSectionKey[]) {
   const fetcher: typeof fetch = async (_input, init) => {
     const request = JSON.parse(String(init?.body)) as { input: { messages: Array<{ content: string }> } };
     const prompt = request.input.messages[1].content;
-    const definition = BRIEF_SECTION_DEFINITIONS.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
+    const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => prompt.includes(`key 必须为 "${item.key}"`));
     if (definition) requests[definition.key] = (requests[definition.key] ?? 0) + 1;
     if (!definition || failedKeys.includes(definition.key)) {
       return new Response(JSON.stringify({ message: "provider unavailable" }), { status: 503 });
@@ -121,10 +121,38 @@ function orchestratedLeaseHarness() {
 }
 
 function qwenResponse(key: BriefSectionKey, status = 200) {
-  const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === key)!;
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key)!;
   return new Response(JSON.stringify(status === 200 ? {
     output: { choices: [{ message: { content: JSON.stringify({ key, title: definition.title, summary: "摘要", tags: ["测试"], blocks: [{ type: "paragraph", text: `${definition.requiredTerms.join("、")}。${"客观事实与盘面映射。".repeat(130)}`, sourceIds: ["ref_1"] }] }) } }], search_info: { search_results: [{ index: 1, title: "来源", url: `https://example.com/${key}` }] } },
   } : { message: "provider unavailable" }), { status });
+}
+
+function openAIResponse(key: BriefSectionKey) {
+  const definition = BRIEF_SECTION_DEFINITIONS_V3.find((item) => item.key === key)!;
+  const url = `https://example.com/openai-${key}`;
+  return Response.json({
+    output: [
+      { type: "web_search_call", action: { sources: [{ type: "url", url }] } },
+      {
+        type: "message",
+        content: [{
+          type: "output_text",
+          text: JSON.stringify({
+            key,
+            title: definition.title,
+            summary: "备用生成源已完成该模块。",
+            tags: ["市场"],
+            blocks: [{
+              type: "paragraph",
+              text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`,
+              sourceUrls: [url],
+            }],
+          }),
+          annotations: [{ type: "url_citation", title: "备用可靠来源", url }],
+        }],
+      },
+    ],
+  });
 }
 
 describe("close review aggregation", () => {
@@ -752,6 +780,32 @@ describe("close review aggregation", () => {
     expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
   });
 
+  it("falls back to OpenAI for a failed Qwen module when the backup key is configured", async () => {
+    const { db } = morningBriefJobHarness([]);
+    const calls = { qwen: 0, openai: 0 };
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).includes("api.openai.com")) {
+        calls.openai += 1;
+        return openAIResponse("risk");
+      }
+      calls.qwen += 1;
+      return Response.json({ message: "provider unavailable" }, { status: 503 });
+    };
+
+    await runPanLayerJob(
+      { type: "morning-brief" },
+      new Date("2026-07-22T23:15:00Z"),
+      {
+        DB: db,
+        DASHSCOPE_API_KEY: "qwen",
+        OPENAI_API_KEY: "openai",
+      },
+      { fetcher, sectionKeys: ["risk"] },
+    );
+
+    expect(calls).toEqual({ qwen: 1, openai: 1 });
+  });
+
   it("skips Firecrawl when fewer than 40 seconds remain in the batch budget", async () => {
     vi.useFakeTimers();
     try {
@@ -765,7 +819,7 @@ describe("close review aggregation", () => {
           return Response.json({ success: true, data: { news: [] } });
         }
         calls.qwen += 1;
-        vi.setSystemTime(new Date(now.getTime() + 71_000));
+        vi.setSystemTime(new Date(now.getTime() + 111_000));
         return Response.json({ message: "provider unavailable" }, { status: 503 });
       };
 
@@ -819,7 +873,7 @@ describe("close review aggregation", () => {
   });
 
   it("persists a failed morning job run and names every failed module", async () => {
-    const failedKeys = BRIEF_SECTION_DEFINITIONS.map((item) => item.key);
+    const failedKeys = BRIEF_SECTION_DEFINITIONS_V3.map((item) => item.key);
     const { db, fetcher, jobUpdates } = morningBriefJobHarness(failedKeys);
 
     await expect(runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher }))

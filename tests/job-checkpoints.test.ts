@@ -74,6 +74,12 @@ describe("daily job checkpoints", () => {
       now,
       3,
     )).toBe("2026-07-24T08:30:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "morning-brief",
+      "partial",
+      now,
+      3,
+    )).toBe("2026-07-24T08:05:00.000Z");
   });
 
   it("retries failed breadth captures within the following minute", () => {
