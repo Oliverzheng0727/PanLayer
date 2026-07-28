@@ -34,6 +34,7 @@ import {
   type MorningBriefMarketContext,
 } from "../ai/morning-brief-providers";
 import { bucketLimitLadder, calculateBreadth, calculateLimitPremium, calculateOpeningBreadth, classifyLimitStatus, rankLeaders, rankSectors } from "../domain/metrics";
+import { isVerifiedSectorMetric } from "../domain/market-structure";
 import { buildMarketComparison } from "../domain/comparison";
 import { buildRecognitionRanking, type RecognitionBars } from "../domain/recognition";
 import type { Breadth, DailyReview, Quote, RecognitionRanking, SectorMetric, StructuredMarketSignals } from "../domain/types";
@@ -641,18 +642,22 @@ export function buildDailyReview({
         };
   const sectors = new Map<string, Quote[]>();
   poolLimitUps.forEach((item) => sectors.set(item.sector, [...(sectors.get(item.sector) ?? []), item]));
-  const sectorMetrics: SectorMetric[] = [...sectors].map(([name, items]) => ({
-    name,
-    limitUpCount: items.length,
-    averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
-    amountGrowthPct: null,
-    maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
-  }));
+  const sectorMetrics: SectorMetric[] = [...sectors].flatMap(([name, items]) => {
+    const metric = {
+      name,
+      limitUpCount: items.length,
+      averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
+      amountGrowthPct: null,
+      maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
+    };
+    return isVerifiedSectorMetric(metric) ? [metric] : [];
+  });
   const quoteLimitUps = merged.filter((item) => classifyLimitStatus(item) === "limit-up");
   const limitUps = structure.status === "failed" ? [] : poolLimitUps;
   const resolvedBreadth = breadth;
-  const rankedSectorMetrics = structuredSignals?.sectors.length
-    ? rankSectors(structuredSignals.sectors).slice(0, 20)
+  const structuredSectorMetrics = structuredSignals?.sectors.filter(isVerifiedSectorMetric) ?? [];
+  const rankedSectorMetrics = structuredSectorMetrics.length
+    ? rankSectors(structuredSectorMetrics).slice(0, 20)
     : rankSectors(sectorMetrics).slice(0, 20);
   const comparison = boardPools ? buildMarketComparison({
     date,

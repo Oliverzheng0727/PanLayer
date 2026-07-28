@@ -3,6 +3,7 @@ import type {
   StructuredMarketSignals,
   StructuredSignalEvidence,
 } from "../domain/types";
+import { isVerifiedSectorMetric } from "../domain/market-structure";
 import type { PopularitySnapshot } from "./ths-popularity";
 
 const DATASET_KEYS = [
@@ -58,11 +59,12 @@ export function applyStructuredSignalFallbacks({
     ...signals,
     hotStocks: [...signals.hotStocks],
     anomalies: [...signals.anomalies],
-    sectors: [...signals.sectors],
+    sectors: signals.sectors.filter(isVerifiedSectorMetric),
     evidence: { ...signals.evidence },
     errors: [...signals.errors],
   };
   const marketTime = signals.marketTime || `${referenceDate}T15:00:00+08:00`;
+  const verifiedFallbackSectors = sectors.filter(isVerifiedSectorMetric);
 
   if (next.hotStocks.length === 0 && popularity.items.length > 0) {
     next.hotStocks = popularity.items.map((item) => ({
@@ -110,18 +112,28 @@ export function applyStructuredSignalFallbacks({
     }
   }
 
-  if (next.sectors.length === 0 && sectors.length > 0) {
-    next.sectors = [...sectors];
+  if (next.sectors.length === 0 && verifiedFallbackSectors.length > 0) {
+    next.sectors = [...verifiedFallbackSectors];
     next.evidence.sectors = fallbackEvidence({
       source: "东方财富板块行情（降级）",
       marketTime,
       receivedAt,
       rawCount: sectors.length,
-      validCount: sectors.length,
+      validCount: verifiedFallbackSectors.length,
       status: "complete",
       message: "扶摇板块接口不可用，使用东方财富板块行情降级",
     });
     next.errors = next.errors.filter((message) => !message.startsWith("板块："));
+  } else if (next.sectors.length === 0 && sectors.length > 0) {
+    next.evidence.sectors = fallbackEvidence({
+      source: "东方财富板块行情（降级）",
+      marketTime,
+      receivedAt,
+      rawCount: sectors.length,
+      validCount: 0,
+      status: "failed",
+      message: "东方财富板块结果缺少可验证分类，已丢弃“未分类”占位数据",
+    });
   }
 
   next.datasetSuccess = DATASET_KEYS.filter((key) => {

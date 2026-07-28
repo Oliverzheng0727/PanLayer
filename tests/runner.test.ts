@@ -606,6 +606,32 @@ describe("close review aggregation", () => {
     });
   });
 
+  it("never turns an unclassified pool into a synthetic hotspot sector", () => {
+    const boardPools: BoardPools = {
+      limitUp: [
+        { code: "600001", name: "首板甲", pctChange: 10, amount: 2e8, industry: "未分类", limitStreak: 1, previousLimitStreak: 0, firstLimitTime: "09:35:00" },
+      ],
+      broken: [],
+      limitDown: [],
+      yesterdayLimitUp: [],
+    };
+    const review = buildDailyReview({
+      date: "2026-07-23",
+      quotes: [q("600001.SH", 10)],
+      limitPool: [],
+      breadth: [],
+      marginBalance: null,
+      high20: 1,
+      high120: 1,
+      allTimeHigh: 1,
+      source: "东方财富",
+      boardPools,
+    });
+
+    expect(review.sectors).toEqual([]);
+    expect(review.leaders).toHaveLength(1);
+  });
+
   it("attaches the verified comparison snapshot to the daily review", () => {
     const boardPools: BoardPools = {
       limitUp: [{ code: "600001", name: "二板甲", pctChange: 10, amount: 2e8, industry: "机器人", limitStreak: 2, previousLimitStreak: 0, firstLimitTime: "09:35:00" }],

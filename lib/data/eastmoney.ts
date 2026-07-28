@@ -506,14 +506,20 @@ export function createEastmoneyProvider(fetcher: typeof fetch = fetch): MarketDa
     async getSectors() {
       const quotes = await getQuotes();
       const grouped = new Map<string, Quote[]>();
-      quotes.forEach((item) => grouped.set(item.sector, [...(grouped.get(item.sector) ?? []), item]));
-      return rankSectors([...grouped].map(([name, items]) => ({
-        name,
-        limitUpCount: items.filter((item) => classifyLimitStatus(item) === "limit-up").length,
-        averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
-        amountGrowthPct: null,
-        maxStreak: Math.max(0, ...items.map((item) => item.limitStreak)),
-      })));
+      quotes
+        .filter((item) => item.sector && item.sector !== "未分类" && item.sector !== "-")
+        .forEach((item) => grouped.set(item.sector, [...(grouped.get(item.sector) ?? []), item]));
+      return rankSectors([...grouped].flatMap(([name, items]) => {
+        const limitUpCount = items.filter((item) => classifyLimitStatus(item) === "limit-up").length;
+        if (limitUpCount === 0) return [];
+        return [{
+          name,
+          limitUpCount,
+          averagePct: Number((items.reduce((sum, item) => sum + item.pctChange, 0) / items.length).toFixed(2)),
+          amountGrowthPct: null,
+          maxStreak: Math.max(1, ...items.map((item) => item.limitStreak)),
+        }];
+      }));
     },
     async getEtfs() {
       const etfPageUrl = (page: number) => `https://88.push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:MK0021,b:MK0022,b:MK0023,b:MK0024&fields=f12,f14,f2,f3,f6,f8,f20`;

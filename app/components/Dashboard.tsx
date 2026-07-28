@@ -5,7 +5,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
-import { resolveReviewStructureStatus } from "../../lib/domain/market-structure";
+import {
+  isVerifiedSectorMetric,
+  resolveReviewSectorStatus,
+  resolveReviewStructureStatus,
+} from "../../lib/domain/market-structure";
 import type { Breadth, DailyReview, Quote } from "../../lib/domain/types";
 import type { EtfSnapshot } from "../../lib/data/provider";
 import { historyRowToOverview } from "../../lib/history/overview";
@@ -148,6 +152,10 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
   const resolvedStructure = resolveReviewStructureStatus(review);
   const structureStatus = resolvedStructure.status;
   const structureMessage = resolvedStructure.message;
+  const resolvedSectors = resolveReviewSectorStatus(review);
+  const sectorStatus = resolvedSectors.status;
+  const sectorMessage = resolvedSectors.message;
+  const verifiedSectors = review.sectors.filter(isVerifiedSectorMetric);
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
   const selectedHistoryRow = history.find((row) => row.date === selectedHistoryDate)
@@ -369,7 +377,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           </section>
 
           <section id="themes" className="dashboard-section grid scroll-mt-24 gap-5 xl:grid-cols-2">
-            <Panel title="热点板块" eyebrow="SECTOR HEAT">{structureStatus === "failed" ? <StructureUnavailable message={structureMessage} compact /> : <DataTable headers={["板块", "涨停", "均涨幅", "成交增量", "高度"]}>{review.sectors.map((item) => <tr key={item.name}><td className="font-medium text-white/85">{item.name}</td><td className="rise">{item.limitUpCount}</td><td className="rise">{pct(item.averagePct)}</td><td>{pct(item.amountGrowthPct)}</td><td>{item.maxStreak}板</td></tr>)}</DataTable>}</Panel>
+            <Panel title="热点板块" eyebrow="SECTOR HEAT">{sectorStatus === "failed" ? <StructureUnavailable message={sectorMessage} compact /> : <DataTable headers={["板块", "涨停", "均涨幅", "成交增量", "高度"]}>{verifiedSectors.map((item) => <tr key={item.name}><td className="font-medium text-white/85">{item.name}</td><td className="rise">{item.limitUpCount}</td><td className="rise">{pct(item.averagePct)}</td><td>{pct(item.amountGrowthPct)}</td><td>{item.maxStreak}板</td></tr>)}</DataTable>}</Panel>
             <Panel title="客观龙头" eyebrow="LEADER BOARD">{structureStatus === "failed" ? <StructureUnavailable message={structureMessage} compact /> : <DataTable headers={["股票", "题材", "连板", "涨幅"]}>{review.leaders.map((item) => <tr key={item.symbol}><td><strong className="block text-white/85">{item.name}</strong><span className="text-[10px] text-white/25">{item.symbol}</span></td><td>{item.sector}</td><td>{item.limitStreak}板</td><td className="rise">{pct(item.pctChange)}</td></tr>)}</DataTable>}</Panel>
             {review.structuredSignals && (
               <Panel title="扶摇客观信号" eyebrow="STRUCTURED SIGNALS" className="xl:col-span-2">

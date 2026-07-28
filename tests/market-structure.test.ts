@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolveReviewStructureStatus } from "../lib/domain/market-structure";
+import {
+  resolveReviewSectorStatus,
+  resolveReviewStructureStatus,
+} from "../lib/domain/market-structure";
 import type { DailyReview, Quote } from "../lib/domain/types";
 
 const quote = (limitStreak: number): Quote => ({
@@ -58,5 +61,34 @@ describe("review market structure status", () => {
       receivedAt: "2026-07-23T08:10:00Z",
     };
     expect(resolveReviewStructureStatus(current)).toEqual({ status: "complete", message: "已校验" });
+  });
+
+  it("rejects an unclassified sector placeholder even when ladder data is valid", () => {
+    const current = review(quote(1));
+    current.structure = {
+      status: "complete",
+      source: "东方财富四池",
+      message: "已校验",
+      receivedAt: "2026-07-23T08:10:00Z",
+    };
+    expect(resolveReviewSectorStatus(current)).toEqual({
+      status: "failed",
+      message: "板块分类数据暂缺；未展示“未分类”占位数据",
+    });
+  });
+
+  it("keeps a verified sector available independently of the ladder status", () => {
+    const current = review(quote(1));
+    current.sectors = [{
+      name: "机器人",
+      limitUpCount: 2,
+      averagePct: 3.5,
+      amountGrowthPct: null,
+      maxStreak: 2,
+    }];
+    expect(resolveReviewSectorStatus(current)).toEqual({
+      status: "partial",
+      message: "热点板块来自已验证涨停归属，板块指数仍待交叉校验",
+    });
   });
 });

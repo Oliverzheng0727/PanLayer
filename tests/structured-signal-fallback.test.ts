@@ -81,4 +81,35 @@ describe("structured signal fallback", () => {
     expect(result?.evidence.sectors.source).toContain("东方财富");
     expect(result?.errors).toEqual([]);
   });
+
+  it("drops an unclassified quote aggregate instead of presenting it as a sector", () => {
+    const result = applyStructuredSignalFallbacks({
+      signals: signals(),
+      popularity: {
+        source: "同花顺热榜",
+        status: "failed",
+        marketTime: "2026-07-27T15:00:00+08:00",
+        receivedAt: "2026-07-27T08:01:00.000Z",
+        rawCount: 0,
+        items: [],
+        message: "empty",
+      },
+      sectors: [{
+        name: "未分类",
+        limitUpCount: 61,
+        averagePct: -0.79,
+        amountGrowthPct: null,
+        maxStreak: 0,
+      }],
+      referenceDate: "2026-07-27",
+      receivedAt: "2026-07-27T08:02:00.000Z",
+    });
+
+    expect(result?.sectors).toEqual([]);
+    expect(result?.evidence.sectors).toMatchObject({
+      status: "failed",
+      validCount: 0,
+      message: expect.stringContaining("已丢弃“未分类”"),
+    });
+  });
 });
