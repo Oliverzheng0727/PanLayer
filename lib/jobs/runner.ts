@@ -760,7 +760,7 @@ const schemaStatements = [
   ...NEWS_INTAKE_SCHEMA_STATEMENTS,
 ];
 
-async function ensureRuntimeSchema(db: D1Database) {
+export async function ensureRuntimeSchema(db: D1Database) {
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
 }
 
@@ -1156,8 +1156,8 @@ export async function runPanLayerJob(
         store,
         provider: adjustedBarProvider,
         targetDate,
-        batchSize: 40,
-        concurrency: 3,
+        batchSize: 48,
+        concurrency: 4,
       });
       const snapshot = await refreshNewHighProgressSnapshot(db, targetDate);
       const coveragePct = snapshot.target > 0
@@ -1176,7 +1176,7 @@ export async function runPanLayerJob(
         source: fuyao
           ? "扶摇 Fuyao / 东方财富 / 腾讯前复权日K"
           : "东方财富 / 腾讯前复权日K",
-        batchSize: 40,
+        batchSize: 48,
         concurrency: 4,
       });
       const contributionPatch = contributionProgress.coveragePct >= 95
@@ -1694,7 +1694,16 @@ export async function runPanLayerJob(
         { status: review.status, breadthCaptured: review.breadthMeta?.captured ?? review.breadth.length },
       );
       finalStatus = review.status === "complete" ? "complete" : "partial";
-      finalMessage = `收盘复盘 ${review.status}；盘中快照 ${review.breadthMeta?.captured ?? review.breadth.length}/6`;
+      const closeStageRows = await db.prepare(
+        `SELECT stage, status FROM job_checkpoints
+          WHERE trade_date = ? AND job_key = 'close-review'
+            AND stage NOT IN ('main', 'assemble')`,
+      ).bind(date).all<{ stage: string; status: string }>();
+      const closeStages = closeStageRows.results ?? [];
+      const closeStageCompleted = closeStages.filter((item) => item.status === "complete").length;
+      finalMessage =
+        `收盘复盘 ${review.status}；阶段 ${closeStageCompleted}/${closeStages.length || 7}；` +
+        `盘中快照 ${review.breadthMeta?.captured ?? review.breadth.length}/6`;
     } else {
       const deadlineAt = Date.now() + MORNING_BRIEF_BATCH_DEADLINE_MS;
       const existing = await db.prepare("SELECT status, payload FROM morning_briefs WHERE trade_date = ?").bind(date).first<{ status: string; payload: string | null }>();

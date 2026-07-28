@@ -34,6 +34,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
       receivedAt: new Date().toISOString(),
       isStale: false,
       message: result.message,
+    }, {
+      headers: {
+        "Cache-Control": "private, no-store, max-age=0",
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "market data failed";
@@ -54,6 +58,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ symb
       marketTime: null,
       receivedAt: new Date().toISOString(),
       isStale: true,
-    }, { status: 502 });
+    }, {
+      status: 502,
+      headers: {
+        "Cache-Control": "private, no-store, max-age=0",
+      },
+    });
   }
 }

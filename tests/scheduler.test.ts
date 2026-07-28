@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canRunCloseReview, jobForBeijingTime, isChinaTradingWeekday, latestCompletedReviewDate } from "../lib/jobs/schedule";
+import { canRunCloseReview, jobForBeijingTime, isChinaTradingWeekday, latestCompletedReviewDate, resolveDashboardReviewDate } from "../lib/jobs/schedule";
 
 describe("Beijing market schedule", () => {
   it("maps the planned market times to the correct job", () => {
@@ -48,5 +48,25 @@ describe("Beijing market schedule", () => {
     expect(canRunCloseReview(closeTime)).toBe(true);
     expect(latestCompletedReviewDate(closeTime)).toBe("2026-07-24");
     expect(canRunCloseReview(new Date("2026-07-25T08:10:00Z"))).toBe(false);
+  });
+
+  it("uses an explicit historical date exactly and never substitutes yesterday after close", () => {
+    const afterClose = new Date("2026-07-28T08:30:00.000Z");
+    expect(resolveDashboardReviewDate(afterClose, "2026-07-24")).toEqual({
+      date: "2026-07-24",
+      exact: true,
+    });
+    expect(resolveDashboardReviewDate(afterClose, undefined)).toEqual({
+      date: "2026-07-28",
+      exact: true,
+    });
+  });
+
+  it("rejects future dashboard dates and falls back to the latest eligible review date", () => {
+    const beforeClose = new Date("2026-07-28T07:30:00.000Z");
+    expect(resolveDashboardReviewDate(beforeClose, "2026-07-29")).toEqual({
+      date: "2026-07-27",
+      exact: false,
+    });
   });
 });

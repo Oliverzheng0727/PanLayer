@@ -81,7 +81,7 @@ export async function executeRemoteSchedulerTick({
     provider,
     status: "running",
     message: "scheduler tick started",
-  }).catch(() => undefined);
+  });
   const checkpoints = await loadCheckpoints(db, date).catch(() => []);
   const planned = planRemoteSchedulerJobs({ now, checkpoints });
   const [hour, minute] = time.split(":").map(Number);
@@ -134,7 +134,7 @@ export async function executeRemoteSchedulerTick({
     message: results.length > 0
       ? results.map((result) => `${result.job}:${result.status}`).join(",")
       : "idle",
-  }).catch(() => undefined);
+  });
   return { date, jobs: results };
 }
 

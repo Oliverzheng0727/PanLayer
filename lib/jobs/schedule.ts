@@ -75,3 +75,24 @@ export function latestCompletedReviewDate(date: Date): string {
   const parts = beijingDateParts(date);
   return canRunCloseReview(date) ? parts.date : previousCalendarDate(parts.date);
 }
+
+export function resolveDashboardReviewDate(
+  now: Date,
+  requestedDate: string | null | undefined,
+): { date: string; exact: boolean } {
+  const currentDate = beijingDateParts(now).date;
+  const normalized = typeof requestedDate === "string"
+    && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
+    && requestedDate <= currentDate
+    ? requestedDate
+    : null;
+  if (normalized) return { date: normalized, exact: true };
+  const date = latestCompletedReviewDate(now);
+  return {
+    date,
+    // Once today's close is due, never silently substitute yesterday's
+    // review. A partial current-day record is more truthful than a complete
+    // but stale previous trading day.
+    exact: date === currentDate,
+  };
+}

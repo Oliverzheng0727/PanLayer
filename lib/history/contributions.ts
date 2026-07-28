@@ -119,7 +119,7 @@ export async function runHistoryContributionBatch({
   targetDate,
   backfillDates,
   source,
-  batchSize = 40,
+  batchSize = 48,
   concurrency = 4,
 }: {
   db: D1Database;
@@ -130,14 +130,17 @@ export async function runHistoryContributionBatch({
   batchSize?: number;
   concurrency?: number;
 }): Promise<HistoryContributionProgress> {
+  const retryBefore = new Date(Date.now() - 15 * 60_000).toISOString();
   const candidates = await db.prepare(
     `SELECT s.symbol, s.name
        FROM stocks s
        LEFT JOIN history_bar_contributions c ON c.symbol = s.symbol
-      WHERE c.symbol IS NULL OR c.target_date < ? OR c.status <> 'complete'
+      WHERE c.symbol IS NULL
+         OR c.target_date < ?
+         OR (c.status <> 'complete' AND c.updated_at <= ?)
       ORDER BY CASE WHEN c.symbol IS NULL THEN 0 ELSE 1 END, s.symbol
       LIMIT ?`,
-  ).bind(targetDate, Math.min(100, Math.max(1, batchSize)))
+  ).bind(targetDate, retryBefore, Math.min(100, Math.max(1, batchSize)))
     .all<{ symbol: string; name: string }>();
   const dateSet = new Set(backfillDates);
   const receivedAt = new Date().toISOString();

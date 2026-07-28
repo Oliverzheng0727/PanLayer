@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EtfSnapshot } from "../lib/data/provider";
 import {
+  fetchTencentAdjustedMarketBars,
   fetchTencentAdjustedBars,
   fetchTencentQuotes,
   mapTencentLine,
@@ -151,6 +152,40 @@ describe("Tencent quote adapter", () => {
       ["2026-07-20", 10.4],
       ["2026-07-21", 10.6],
       ["2026-07-22", 10.8],
+    ]);
+  });
+
+  it("uses the Tencent proxy endpoint when the primary qfq host is unavailable", async () => {
+    const requested: string[] = [];
+    const fetcher = (async (input: string | URL | Request) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("web.ifzq.gtimg.cn")) {
+        return new Response("unavailable", { status: 503 });
+      }
+      return Response.json({
+        code: 0,
+        data: {
+          sh511880: {
+            qfqday: [
+              ["2026-07-27", "100.1", "100.2", "100.3", "100.0", "1000"],
+              ["2026-07-28", "100.2", "100.4", "100.5", "100.1", "1200"],
+            ],
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    const bars = await fetchTencentAdjustedMarketBars("511880.SH", fetcher, {
+      pageSize: 30,
+      maxPages: 1,
+    });
+
+    expect(requested).toHaveLength(2);
+    expect(requested[1]).toContain("proxy.finance.qq.com");
+    expect(bars.map((bar) => [bar.time, bar.close])).toEqual([
+      ["2026-07-27", 100.2],
+      ["2026-07-28", 100.4],
     ]);
   });
 });

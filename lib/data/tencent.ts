@@ -3,6 +3,7 @@ import type { AdjustedBar, EtfSnapshot } from "./provider";
 
 const TENCENT_URL = "https://qt.gtimg.cn/q=";
 const TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get";
+const TENCENT_KLINE_FALLBACK_URL = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get";
 const TENCENT_KLINE_TIMEOUT_MS = 6_000;
 
 function securityMeta(code: string, prefix?: string): { exchange: Exchange; board: Board; limitRate: number } {
@@ -204,21 +205,40 @@ export async function fetchTencentAdjustedMarketBars(
   let previousEarliest = "";
 
   for (let page = 0; page < maxPages; page += 1) {
-    const url = new URL(TENCENT_KLINE_URL);
-    url.searchParams.set("param", `${marketCode},day,,${endDate},${pageSize},qfq`);
-    const response = await fetcher(url, {
-      headers: {
-        accept: "application/json",
-        referer: "https://gu.qq.com/",
-        "user-agent": "PanLayer/1.0",
-      },
-      signal: AbortSignal.timeout(TENCENT_KLINE_TIMEOUT_MS),
-    });
-    if (!response.ok) throw new Error(`Tencent K-line ${response.status}`);
-    const payload = await response.json() as {
+    let payload: {
       code?: number;
       data?: Record<string, { qfqday?: Array<Array<string | number>> }>;
-    };
+    } | null = null;
+    let lastError: unknown;
+    for (const endpoint of [TENCENT_KLINE_URL, TENCENT_KLINE_FALLBACK_URL]) {
+      try {
+        const url = new URL(endpoint);
+        url.searchParams.set("param", `${marketCode},day,,${endDate},${pageSize},qfq`);
+        const response = await fetcher(url, {
+          headers: {
+            accept: "application/json",
+            referer: "https://gu.qq.com/",
+            "user-agent": "PanLayer/1.0",
+          },
+          signal: AbortSignal.timeout(TENCENT_KLINE_TIMEOUT_MS),
+        });
+        if (!response.ok) throw new Error(`Tencent K-line ${response.status}`);
+        payload = await response.json() as {
+          code?: number;
+          data?: Record<string, { qfqday?: Array<Array<string | number>> }>;
+        };
+        if (payload.code !== undefined && payload.code !== 0) {
+          throw new Error(`Tencent K-line code ${payload.code}`);
+        }
+        break;
+      } catch (error) {
+        payload = null;
+        lastError = error;
+      }
+    }
+    if (!payload) {
+      throw lastError instanceof Error ? lastError : new Error("Tencent K-line unavailable");
+    }
     if (payload.code !== undefined && payload.code !== 0) {
       throw new Error(`Tencent K-line code ${payload.code}`);
     }

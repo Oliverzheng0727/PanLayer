@@ -110,6 +110,29 @@ describe("persisted data health", () => {
     });
   });
 
+  it("hides expired retry timestamps and labels the task as queued for automatic recovery", () => {
+    const result = buildDailyJobHealth({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T08:30:00Z"),
+      checkpoints: [{
+        tradeDate: "2026-07-24",
+        key: "close-review",
+        stage: "main",
+        status: "partial",
+        attempt: 2,
+        expectedAt: "2026-07-24T16:10:00+08:00",
+        startedAt: "2026-07-24T08:10:00Z",
+        finishedAt: "2026-07-24T08:12:00Z",
+        nextRetryAt: "2026-07-24T08:17:00Z",
+        message: "阶段 4/7",
+        resultJson: "{}",
+      }],
+    });
+
+    expect(result.jobs["close-review"].nextRetryAt).toBeNull();
+    expect(result.jobs["close-review"].message).toContain("已进入自动补跑队列");
+  });
+
   it("does not mark market-session jobs due on weekends while keeping the morning brief due", () => {
     const result = buildDailyJobHealth({
       tradeDate: "2026-07-25",

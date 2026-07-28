@@ -4,6 +4,7 @@ import {
   normalizeSchedulerProvider,
 } from "../../../../../../lib/jobs/remote-scheduler";
 import {
+  ensureRuntimeSchema,
   prepareMorningBriefRegeneration,
   runPanLayerJob,
 } from "../../../../../../lib/jobs/runner";
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
   if (!runtimeEnv.DB) {
     return Response.json({ error: "DB binding is unavailable" }, { status: 503 });
   }
+  await ensureRuntimeSchema(runtimeEnv.DB);
 
   const scheduledAt = Number(request.headers.get("x-panlayer-scheduled-time"));
   const now = Number.isFinite(scheduledAt) && scheduledAt > 0

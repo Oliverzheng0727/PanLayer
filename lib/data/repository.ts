@@ -381,6 +381,14 @@ export function buildDailyJobHealth({
       .filter((checkpoint) => checkpoint.stage === "main")
       .map((checkpoint) => [checkpoint.key, checkpoint]),
   );
+  const visibleRetryAt = (
+    status: JobCheckpoint["status"] | undefined,
+    value: string | null | undefined,
+  ) => {
+    if (!value || status === "complete") return null;
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) && timestamp > now.getTime() ? value : null;
+  };
   const jobs = Object.fromEntries(expectedDailyJobs(tradeDate, {
     marketSession: isChinaTradingWeekday(now),
   }).map((expected) => {
@@ -414,12 +422,16 @@ export function buildDailyJobHealth({
       : overdue
         ? "补采窗口已过，等待兜底重试"
         : "计划时间已到，正在自动采集";
+    const nextRetryAt = visibleRetryAt(checkpoint?.status, checkpoint?.nextRetryAt);
+    const retryElapsed = Boolean(checkpoint?.nextRetryAt && !nextRetryAt && checkpoint?.status !== "complete");
     return [expected.key, {
       status: checkpoint?.status ?? "pending",
       expectedAt: expected.expectedAt,
       finishedAt: checkpoint?.finishedAt ?? null,
-      nextRetryAt: checkpoint?.nextRetryAt ?? null,
-      message: checkpoint?.message ?? pendingMessage,
+      nextRetryAt,
+      message: checkpoint?.message
+        ? `${checkpoint.message}${retryElapsed ? "；已进入自动补跑队列" : ""}`
+        : pendingMessage,
       attempt: checkpoint?.attempt ?? 0,
       overdue,
       delayMinutes,
@@ -435,8 +447,14 @@ export function buildDailyJobHealth({
     .map((checkpoint) => [`${checkpoint.key}:${checkpoint.stage}`, {
       status: checkpoint.status,
       finishedAt: checkpoint.finishedAt,
-      nextRetryAt: checkpoint.nextRetryAt,
-      message: checkpoint.message,
+      nextRetryAt: visibleRetryAt(checkpoint.status, checkpoint.nextRetryAt),
+      message: `${checkpoint.message}${
+        checkpoint.nextRetryAt
+        && !visibleRetryAt(checkpoint.status, checkpoint.nextRetryAt)
+        && checkpoint.status !== "complete"
+          ? "；已进入自动补跑队列"
+          : ""
+      }`,
     }]));
   const persistedBrief = artifacts?.morningBrief;
   if (persistedBrief?.valid && jobs["morning-brief"]?.status !== "complete") {
@@ -755,7 +773,7 @@ export async function readDataHealth() {
     ...summarizeDataHealth({ jobs: [], audits: [], globalPoints: [] }),
     daily: buildDailyJobHealth({ tradeDate, now, checkpoints: [] }),
   };
-  const [jobResult, auditResult, globalResult, newsResult, checkpoints, latestReviewRow, heartbeatRow, morningBriefRow, etfCatalogRow, historyMetaRows] = await Promise.all([
+  const [jobResult, auditResult, globalResult, newsResult, checkpoints, currentReviewRow, latestReviewRow, heartbeatRow, morningBriefRow, etfCatalogRow, historyMetaRows] = await Promise.all([
     db.prepare("SELECT job, trade_date, status, message, started_at, finished_at FROM job_runs ORDER BY id DESC LIMIT 20").all<HealthJob>().catch(() => ({ results: [] })),
     db.prepare("SELECT source, status, received_at, message FROM market_source_audits ORDER BY received_at DESC LIMIT 20").all<HealthSource>().catch(() => ({ results: [] })),
     db.prepare("SELECT provider, status, received_at, message FROM global_market_snapshots ORDER BY received_at DESC LIMIT 40").all<HealthSource>().catch(() => ({ results: [] })),
@@ -764,6 +782,8 @@ export async function readDataHealth() {
       FROM brief_fetch_runs ORDER BY fetch_date DESC, source_tier ASC, finished_at DESC LIMIT 20`)
       .all<HealthNewsRun>().catch(() => ({ results: [] })),
     readDailyJobCheckpoints(db, tradeDate).catch(() => []),
+    db.prepare("SELECT payload, status FROM daily_reviews WHERE trade_date = ? LIMIT 1")
+      .bind(tradeDate).first<{ payload: string; status: string }>().catch(() => null),
     db.prepare("SELECT payload, status FROM daily_reviews WHERE trade_date <= ? AND status = 'complete' ORDER BY trade_date DESC LIMIT 1")
       .bind(tradeDate).first<{ payload: string; status: string }>().catch(() => null),
     db.prepare("SELECT value FROM bootstrap_state WHERE key = 'scheduler-heartbeat'")
@@ -775,7 +795,15 @@ export async function readDataHealth() {
     db.prepare("SELECT payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120")
       .bind(tradeDate).all<{ payload: string }>().catch(() => ({ results: [] })),
   ]);
+  let currentReview: DailyReview | null = null;
   let latestReview: DailyReview | null = null;
+  try {
+    currentReview = currentReviewRow?.payload
+      ? JSON.parse(currentReviewRow.payload) as DailyReview
+      : null;
+  } catch {
+    currentReview = null;
+  }
   try {
     const parsed = latestReviewRow?.payload
       ? JSON.parse(latestReviewRow.payload) as DailyReview
@@ -786,7 +814,8 @@ export async function readDataHealth() {
   } catch {
     latestReview = null;
   }
-  const progress = await readNewHighProgress(latestReview?.date ?? tradeDate);
+  const activeReview = currentReview ?? latestReview;
+  const progress = await readNewHighProgress(activeReview?.date ?? tradeDate);
   let persistedMorningBriefValid = false;
   try {
     persistedMorningBriefValid = Boolean(
@@ -809,9 +838,9 @@ export async function readDataHealth() {
   });
   daily.heartbeat = buildSchedulerHeartbeat(heartbeatRow?.value, now);
   daily.latestCompletedTradeDate = latestReview?.date ?? null;
-  daily.fields = buildDailyFieldHealth(latestReview, progress);
+  daily.fields = buildDailyFieldHealth(activeReview, progress);
   daily.background = {
-    historyContribution: await readHistoryContributionProgress(db, latestReview?.date ?? tradeDate)
+    historyContribution: await readHistoryContributionProgress(db, activeReview?.date ?? tradeDate)
       .catch(() => null),
     historyFields: (() => {
       const records = (historyMetaRows.results ?? []).flatMap((row) => {
@@ -838,7 +867,7 @@ export async function readDataHealth() {
       ? etfCatalogRow.status === "complete" ? "complete" : "partial"
       : etfCatalogRow ? "partial" : "missing",
     source: etfCatalogRow?.source ?? "扶摇 Fuyao",
-    marketTime: latestReview ? `${latestReview.date}T15:30:00+08:00` : null,
+    marketTime: activeReview ? `${activeReview.date}T15:30:00+08:00` : null,
     receivedAt: etfCatalogRow?.received_at ?? null,
     message: etfCatalogRow
       ? etfCatalogRow.source.includes("扶摇 Fuyao")
