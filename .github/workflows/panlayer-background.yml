@@ -19,6 +19,15 @@ on:
     - cron: "32 7 * * 1-5"  # 15:32 Beijing: ETF metrics
     - cron: "12 8 * * 1-5"  # 16:12 Beijing: close review
   workflow_dispatch:
+    inputs:
+      action:
+        description: Background action to run
+        required: true
+        default: tick
+        type: choice
+        options:
+          - tick
+          - regenerate-morning-brief
 
 concurrency:
   group: panlayer-background
@@ -32,7 +41,12 @@ jobs:
       - name: Run the current scheduled task
         env:
           PANLAYER_CRON_SECRET: ${{ secrets.PANLAYER_CRON_SECRET }}
+          PANLAYER_ACTION: ${{ inputs.action || 'tick' }}
         run: |
+          action_header=()
+          if [ "${PANLAYER_ACTION}" = "regenerate-morning-brief" ]; then
+            action_header=(-H "X-PanLayer-Action: regenerate-morning-brief")
+          fi
           response="$(
             curl --fail-with-body --silent --show-error \
             --max-time 240 \
@@ -41,6 +55,7 @@ jobs:
             -X POST \
             -H "Authorization: Bearer ${PANLAYER_CRON_SECRET}" \
             -H "X-PanLayer-Scheduler: github" \
+            "${action_header[@]}" \
             "https://panlayer.online/api/v1/internal/scheduler/tick"
           )"
           printf '%s\n' "$response"

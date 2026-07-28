@@ -20,6 +20,8 @@ describe("production background workflow", () => {
     expect(workflow).not.toContain('cron: "17 23 * * 0-4"');
     expect(workflow).not.toContain('cron: "2,32 10-15 * * 1-5"');
     expect(workflow).toContain("PANLAYER_CRON_SECRET");
+    expect(workflow).toContain("regenerate-morning-brief");
+    expect(workflow).toContain("X-PanLayer-Action: regenerate-morning-brief");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
