@@ -287,10 +287,18 @@ function newsVerification(value: unknown): "verified" | "partial" | "unverified"
   return "unverified";
 }
 
+function qwenDeclaredSourceIds(value: unknown): string[] {
+  if (Array.isArray(value)) return stringArray(value, "sourceIds");
+  if (typeof value !== "string") return [];
+  const matches = value.match(/ref_\d+/g) ?? [];
+  const remainder = value.replace(/ref_\d+/g, "").replace(/[\s,，、;；|[\]"']+/g, "");
+  return remainder.length === 0 ? [...new Set(matches)] : [];
+}
+
 function qwenSourcedText(text: string, value: unknown): { text: string; sourceIds: string[] } {
   const inlineSourceIds = [...text.matchAll(/\[ref_(\d+)\]/g)].map((match) => `ref_${match[1]}`);
   const cleanedText = text.replace(/\s*\[ref_\d+\]/g, "").trim();
-  const declaredSourceIds = Array.isArray(value) ? stringArray(value, "sourceIds") : [];
+  const declaredSourceIds = qwenDeclaredSourceIds(value);
   const sourceIds = [...new Set([...declaredSourceIds, ...inlineSourceIds])];
   if (sourceIds.length > 0) return { text: cleanedText, sourceIds };
   return { text: cleanedText, sourceIds: stringArray(value, "sourceIds", 1) };
@@ -951,6 +959,64 @@ function modelAuthoredText(summary: string, tags: string[], blocks: BriefBlock[]
   })];
 }
 
+function modelBlockTextLength(block: BriefBlock): number {
+  if (block.type === "bullets") return block.items.reduce((total, item) => total + item.text.length, 0);
+  if (block.type === "news-item") {
+    return block.event.length + block.excerpt.length + block.impact.length
+      + block.sectors.join("").length + block.leaderMap.join("").length;
+  }
+  if ("text" in block) return block.text.length;
+  return 0;
+}
+
+function trimModelBlock(block: BriefBlock, removeCharacters: number): BriefBlock {
+  let remaining = Math.max(0, removeCharacters);
+  const trim = (text: string) => {
+    if (remaining === 0) return text;
+    const removable = Math.max(0, text.length - 1);
+    const removed = Math.min(removable, remaining);
+    remaining -= removed;
+    return text.slice(0, text.length - removed);
+  };
+  if (block.type === "bullets") {
+    const items = [...block.items];
+    for (let index = items.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      items[index] = { ...items[index], text: trim(items[index].text) };
+    }
+    return { ...block, items };
+  }
+  if (block.type === "news-item") {
+    const leaderMap = [...block.leaderMap];
+    const sectors = [...block.sectors];
+    for (let index = leaderMap.length - 1; index >= 0 && remaining > 0; index -= 1) leaderMap[index] = trim(leaderMap[index]);
+    for (let index = sectors.length - 1; index >= 0 && remaining > 0; index -= 1) sectors[index] = trim(sectors[index]);
+    const impact = trim(block.impact);
+    const excerpt = trim(block.excerpt);
+    const event = trim(block.event);
+    return { ...block, event, excerpt, impact, sectors, leaderMap };
+  }
+  if ("text" in block) return { ...block, text: trim(block.text) };
+  return block;
+}
+
+function limitModelBlocks(blocks: BriefBlock[], maximum = 1_560): BriefBlock[] {
+  const limited = [...blocks];
+  let length = limited.reduce((total, block) => total + modelBlockTextLength(block), 0);
+  for (let index = limited.length - 1; length > maximum && index >= 0; index -= 1) {
+    const blockLength = modelBlockTextLength(limited[index]);
+    if (blockLength === 0 || length - blockLength < 600) continue;
+    limited.splice(index, 1);
+    length -= blockLength;
+  }
+  for (let index = limited.length - 1; length > maximum && index >= 0; index -= 1) {
+    const before = modelBlockTextLength(limited[index]);
+    if (before <= 1) continue;
+    limited[index] = trimModelBlock(limited[index], length - maximum);
+    length -= before - modelBlockTextLength(limited[index]);
+  }
+  return limited;
+}
+
 function assertNoModelRankingClaims(key: BriefSectionKey, textFields: string[], title?: string): void {
   if (key !== "mapping" && key !== "risk") return;
   if (!LEGACY_BRIEF_SECTION_DEFINITIONS.some((item) => item.key === key && item.title === title)) return;
@@ -1122,7 +1188,9 @@ function finishSection(key: BriefSectionKey, globalSnapshot: ReconciledGlobalPoi
   const sources = providerSources.map((source) => ({ ...source, retrievedAt: source.retrievedAt ?? generatedAt }));
   validateGeneratedSources(sources);
   const normalized = normalizeFinalAttempt ? normalizeFinalQwenSection(parsed, key, globalSnapshot) : parsed;
-  const modelBlocks = namespaceReferences ? namespaceBlocks(key, normalized.blocks) : normalized.blocks;
+  const modelBlocks = limitModelBlocks(
+    namespaceReferences ? namespaceBlocks(key, normalized.blocks) : normalized.blocks,
+  );
   const modelText = modelAuthoredText(normalized.summary, normalized.tags, modelBlocks);
   assertNoModelRankingClaims(key, modelText, normalized.title);
   assertNarrativeSnapshotIntegrity(modelText, globalSnapshot);

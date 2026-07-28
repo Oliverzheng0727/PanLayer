@@ -1,4 +1,4 @@
-import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, type BriefBlock, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
+import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, hasInvestmentAdviceLanguage, type BriefBlock, type BriefSectionKey, type MorningBrief } from "../ai/morning-brief-contract";
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { validateBriefPublication } from "../ai/morning-brief-validation";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
@@ -180,13 +180,21 @@ function verifiedEvidenceFallbackSection(input: {
   });
   const sourceIds = sources.map((source) => source.id);
   const blocks: BriefBlock[] = [];
+  const safeEvidenceText = (value: string) => {
+    const text = value
+      .split(/(?<=[。！？；;\n])/)
+      .filter((sentence) => !hasInvestmentAdviceLanguage(sentence))
+      .join("")
+      .trim();
+    return text || "原文含非客观行动表述，已省略；请通过来源链接核验。";
+  };
   if (sources.length > 0) {
     blocks.push(
       { type: "heading", text: "已核验资讯原文" },
       {
         type: "bullets",
         items: input.sources.slice(0, sources.length).map((source) => ({
-          text: `事件事实：${source.title}。原文短摘录：${source.content.slice(0, 360)}`,
+          text: `事件事实：${safeEvidenceText(source.title)}。原文短摘录：${safeEvidenceText(source.content).slice(0, 360)}`,
           sourceIds: [source.id],
         })),
       },

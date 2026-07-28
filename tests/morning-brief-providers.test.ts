@@ -163,6 +163,69 @@ describe("independent morning-brief section providers", () => {
     }));
   });
 
+  it("accepts a Qwen sourceIds string only when it contains valid local references", async () => {
+    const section = modelSection("global-industry");
+    const provider = (sourceIds: unknown): typeof fetch => async () => new Response(JSON.stringify({
+      output: {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              ...section,
+              blocks: [{ ...section.blocks[1], sourceIds }],
+            }),
+          },
+        }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/string-source" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-industry",
+      apiKey: "secret",
+      fetcher: provider("ref_1"),
+      globalSnapshot: [],
+    });
+    expect(result.section.sourceIds).toEqual(["global-industry_ref_1"]);
+
+    await expect(generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-industry",
+      apiKey: "secret",
+      fetcher: provider("external-source"),
+      globalSnapshot: [],
+    })).rejects.toThrow(/invalid sourceIds/);
+  });
+
+  it("bounds an overlong Qwen module without discarding its verified citation", async () => {
+    const section = modelSection("global-industry");
+    section.blocks[1].text = `${section.blocks[1].text}${"额外客观事实。".repeat(200)}`;
+    const provider: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(section) } }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/overlong" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "global-industry",
+      apiKey: "secret",
+      fetcher: provider,
+      globalSnapshot: [],
+    });
+    const contentLength = result.section.blocks.flatMap((block) => {
+      if (block.type === "paragraph" || block.type === "callout" || block.type === "heading") return [block.text];
+      if (block.type === "bullets") return block.items.map((item) => item.text);
+      if (block.type === "news-item") return [block.event, block.excerpt, block.impact, ...block.sectors, ...block.leaderMap];
+      return [];
+    }).join("").length;
+
+    expect(result.section.status).toBe("complete");
+    expect(result.section.sourceIds).toEqual(["global-industry_ref_1"]);
+    expect(contentLength).toBeLessThanOrEqual(1_600);
+  });
+
   it("normalizes qwen3.7-plus news-item field variants without dropping citations", async () => {
     const section = modelSection("risk");
     const provider: typeof fetch = async () => new Response(JSON.stringify({
