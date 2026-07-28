@@ -188,6 +188,17 @@ describe("independent morning-brief section providers", () => {
     });
     expect(result.section.sourceIds).toEqual(["global-industry_ref_1"]);
 
+    for (const compatibleIds of [[1], [{ id: "ref_1" }], [{ index: 1 }]]) {
+      const compatible = await generateQwenBriefSection({
+        date: "2026-07-23",
+        key: "global-industry",
+        apiKey: "secret",
+        fetcher: provider(compatibleIds),
+        globalSnapshot: [],
+      });
+      expect(compatible.section.sourceIds).toEqual(["global-industry_ref_1"]);
+    }
+
     await expect(generateQwenBriefSection({
       date: "2026-07-23",
       key: "global-industry",

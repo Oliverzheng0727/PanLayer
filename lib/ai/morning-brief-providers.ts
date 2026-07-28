@@ -288,7 +288,21 @@ function newsVerification(value: unknown): "verified" | "partial" | "unverified"
 }
 
 function qwenDeclaredSourceIds(value: unknown): string[] {
-  if (Array.isArray(value)) return stringArray(value, "sourceIds");
+  if (Array.isArray(value)) {
+    return [...new Set(value.flatMap((item) => {
+      if (typeof item === "number" && Number.isInteger(item) && item > 0) return [`ref_${item}`];
+      if (typeof item === "string") {
+        if (/^\d+$/.test(item.trim()) && Number(item) > 0) return [`ref_${Number(item)}`];
+        return item.match(/ref_\d+/g) ?? [];
+      }
+      if (isRecord(item)) {
+        const id = item.id ?? item.sourceId ?? item.ref ?? item.index;
+        if (typeof id === "number" && Number.isInteger(id) && id > 0) return [`ref_${id}`];
+        if (typeof id === "string") return id.match(/ref_\d+/g) ?? [];
+      }
+      return [];
+    }))];
+  }
   if (typeof value !== "string") return [];
   const matches = value.match(/ref_\d+/g) ?? [];
   const remainder = value.replace(/ref_\d+/g, "").replace(/[\s,，、;；|[\]"']+/g, "");
