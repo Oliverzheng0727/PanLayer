@@ -390,7 +390,18 @@ function parseBlocks(value: unknown, citationField: "sourceIds" | "sourceUrls"):
       const event = blockText(block, ["event", "fact", "title"]);
       const excerpt = blockText(block, ["excerpt", "originalExcerpt", "quote"]);
       const impact = blockText(block, ["impact", "coreImpact"]);
-      if (event === null || excerpt === null || impact === null) throw invalidStructure("block", String(index + 1), block);
+      if (event === null || excerpt === null || impact === null) {
+        // qwen3.7-plus occasionally returns a compact news item with
+        // { title, content, sourceIds }. Preserve the cited prose as a normal
+        // paragraph instead of rejecting the entire module; source validation
+        // remains unchanged and uncited compact blocks are still rejected.
+        const compactContent = qwenCompatible ? blockText(block, ["content", "text"]) : null;
+        if (event !== null && compactContent !== null) {
+          const parsed = sourcedText(`${event}：${compactContent}`, block[citationField], citationField);
+          return { type: "paragraph", ...parsed };
+        }
+        throw invalidStructure("block", String(index + 1), block);
+      }
       const sectors = stringArray(block.sectors ?? block.sectorMapping, "sectors");
       const leaderMap = stringArray(block.leaderMap ?? block.leaders, "leaderMap");
       const publishedAt = block.publishedAt === null || typeof block.publishedAt === "string" ? block.publishedAt as string | null : null;

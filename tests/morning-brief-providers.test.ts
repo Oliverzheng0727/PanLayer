@@ -127,6 +127,42 @@ describe("independent morning-brief section providers", () => {
     await expect(generateQwenBriefSection({ date: "2026-07-23", key: "risk", apiKey: "secret", fetcher: provider({ ...compatible, blocks: [{ type: "paragraph", content: section.blocks[1].text, sourceIds: ["ref_99"] }] }), globalSnapshot: [] })).rejects.toThrow(/有效来源|不存在的来源/);
   });
 
+  it("normalizes qwen3.7-plus compact news items into cited paragraphs", async () => {
+    const section = modelSection("risk");
+    const compact = {
+      ...section,
+      blocks: [
+        { type: "heading", text: "事实梳理" },
+        {
+          type: "news-item",
+          title: "隔夜风险信号",
+          content: section.blocks[1].text,
+          sourceIds: ["ref_1"],
+        },
+      ],
+    };
+    const provider: typeof fetch = async () => new Response(JSON.stringify({
+      output: {
+        choices: [{ message: { content: JSON.stringify(compact) } }],
+        search_info: { search_results: [{ index: 1, title: "来源", url: "https://example.com/compact-news" }] },
+      },
+    }));
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-23",
+      key: "risk",
+      apiKey: "secret",
+      fetcher: provider,
+      globalSnapshot: [],
+    });
+
+    expect(result.section.blocks).toContainEqual(expect.objectContaining({
+      type: "paragraph",
+      text: expect.stringContaining("隔夜风险信号"),
+      sourceIds: ["risk_ref_1"],
+    }));
+  });
+
   it("accepts only short Qwen bare-string headings and keeps uncited prose invalid", async () => {
     const section = modelSection("global-markets");
     const provider = (blocks: unknown[]): typeof fetch => async () => new Response(JSON.stringify({
