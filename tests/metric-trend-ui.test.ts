@@ -14,7 +14,7 @@ describe("overview metric trend UI", () => {
     expect(dashboard).toContain("<MetricTrendDrawer");
   });
 
-  it("supports ranges, honest missing states, keyboard close, point selection, and high details", async () => {
+  it("supports ranges, honest missing states, full-screen viewing, keyboard close, point selection, and high details", async () => {
     const drawer = await read("app/components/history/MetricTrendDrawer.tsx");
 
     expect(drawer).toContain('{ value: 20, label: "20日" }');
@@ -22,7 +22,10 @@ describe("overview metric trend UI", () => {
     expect(drawer).toContain('{ value: 120, label: "120日" }');
     expect(drawer).toContain('{ value: "all", label: "全部" }');
     expect(drawer).toContain("暂无可验证历史数据");
-    expect(drawer).toContain('event.key === "Escape"');
+    expect(drawer).toContain('event.key !== "Escape"');
+    expect(drawer).toContain('aria-label={isFullscreen ? "退出全屏历史趋势" : "全屏查看历史趋势"}');
+    expect(drawer).toContain('isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />');
+    expect(drawer).toContain('metric-trend-drawer${isFullscreen ? " is-fullscreen" : ""}');
     expect(drawer).toContain("onSelectDate(date)");
     expect(drawer).toContain("查看 {currentDate} 新高股票");
     expect(drawer).toContain("connectNulls={false}");
@@ -46,6 +49,8 @@ describe("overview metric trend UI", () => {
     const css = await read("app/globals.css");
 
     expect(css).toContain(".high-drawer.metric-trend-drawer { width:min(720px,100vw); }");
+    expect(css).toContain(".high-drawer.metric-trend-drawer.is-fullscreen { position:fixed; inset:0; width:100vw;");
+    expect(css).toContain(".metric-trend-drawer.is-fullscreen .metric-trend-chart { height:clamp(430px,62vh,760px); }");
     expect(css).toContain(".metric-trend-chart { height:430px;");
     expect(css).toContain(".high-drawer { width:100vw; border-left:0; }");
   });

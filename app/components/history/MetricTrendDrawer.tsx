@@ -1,7 +1,7 @@
 "use client";
 
-import { BarChart3, CalendarDays, ListTree, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { BarChart3, CalendarDays, ListTree, Maximize2, Minimize2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -140,11 +140,24 @@ export function MetricTrendDrawer({
   onOpenHighDetails: () => void;
 }) {
   const [range, setRange] = useState<TrendRange>(60);
+  const [isFullscreen, setIsFullscreenState] = useState(false);
+  const fullscreenRef = useRef(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const config = TREND_METRIC_CONFIGS[metric];
   const points = useMemo(() => buildTrendPoints(rows, metric, range), [metric, range, rows]);
   const chartData = useMemo(() => points.map(toChartDatum), [points]);
   const available = hasTrendValues(points, metric);
+
+  const setFullscreen = (value: boolean) => {
+    fullscreenRef.current = value;
+    setIsFullscreenState(value);
+  };
+
+  const handleClose = useCallback(() => {
+    fullscreenRef.current = false;
+    setIsFullscreenState(false);
+    onClose();
+  }, [onClose]);
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -152,7 +165,9 @@ export function MetricTrendDrawer({
     document.body.style.overflow = "hidden";
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      if (fullscreenRef.current) setFullscreen(false);
+      else handleClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -160,23 +175,35 @@ export function MetricTrendDrawer({
       window.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [onClose]);
+  }, [handleClose]);
 
   const selectDate = (date: string) => {
     onSelectDate(date);
-    onClose();
+    handleClose();
   };
 
   return (
-    <div className="high-drawer-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <aside className="high-drawer metric-trend-drawer" role="dialog" aria-modal="true" aria-labelledby="metric-trend-title">
+    <div className="high-drawer-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
+      <aside className={`high-drawer metric-trend-drawer${isFullscreen ? " is-fullscreen" : ""}`} role="dialog" aria-modal="true" aria-labelledby="metric-trend-title">
         <header className="high-drawer-header metric-trend-header">
           <div>
             <p>HISTORICAL TREND · VERIFIED DATA</p>
             <h3 id="metric-trend-title">{config.title}</h3>
             <span>{config.description}</span>
           </div>
-          <button ref={closeButtonRef} type="button" className="high-drawer-icon" onClick={onClose} aria-label="关闭历史趋势"><X size={18} /></button>
+          <div className="high-drawer-header-actions">
+            <button
+              type="button"
+              className="high-drawer-icon"
+              onClick={() => setFullscreen(!isFullscreen)}
+              aria-label={isFullscreen ? "退出全屏历史趋势" : "全屏查看历史趋势"}
+              aria-pressed={isFullscreen}
+              title={isFullscreen ? "退出全屏" : "放大全屏"}
+            >
+              {isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+            </button>
+            <button ref={closeButtonRef} type="button" className="high-drawer-icon" onClick={handleClose} aria-label="关闭历史趋势"><X size={18} /></button>
+          </div>
         </header>
 
         <div className="metric-trend-body">

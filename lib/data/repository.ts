@@ -60,6 +60,33 @@ export interface IntradayBreadthTimeline {
   };
 }
 
+interface IntradayBreadthRow {
+  trade_date: string;
+  snapshot_time: string;
+  rising: number;
+  falling: number;
+  flat: number;
+  source: string;
+  status: string;
+  updated_at: string;
+}
+
+function mapIntradayBreadthPoint(row: IntradayBreadthRow): IntradayBreadthPoint | null {
+  const rising = Number(row.rising);
+  const falling = Number(row.falling);
+  const flat = Number(row.flat);
+  if (![rising, falling, flat].every(Number.isFinite)) return null;
+  return {
+    time: String(row.snapshot_time),
+    rising,
+    falling,
+    flat,
+    source: String(row.source ?? ""),
+    status: row.status === "complete" ? "complete" : "partial",
+    updatedAt: String(row.updated_at ?? ""),
+  };
+}
+
 export function buildIntradayBreadthTimeline({
   date,
   now,
@@ -121,6 +148,32 @@ export function buildIntradayBreadthTimeline({
       updatedAt,
     },
   };
+}
+
+export function buildIntradayBreadthHistory({
+  rows,
+  now,
+  limit,
+}: {
+  rows: IntradayBreadthRow[];
+  now: Date;
+  limit: number;
+}): IntradayBreadthTimeline[] {
+  const safeLimit = Math.min(120, Math.max(1, Math.trunc(limit)));
+  const grouped = new Map<string, IntradayBreadthPoint[]>();
+  for (const row of rows) {
+    const date = String(row.trade_date ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const point = mapIntradayBreadthPoint(row);
+    if (!point) continue;
+    const points = grouped.get(date) ?? [];
+    points.push(point);
+    grouped.set(date, points);
+  }
+  return [...grouped.entries()]
+    .sort(([left], [right]) => right.localeCompare(left))
+    .slice(0, safeLimit)
+    .map(([date, snapshots]) => buildIntradayBreadthTimeline({ date, now, snapshots }));
 }
 
 const healthSection = (status: string, message: string, updatedAt: string | null) => ({ status, message, updatedAt });
@@ -489,27 +542,44 @@ export async function readIntradayBreadthTimeline(
        FROM breadth_snapshots
        WHERE trade_date = ?
        ORDER BY snapshot_time`,
-    ).bind(date).all<{
-      snapshot_time: string;
-      rising: number;
-      falling: number;
-      flat: number;
-      source: string;
-      status: string;
-      updated_at: string;
-    }>();
-    const snapshots = (result.results ?? []).map((row): IntradayBreadthPoint => ({
-      time: String(row.snapshot_time),
-      rising: Number(row.rising),
-      falling: Number(row.falling),
-      flat: Number(row.flat),
-      source: String(row.source ?? ""),
-      status: row.status === "complete" ? "complete" : "partial",
-      updatedAt: String(row.updated_at ?? ""),
-    }));
+    ).bind(date).all<Omit<IntradayBreadthRow, "trade_date">>();
+    const snapshots = (result.results ?? []).flatMap((row) => {
+      const point = mapIntradayBreadthPoint({ ...row, trade_date: date });
+      return point ? [point] : [];
+    });
     return buildIntradayBreadthTimeline({ date, now, snapshots });
   } catch {
     return buildIntradayBreadthTimeline({ date, now, snapshots: [] });
+  }
+}
+
+export async function readIntradayBreadthHistory(
+  limit = 30,
+  now = new Date(),
+): Promise<IntradayBreadthTimeline[]> {
+  const db = await getD1();
+  if (!db) return [];
+  const safeLimit = Math.min(120, Math.max(1, Math.trunc(limit)));
+  try {
+    const result = await db.prepare(
+      `SELECT trade_date, snapshot_time, rising, falling, flat, source, status, updated_at
+       FROM breadth_snapshots
+       WHERE trade_date IN (
+         SELECT trade_date
+         FROM breadth_snapshots
+         GROUP BY trade_date
+         ORDER BY trade_date DESC
+         LIMIT ?
+       )
+       ORDER BY trade_date DESC, snapshot_time`,
+    ).bind(safeLimit).all<IntradayBreadthRow>();
+    return buildIntradayBreadthHistory({
+      rows: result.results ?? [],
+      now,
+      limit: safeLimit,
+    });
+  } catch {
+    return [];
   }
 }
 
@@ -524,6 +594,26 @@ export async function readBrief(date: string): Promise<MorningBrief | null> {
   } catch {
     return null;
   }
+}
+
+export async function readBriefArchive(from: string, to: string): Promise<MorningBrief[]> {
+  const db = await getD1();
+  if (!db) return [];
+  const result = await db.prepare(
+    `SELECT payload
+     FROM morning_briefs
+     WHERE trade_date BETWEEN ? AND ?
+     ORDER BY trade_date DESC
+     LIMIT 100`,
+  ).bind(from, to).all<{ payload: string }>();
+  return (result.results ?? []).flatMap((row) => {
+    try {
+      const brief = JSON.parse(row.payload) as unknown;
+      return isValidPersistedMorningBrief(brief) ? [brief] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export async function readLatestBriefFromDatabase(

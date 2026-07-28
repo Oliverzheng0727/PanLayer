@@ -1,9 +1,8 @@
 "use client";
 
-import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Flame, Layers3, LogOut, Menu, Search, Sparkles, Table2, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, BookOpen, CalendarDays, ChevronRight, CircleGauge, Flame, Layers3, LogOut, Maximize2, Menu, Search, Sparkles, Table2, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BriefSection, MorningBrief } from "../../lib/ai/morning-brief";
 import { formatBreadthRatio } from "../../lib/domain/metrics";
 import { resolveReviewStructureStatus } from "../../lib/domain/market-structure";
@@ -20,6 +19,8 @@ import { BREADTH_REFRESH_MS } from "../../lib/live/refresh-policy";
 import { HistoryWorkspace, type HistoryWorkspaceHandle } from "./history/HistoryWorkspace";
 import { HighDetailDrawer } from "./history/HighDetailDrawer";
 import { MetricTrendDrawer } from "./history/MetricTrendDrawer";
+import { BreadthAreaChart } from "./history/BreadthAreaChart";
+import { IntradayBreadthHistoryDrawer } from "./history/IntradayBreadthHistoryDrawer";
 import { EtfWorkspace } from "./etf/EtfWorkspace";
 import { BriefDetailDrawer } from "./brief/BriefDetailDrawer";
 import { GlobalMarketClock } from "./data/GlobalMarketClock";
@@ -112,6 +113,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     items: HighDetail[];
   } | null>(null);
   const [trendMetric, setTrendMetric] = useState<TrendMetricKey | null>(null);
+  const [breadthHistoryOpen, setBreadthHistoryOpen] = useState(false);
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const [currentIntradayBreadth, setCurrentIntradayBreadth] = useState(intradayBreadth);
   const [currentNewHighProgress, setCurrentNewHighProgress] = useState(newHighProgress);
@@ -311,7 +313,22 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           </section>
 
           <section className="dashboard-section grid gap-5 xl:grid-cols-[1.5fr_1fr]">
-            <Panel title="盘中涨跌家数" eyebrow="MARKET BREADTH" id="breadth">
+            <Panel
+              title="盘中涨跌家数"
+              eyebrow="MARKET BREADTH"
+              id="breadth"
+              action={(
+                <button
+                  type="button"
+                  className="panel-expand-button"
+                  onClick={() => setBreadthHistoryOpen(true)}
+                  aria-label="全屏查看盘中涨跌家数历史"
+                  title="放大全屏并查看历史"
+                >
+                  <Maximize2 size={16} />
+                </button>
+              )}
+            >
               {marketSession ? (
                 <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">
                   <span className="text-white/45">{currentIntradayBreadth.date} · 已采集 {currentIntradayBreadth.meta.captured}/{currentIntradayBreadth.meta.expected}</span>
@@ -324,7 +341,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
               )}
               {breadthChartData.length === 0
                 ? <div className="grid h-[270px] place-items-center text-sm text-white/30">{currentIntradayBreadth.meta.recovering.length > 0 ? "节点正在补采，请稍后刷新" : currentIntradayBreadth.meta.pending.length > 0 ? `等待 ${currentIntradayBreadth.meta.pending[0]} 节点` : "盘中涨跌家数暂缺"}</div>
-                : <div className="h-[270px] pt-3"><ResponsiveContainer width="100%" height="100%"><AreaChart data={breadthChartData}><defs><linearGradient id="rise" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef5b58" stopOpacity={0.34}/><stop offset="95%" stopColor="#ef5b58" stopOpacity={0}/></linearGradient><linearGradient id="fall" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#3bc987" stopOpacity={0.2}/><stop offset="95%" stopColor="#3bc987" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="rgba(255,255,255,.05)" vertical={false}/><XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.35)", fontSize: 11 }}/><YAxis axisLine={false} tickLine={false} tick={{ fill: "rgba(255,255,255,.28)", fontSize: 11 }} width={36}/><Tooltip contentStyle={{ background: "#151617", border: "1px solid rgba(255,255,255,.1)", borderRadius: 14, fontSize: 12 }}/><Area type="monotone" dataKey="rising" name="上涨" stroke="#ef5b58" strokeWidth={2} fill="url(#rise)"/><Area type="monotone" dataKey="falling" name="下跌" stroke="#3bc987" strokeWidth={2} fill="url(#fall)"/></AreaChart></ResponsiveContainer></div>}
+                : <div className="pt-3"><BreadthAreaChart points={breadthChartData} height={270} label={`${currentIntradayBreadth.date}盘中上涨与下跌家数折线图`} /></div>}
             </Panel>
             <Panel title="市场温度" eyebrow="CLOSE SNAPSHOT">
               {total === null
@@ -335,7 +352,10 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           </section>
 
           <section id="brief" className="dashboard-section scroll-mt-24">
-            <div className="brief-heading-row"><SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定七模块，事实带来源，风险情景客观呈现。" /></div>
+            <div className="brief-heading-row">
+              <SectionHeading eyebrow="07:15 · AI MORNING BRIEF" title="隔夜早参" description="固定七模块，事实带来源，风险情景客观呈现。" />
+              <Link className="brief-history-entry" href="/brief-history"><CalendarDays size={15} /><span>早参日历</span><small>近三个月</small><ChevronRight size={14} /></Link>
+            </div>
             {brief
               ? <><div className="brief-coverage-banner"><span>{briefCoverageLabel(brief)}</span><span>{briefPublicationLabel(brief)}</span>{brief.sourceWindow && <span>窗口 {brief.sourceWindow.from.slice(0, 16).replace("T", " ")} 至 {brief.sourceWindow.to.slice(0, 16).replace("T", " ")}（北京时间）</span>}{brief.coverage?.collectedAt && <span>最后采集 {formatBeijingDateTime(brief.coverage.collectedAt)}</span>}</div><nav className="brief-module-nav" aria-label="早参七模块导航">{brief.sections.map((section, index) => <button type="button" key={section.key} onClick={() => setBriefSectionIndex(index)}><span>0{index + 1}</span>{section.title}</button>)}</nav><div className="brief-grid">{brief.sections.map((section, index) => <article key={section.key} className={`brief-card ${index === 0 ? "brief-card-featured" : ""}`}><button type="button" className="brief-card-open" onClick={() => setBriefSectionIndex(index)} aria-label={`打开早参详情：${section.title}`}><div className="brief-card-top"><span>0{index + 1}</span><span className={`brief-card-status is-${section.status}`}>{briefStatusLabel[section.status]}</span><Sparkles size={15} aria-hidden="true"/></div><h3>{section.title}</h3><p className="brief-card-summary">{section.summary}</p><div className="brief-tags">{section.tags.slice(0, 5).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="brief-card-meta"><span>{briefItemCount(section)} 条</span><span>{briefSourceCount(section)} 个来源</span><span>{section.generatedAt.slice(11, 16)} 生成</span></div><span className="brief-card-action">打开详情 <ArrowUpRight size={11}/></span></button></article>)}</div><BriefDetailDrawer brief={brief} section={briefSectionIndex === null ? null : brief.sections[briefSectionIndex] ?? null} sectionIndex={briefSectionIndex ?? 0} onClose={closeBriefDrawer} /></>
               : <div className="brief-unavailable panel grid min-h-40 place-items-center p-6 text-center"><div><p className="text-base text-white/70">当天早参尚未生成</p><p className="mt-2 text-xs text-white/35">暂不可用，生成后将显示七个模块。</p></div></div>}
@@ -411,6 +431,12 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
           }}
         />
       )}
+      {breadthHistoryOpen && (
+        <IntradayBreadthHistoryDrawer
+          current={currentIntradayBreadth}
+          onClose={() => setBreadthHistoryOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -421,7 +447,7 @@ function Metric({ label, value, note, accent = false, onClick }: { label: string
     ? <button type="button" className={`metric-card metric-card-button text-left transition hover:border-[#e8702a]/30 ${accent ? "metric-card-accent" : ""}`} onClick={onClick} aria-label={`查看${label}历史趋势`}>{content}</button>
     : <div className={`metric-card ${accent ? "metric-card-accent" : ""}`}>{content}</div>;
 }
-function Panel({ title, eyebrow, id, className = "", children }: { title: string; eyebrow: string; id?: string; className?: string; children: React.ReactNode }) { return <div id={id} className={`panel scroll-mt-24 p-5 sm:p-6 ${className}`}><div className="flex items-center justify-between"><div><p className="text-[9px] font-semibold tracking-[0.2em] text-[#e8702a]">{eyebrow}</p><h3 className="mt-2 text-lg font-medium">{title}</h3></div><Table2 size={17} className="text-white/15"/></div>{children}</div> }
+function Panel({ title, eyebrow, id, className = "", action, children }: { title: string; eyebrow: string; id?: string; className?: string; action?: React.ReactNode; children: React.ReactNode }) { return <div id={id} className={`panel scroll-mt-24 p-5 sm:p-6 ${className}`}><div className="flex items-center justify-between"><div><p className="text-[9px] font-semibold tracking-[0.2em] text-[#e8702a]">{eyebrow}</p><h3 className="mt-2 text-lg font-medium">{title}</h3></div><div className="panel-header-actions"><Table2 size={17} className="text-white/15"/>{action}</div></div>{children}</div> }
 function BreadthBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) { return <div><div className="mb-2 flex items-center justify-between text-xs"><span className="text-white/40">{label}</span><strong>{value.toLocaleString()}</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]"><div className="h-full rounded-full" style={{ width: `${value / max * 100}%`, background: color }}/></div></div> }
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-2xl bg-white/[0.035] p-4"><span className="text-[10px] text-white/30">{label}</span><strong className="mt-2 block text-lg">{value}</strong></div> }
 function SectionHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description: string }) { return <div className="mb-6"><p className="text-[9px] font-semibold tracking-[0.22em] text-[#e8702a]">{eyebrow}</p><div className="mt-2 flex flex-col justify-between gap-2 sm:flex-row sm:items-end"><h2 className="text-2xl font-medium tracking-[-0.04em]">{title}</h2><p className="text-xs text-white/35">{description}</p></div></div> }
