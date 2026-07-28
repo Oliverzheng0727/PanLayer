@@ -10,6 +10,10 @@ on:
     # pre-market/close deadlines without returning to five-minute polling.
     - cron: "52 22 * * *" # 06:52 Beijing: tier-1 RSS, including weekends
     - cron: "57 22 * * *" # 06:57 Beijing: tier-2 news, including weekends
+    # Backup ticks for the serial seven-module brief. Cloudflare remains the
+    # primary five-minute scheduler; these offset ticks only reconcile work
+    # that is still incomplete and are protected by leases/idempotency keys.
+    - cron: "17,32,47,57 23 * * *" # 07:17/07:32/07:47/07:57 Beijing
     - cron: "27 1 * * 1-5"  # 09:27 Beijing: 09:25 breadth
     - cron: "2 2 * * 1-5"   # 10:02 Beijing: 10:00 breadth
     - cron: "2 3 * * 1-5"   # 11:02 Beijing: 11:00 breadth

@@ -17,6 +17,7 @@ import {
 export interface GeneratedBriefSection {
   section: BriefSection;
   sources: BriefSource[];
+  model?: string;
 }
 
 export interface MorningBriefMarketContext {
@@ -58,9 +59,16 @@ export interface ProviderSectionInput {
   endpoint?: string;
   deadlineAt?: number;
   externalSources?: FirecrawlBriefSource[];
+  model?: QwenBriefSectionModel;
 }
 
 export const QWEN_BRIEF_SECTION_MODEL = "qwen3.7-plus";
+export const QWEN_BRIEF_SECTION_MODELS = [
+  QWEN_BRIEF_SECTION_MODEL,
+  "qwen3.6-plus",
+  "qwen3.7-max",
+] as const;
+export type QwenBriefSectionModel = (typeof QWEN_BRIEF_SECTION_MODELS)[number];
 export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const DASHSCOPE_SECTION_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -1316,6 +1324,7 @@ async function qwenGenerationPayload(
   fetcher: typeof fetch,
   endpoint: string,
   apiKey: string,
+  model: QwenBriefSectionModel,
   prompt: string,
   deadlineAt?: number,
   nativeSearch = true,
@@ -1324,7 +1333,7 @@ async function qwenGenerationPayload(
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: QWEN_BRIEF_SECTION_MODEL,
+      model,
       messages: [
         { role: "system", content: "你是盘层的财经早参编辑。所有输出必须是可解析的 JSON，并严格遵守来源与非荐股约束。" },
         { role: "user", content: prompt },
@@ -1472,6 +1481,7 @@ export async function generateQwenBriefSection({
   endpoint = DASHSCOPE_SECTION_GENERATION_URL,
   deadlineAt,
   externalSources = [],
+  model = QWEN_BRIEF_SECTION_MODEL,
 }: ProviderSectionInput): Promise<GeneratedBriefSection> {
   if (!apiKey) throw new Error("DASHSCOPE_API_KEY is not configured");
   const nativeSearch = externalSources.length === 0;
@@ -1479,6 +1489,7 @@ export async function generateQwenBriefSection({
     fetcher,
     endpoint,
     apiKey,
+    model,
     promptForSection(date, key, globalSnapshot, "sourceIds", attempt, previousError, externalSources),
     deadlineAt,
     nativeSearch,
@@ -1488,10 +1499,13 @@ export async function generateQwenBriefSection({
     ? sourcesFromMetadata(key, qwenSearchResults(initialPayload))
     : externalSources.map(({ id, title, url, publishedAt, retrievedAt }) => ({ id, title, url, publishedAt, retrievedAt }));
   if (!nativeSearch || modelContentText(initial.blocks).join("").length >= 1_000) {
-    return finishSection(key, globalSnapshot, marketContext, initial, initialSources, nativeSearch, true);
+    return {
+      ...finishSection(key, globalSnapshot, marketContext, initial, initialSources, nativeSearch, true),
+      model,
+    };
   }
 
-  const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, qwenSupplementPrompt(date, key, globalSnapshot, initial), deadlineAt);
+  const supplementPayload = await qwenGenerationPayload(fetcher, endpoint, apiKey, model, qwenSupplementPrompt(date, key, globalSnapshot, initial), deadlineAt);
   const supplement = parseSection(qwenText(supplementPayload), key);
   const supplementNamespace = `${key}_supp`;
   const merged: ParsedSection = {
@@ -1501,7 +1515,10 @@ export async function generateQwenBriefSection({
     blocks: [...initial.blocks, ...namespaceBlocks(supplementNamespace, supplement.blocks)],
   };
   const sources = [...initialSources, ...sourcesFromMetadata(supplementNamespace, qwenSearchResults(supplementPayload))];
-  return finishSection(key, globalSnapshot, marketContext, merged, sources, true, true);
+  return {
+    ...finishSection(key, globalSnapshot, marketContext, merged, sources, true, true),
+    model,
+  };
 }
 
 export async function generateOpenAIBriefSection({

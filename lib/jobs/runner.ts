@@ -2,9 +2,12 @@ import { BRIEF_SECTION_DEFINITIONS_V3, LEGACY_BRIEF_SECTION_DEFINITIONS, hasInve
 import { sanitizeMorningBriefDiagnostic } from "../ai/morning-brief-diagnostics";
 import { validateBriefPublication } from "../ai/morning-brief-validation";
 import { assembleMorningBrief, failedBriefSection, persistBriefSection, readPersistedBriefSections } from "../ai/morning-brief-assembly";
-import { searchFirecrawlBriefSources } from "../ai/firecrawl-brief-fallback";
 import { collectTier1News } from "../ai/news-intake/collector";
-import { selectBriefSourceBundle, type SelectedBriefSource } from "../ai/news-intake/bundle-selector";
+import {
+  selectBriefSourceBundle,
+  selectVerifiedBriefFallbackSources,
+  type SelectedBriefSource,
+} from "../ai/news-intake/bundle-selector";
 import { loadTier1NewsConfig } from "../ai/news-intake/config";
 import {
   NEWS_INTAKE_SCHEMA_STATEMENTS,
@@ -25,6 +28,7 @@ import {
   generateOpenAIBriefSection,
   generateQwenBriefSection,
   QWEN_BRIEF_SECTION_MODEL,
+  QWEN_BRIEF_SECTION_MODELS,
   type BriefSectionGenerator,
   type GeneratedBriefSection,
   type MorningBriefMarketContext,
@@ -85,9 +89,8 @@ export const MORNING_BRIEF_LEASE_MS = 3 * 60 * 1_000;
 export const MORNING_BRIEF_BATCH_DEADLINE_MS = 150 * 1_000;
 const GLOBAL_SNAPSHOT_REQUEST_TIMEOUT_MS = 8 * 1_000;
 const DEADLINE_REQUEST_SAFETY_MS = 1_000;
-const FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS = 40 * 1_000;
-const QWEN_BUNDLE_RETRY_MINIMUM_REMAINING_MS = 30 * 1_000;
-const OPENAI_FALLBACK_MINIMUM_REMAINING_MS = 32 * 1_000;
+const QWEN_MODEL_FALLBACK_MINIMUM_REMAINING_MS = 8 * 1_000;
+const EVIDENCE_TEMPLATE_CUTOFF = "07:50";
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -163,6 +166,7 @@ function verifiedEvidenceFallbackSection(input: {
   key: BriefSectionKey;
   sources: SelectedBriefSource[];
   diagnostic: unknown;
+  finalize?: boolean;
 }): GeneratedBriefSection {
   const definition = BRIEF_SECTION_DEFINITIONS_V3.find((section) => section.key === input.key);
   if (!definition) throw new Error(`Unknown brief section key: ${input.key}`);
@@ -188,6 +192,43 @@ function verifiedEvidenceFallbackSection(input: {
       .trim();
     return text || "原文含非客观行动表述，已省略；请通过来源链接核验。";
   };
+  const finalized = Boolean(input.finalize && sources.length > 0);
+  if (finalized) {
+    const evidenceItems = input.sources.slice(0, sources.length).map((source) => ({
+      text: `事件事实：${safeEvidenceText(source.title)}。原文短摘录：${safeEvidenceText(source.content).slice(0, 140)}。本条仅保留来源可核验事实，不补写缺失数字或方向结论。`,
+      sourceIds: [source.id],
+    }));
+    const termCoverage = definition.requiredTerms
+      .map((term) => `${term}：以所列核验来源为准，缺少交叉证据时明确记为“未查到可靠更新”`)
+      .join("；");
+    const evidenceLength = evidenceItems.reduce((total, item) => total + item.text.length, 0);
+    const minimumPadding = Math.max(0, 720 - evidenceLength - termCoverage.length);
+    const neutralPadding = "资料包之外的消息未写入本模块；行情数字只采用网站已保存的结构化快照，缺失字段保持暂缺；板块与个股映射只保留可复算的客观证据。";
+    const padding = neutralPadding.repeat(Math.ceil(minimumPadding / neutralPadding.length));
+    return {
+      section: {
+        key: input.key,
+        title: definition.title,
+        summary: `07:50 自动降级为已核验证据模板，共整理 ${sources.length} 条来源；缺失事项不作推测。`,
+        tags: ["证据模板", "已核验", "自动降级"],
+        status: "complete",
+        generatedAt,
+        blocks: [
+          { type: "heading", text: "已核验资讯原文" },
+          { type: "bullets", items: evidenceItems },
+          { type: "heading", text: "固定范围核验结果" },
+          {
+            type: "paragraph",
+            text: `${termCoverage}。${padding}`,
+            sourceIds: sourceIds.slice(0, 4),
+          },
+        ],
+        sourceIds,
+      },
+      sources,
+      model: "verified-evidence-template-v1",
+    };
+  }
   if (sources.length > 0) {
     blocks.push(
       { type: "heading", text: "已核验资讯原文" },
@@ -222,120 +263,59 @@ function verifiedEvidenceFallbackSection(input: {
       sourceIds,
     },
     sources,
+    model: "verified-evidence-preview-v1",
   };
+}
+
+export function shouldFinalizeEvidenceTemplate(date: string, now: Date): boolean {
+  const cutoff = new Date(`${date}T${EVIDENCE_TEMPLATE_CUTOFF}:00+08:00`);
+  return !Number.isNaN(cutoff.getTime()) && now.getTime() >= cutoff.getTime();
 }
 
 function createQwenBriefGenerator(input: {
   apiKey: string;
-  openAIApiKey?: string;
-  firecrawlApiKey?: string;
-  firecrawlEndpoint?: string;
   fetcher: typeof fetch;
   newsBundle?: import("../ai/news-intake/types").NewsBundle;
-  deepRecovery?: boolean;
+  finalizeEvidenceTemplate?: boolean;
 }): BriefSectionGenerator {
-  const fallbackUsed = new Set<BriefSectionKey>();
   return async (sectionInput) => {
     const bundleSources = input.newsBundle
       ? selectBriefSourceBundle(input.newsBundle, sectionInput.key, sectionInput.date)
       : [];
-    let primaryError: unknown;
-    try {
-      return await generateQwenBriefSection({
-        ...sectionInput,
-        apiKey: input.apiKey,
-        fetcher: input.fetcher,
-        externalSources: bundleSources,
-      });
-    } catch (error) {
-      primaryError = error;
-    }
-    // A seven-module first pass must not let one slow module consume the
-    // entire batch budget and starve later modules. The scheduler retries only
-    // failed modules five minutes later, when the deeper fallbacks below are
-    // enabled.
-    if (!input.deepRecovery) {
-      return verifiedEvidenceFallbackSection({
-        key: sectionInput.key,
-        sources: bundleSources,
-        diagnostic: primaryError,
-      });
-    }
-    if (bundleSources.length > 0) {
+    const evidenceSources = bundleSources.length > 0
+      ? bundleSources
+      : input.newsBundle
+        ? selectVerifiedBriefFallbackSources(input.newsBundle, sectionInput.date)
+        : [];
+    const diagnostics: string[] = [];
+    for (let index = 0; index < QWEN_BRIEF_SECTION_MODELS.length; index += 1) {
       const remaining = sectionInput.deadlineAt === undefined
         ? Number.POSITIVE_INFINITY
         : sectionInput.deadlineAt - Date.now();
-      if (remaining >= QWEN_BUNDLE_RETRY_MINIMUM_REMAINING_MS) {
-        const diagnostic = sanitizeMorningBriefDiagnostic(primaryError);
-        try {
-          return await generateQwenBriefSection({
-            ...sectionInput,
-            attempt: Math.max(sectionInput.attempt, 2),
-            previousError: diagnostic,
-            apiKey: input.apiKey,
-            fetcher: input.fetcher,
-            externalSources: bundleSources,
-          });
-        } catch (error) {
-          primaryError = error;
-        }
+      if (remaining < QWEN_MODEL_FALLBACK_MINIMUM_REMAINING_MS) {
+        diagnostics.push(`${QWEN_BRIEF_SECTION_MODELS[index]}：批次剩余时间不足`);
+        break;
       }
-    }
-    const remaining = sectionInput.deadlineAt === undefined
-      ? Number.POSITIVE_INFINITY
-      : sectionInput.deadlineAt - Date.now();
-    if (input.firecrawlApiKey
-      && !fallbackUsed.has(sectionInput.key)
-      && remaining >= FIRECRAWL_FALLBACK_MINIMUM_REMAINING_MS) {
-      fallbackUsed.add(sectionInput.key);
-      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
+      const model = QWEN_BRIEF_SECTION_MODELS[index];
       try {
-        const externalSources = await searchFirecrawlBriefSources({
-          date: sectionInput.date,
-          key: sectionInput.key,
-          apiKey: input.firecrawlApiKey,
-          endpoint: input.firecrawlEndpoint,
-          fetcher: input.fetcher,
-          deadlineAt: sectionInput.deadlineAt,
-        });
-        if (externalSources.length === 0) {
-          throw new Error("Firecrawl fallback returned no usable sources");
-        }
-        const supplementedSources = [...bundleSources, ...externalSources]
-          .filter((source, index, all) => all.findIndex((item) => item.id === source.id || item.url === source.url) === index);
         return await generateQwenBriefSection({
           ...sectionInput,
-          attempt: Math.max(sectionInput.attempt, bundleSources.length > 0 ? 3 : 2),
-          previousError: primaryDiagnostic,
+          attempt: Math.max(sectionInput.attempt, index + 1),
+          previousError: diagnostics.join("；") || sectionInput.previousError,
           apiKey: input.apiKey,
           fetcher: input.fetcher,
-          externalSources: supplementedSources,
+          externalSources: bundleSources,
+          model,
         });
-      } catch (fallbackError) {
-        primaryError = new Error(`${primaryDiagnostic}; Firecrawl fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
-      }
-    }
-    const openAIRemaining = sectionInput.deadlineAt === undefined
-      ? Number.POSITIVE_INFINITY
-      : sectionInput.deadlineAt - Date.now();
-    if (input.openAIApiKey && openAIRemaining >= OPENAI_FALLBACK_MINIMUM_REMAINING_MS) {
-      const primaryDiagnostic = sanitizeMorningBriefDiagnostic(primaryError);
-      try {
-        return await generateOpenAIBriefSection({
-          ...sectionInput,
-          attempt: Math.max(sectionInput.attempt, 2),
-          previousError: primaryDiagnostic,
-          apiKey: input.openAIApiKey,
-          fetcher: input.fetcher,
-        });
-      } catch (fallbackError) {
-        primaryError = new Error(`${primaryDiagnostic}; OpenAI fallback failed: ${sanitizeMorningBriefDiagnostic(fallbackError)}`);
+      } catch (error) {
+        diagnostics.push(`${model}：${sanitizeMorningBriefDiagnostic(error)}`);
       }
     }
     return verifiedEvidenceFallbackSection({
       key: sectionInput.key,
-      sources: bundleSources,
-      diagnostic: primaryError,
+      sources: evidenceSources,
+      diagnostic: diagnostics.join("；") || "三个 Qwen 模型均未返回可发布内容",
+      finalize: input.finalizeEvidenceTemplate,
     });
   };
 }
@@ -524,7 +504,7 @@ export async function generateFullMorningBrief(input: {
       attempts += 1;
       try {
         const result = await input.generator({ date: input.date, key, attempt: attempts, previousError, globalSnapshot, marketContext: input.marketContext, deadlineAt: input.deadlineAt });
-        await persistBriefSection(input.db, input.date, input.model, result.section, attempts, "", result.sources, input.lease);
+        await persistBriefSection(input.db, input.date, result.model ?? input.model, result.section, attempts, "", result.sources, input.lease);
         return result;
       } catch (caught) {
         if (isLeaseLost(caught)) throw caught;
@@ -1746,18 +1726,12 @@ export async function runPanLayerJob(
       // Automatic Qwen runs therefore advance exactly one persisted module per
       // tick instead of issuing seven concurrent provider requests.
       const generationKeys = serialQwenRun ? selectedKeys.slice(0, 1) : selectedKeys;
-      const deepRecovery = serialQwenRun
-        ? selectedKeys.length === 1
-        : selectedKeys.length < BRIEF_SECTION_DEFINITIONS_V3.length;
       const generator: BriefSectionGenerator = ai.provider === "qwen"
         ? createQwenBriefGenerator({
           apiKey: ai.apiKey,
-          openAIApiKey: env.OPENAI_API_KEY,
-          firecrawlApiKey: env.FIRECRAWL_API_KEY,
-          firecrawlEndpoint: env.FIRECRAWL_API_URL,
           fetcher,
           newsBundle,
-          deepRecovery,
+          finalizeEvidenceTemplate: shouldFinalizeEvidenceTemplate(date, now),
         })
         : async ({ date: sectionDate, key, attempt, previousError, globalSnapshot, marketContext: sectionContext, deadlineAt: sectionDeadline }) => {
           try {

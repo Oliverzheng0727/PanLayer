@@ -66,3 +66,33 @@ export function selectBriefSourceBundle(
     }];
   });
 }
+
+export function selectVerifiedBriefFallbackSources(
+  bundle: NewsBundle,
+  expectedDate = bundle.fetchDate,
+  limit = 8,
+): SelectedBriefSource[] {
+  if (bundle.fetchDate !== expectedDate) return [];
+  const seen = new Set<string>();
+  return bundle.items
+    .filter((item) => item.verification === "verified")
+    .sort((left, right) =>
+      String(right.publishedAt ?? "").localeCompare(String(left.publishedAt ?? ""))
+      || right.sourceIds.length - left.sourceIds.length
+      || left.id.localeCompare(right.id))
+    .flatMap((item) => {
+      if (seen.has(item.id)) return [];
+      seen.add(item.id);
+      return [{
+        id: item.id,
+        title: item.title,
+        url: item.canonicalUrl,
+        publishedAt: item.publishedAt,
+        retrievedAt: item.receivedAt,
+        content: (item.excerpt || item.title).slice(0, 900),
+        tier: item.tier,
+        verification: item.verification,
+      }];
+    })
+    .slice(0, Math.max(1, limit));
+}

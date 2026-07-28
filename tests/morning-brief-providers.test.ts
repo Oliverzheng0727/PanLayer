@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { generateOpenAIBriefSection, generateQwenBriefSection } from "../lib/ai/morning-brief-providers";
+import {
+  generateOpenAIBriefSection,
+  generateQwenBriefSection,
+  QWEN_BRIEF_SECTION_MODELS,
+} from "../lib/ai/morning-brief-providers";
 import { LEADER_RANKING_BASIS } from "../lib/domain/metrics";
 
 function modelSection(key: BriefSectionKey) {
@@ -48,6 +52,42 @@ function missingOnlySection(key: BriefSectionKey, citationField: "sourceIds" | "
 }
 
 describe("independent morning-brief section providers", () => {
+  it("supports the ordered three-model Qwen degradation chain", async () => {
+    expect(QWEN_BRIEF_SECTION_MODELS).toEqual([
+      "qwen3.7-plus",
+      "qwen3.6-plus",
+      "qwen3.7-max",
+    ]);
+    let requestedModel = "";
+    const fetcher: typeof fetch = async (_input, init) => {
+      requestedModel = JSON.parse(String(init?.body)).model;
+      return new Response(JSON.stringify({
+        output: {
+          choices: [{ message: { content: JSON.stringify(modelSection("global-industry")) } }],
+          search_info: {
+            search_results: [{
+              index: 1,
+              title: "可信来源",
+              url: "https://example.com/model-fallback",
+            }],
+          },
+        },
+      }));
+    };
+
+    const result = await generateQwenBriefSection({
+      date: "2026-07-29",
+      key: "global-industry",
+      apiKey: "secret",
+      fetcher,
+      globalSnapshot: [],
+      model: "qwen3.6-plus",
+    });
+
+    expect(requestedModel).toBe("qwen3.6-plus");
+    expect(result.model).toBe("qwen3.6-plus");
+  });
+
   it("tells the provider that a weekend brief is for a closed A-share session", async () => {
     let prompt = "";
     const fetcher: typeof fetch = async (_input, init) => {

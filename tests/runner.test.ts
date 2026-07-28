@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, BRIEF_SECTION_DEFINITIONS_V3, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, prepareMorningBriefRegeneration, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, prepareMorningBriefRegeneration, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldFinalizeEvidenceTemplate, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -493,6 +493,12 @@ describe("close review aggregation", () => {
     expect(() => resolveMorningBriefProvider({})).toThrow("DASHSCOPE_API_KEY");
   });
 
+  it("only finalizes the verified evidence template from 07:50 Beijing", () => {
+    expect(shouldFinalizeEvidenceTemplate("2026-07-29", new Date("2026-07-28T23:49:59Z"))).toBe(false);
+    expect(shouldFinalizeEvidenceTemplate("2026-07-29", new Date("2026-07-28T23:50:00Z"))).toBe(true);
+    expect(shouldFinalizeEvidenceTemplate("2026-07-29", new Date("2026-07-29T00:05:00Z"))).toBe(true);
+  });
+
   it("upserts domestic audits and global points by their unique keys", async () => {
     const calls: Array<{ sql: string; values: unknown[] }> = [];
     const db = {
@@ -676,13 +682,13 @@ describe("close review aggregation", () => {
     expect(jobUpdates.at(-1)).toEqual({ status: "partial", message: "incomplete modules: mapping" });
   });
 
-  it("keeps Qwen at one external attempt per module for a multi-module batch", async () => {
+  it("tries the three Qwen tiers once for each failing module", async () => {
     const { db, fetcher, requests } = morningBriefJobHarness(["risk", "mapping"]);
 
     await runPanLayerJob({ type: "morning-brief" }, new Date("2026-07-22T23:15:00Z"), { DB: db, DASHSCOPE_API_KEY: "qwen" }, { fetcher, sectionKeys: ["risk", "mapping"] });
 
-    expect(requests.risk).toBe(1);
-    expect(requests.mapping).toBe(1);
+    expect(requests.risk).toBe(3);
+    expect(requests.mapping).toBe(3);
   });
 
   it("advances one Qwen module per automatic scheduler tick", async () => {
@@ -728,49 +734,14 @@ describe("close review aggregation", () => {
     expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
   });
 
-  it("calls Firecrawl once and performs one search-disabled Qwen correction after failure", async () => {
+  it("falls from qwen3.7-plus to qwen3.6-plus after a provider failure", async () => {
     const { db } = morningBriefJobHarness([]);
-    const calls = { qwen: 0, firecrawl: 0 };
-    const qwenBodies: Array<{ enable_search: boolean; messages: Array<{ content: string }> }> = [];
-    const fetcher: typeof fetch = async (input, init) => {
-      if (String(input).includes("firecrawl.example")) {
-        calls.firecrawl += 1;
-        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer firecrawl-secret");
-        return Response.json({
-          success: true,
-          data: {
-            news: [{
-              title: "Risk source",
-              url: "https://example.com/risk-source",
-              markdown: "Verified risk context. ".repeat(40),
-            }],
-          },
-        });
-      }
-      calls.qwen += 1;
-      const body = JSON.parse(String(init?.body)) as typeof qwenBodies[number];
-      qwenBodies.push(body);
-      if (calls.qwen === 1) return Response.json({ message: "provider unavailable" }, { status: 503 });
-      const definition = BRIEF_SECTION_DEFINITIONS.find((item) => item.key === "risk")!;
-      return Response.json({
-        output: {
-          choices: [{
-            message: {
-              content: JSON.stringify({
-                key: definition.key,
-                title: definition.title,
-                summary: "已核验的风险摘要。",
-                tags: ["市场"],
-                blocks: [{
-                  type: "paragraph",
-                  text: `${definition.requiredTerms.join("、")}。${"客观市场事实与影响解读。".repeat(120)}`,
-                  sourceIds: ["firecrawl_risk_1"],
-                }],
-              }),
-            },
-          }],
-        },
-      });
+    const models: string[] = [];
+    const fetcher: typeof fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      models.push(body.model);
+      if (models.length === 1) return Response.json({ message: "provider unavailable" }, { status: 503 });
+      return qwenResponse("risk");
     };
 
     const result = await runPanLayerJob(
@@ -779,37 +750,23 @@ describe("close review aggregation", () => {
       {
         DB: db,
         DASHSCOPE_API_KEY: "qwen",
-        FIRECRAWL_API_KEY: "firecrawl-secret",
-        FIRECRAWL_API_URL: "https://firecrawl.example/v2/search",
       },
       { fetcher, sectionKeys: ["risk"] },
     );
 
     expect(result.ok).toBe(true);
-    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
-    expect(qwenBodies[0].enable_search).toBe(true);
-    expect(qwenBodies[1].enable_search).toBe(false);
-    expect(qwenBodies[1].messages[1].content).toContain("firecrawl_risk_1");
+    expect(models).toEqual(["qwen3.7-plus", "qwen3.6-plus"]);
   });
 
-  it("uses Firecrawl at most once when the correction also fails", async () => {
+  it("uses qwen3.7-max as the final model and does not call Firecrawl on demand", async () => {
     const { db } = morningBriefJobHarness([]);
-    const calls = { qwen: 0, firecrawl: 0 };
-    const fetcher: typeof fetch = async (input) => {
+    const models: string[] = [];
+    let firecrawlCalls = 0;
+    const fetcher: typeof fetch = async (input, init) => {
       if (String(input).includes("firecrawl.example")) {
-        calls.firecrawl += 1;
-        return Response.json({
-          success: true,
-          data: {
-            news: [{
-              title: "Risk source",
-              url: "https://example.com/risk-source",
-              markdown: "Verified risk context. ".repeat(40),
-            }],
-          },
-        });
+        firecrawlCalls += 1;
       }
-      calls.qwen += 1;
+      models.push(JSON.parse(String(init?.body)).model);
       return Response.json({ message: "provider unavailable" }, { status: 503 });
     };
 
@@ -825,10 +782,11 @@ describe("close review aggregation", () => {
       { fetcher, sectionKeys: ["risk"] },
     );
 
-    expect(calls).toEqual({ qwen: 2, firecrawl: 1 });
+    expect(models).toEqual(["qwen3.7-plus", "qwen3.6-plus", "qwen3.7-max"]);
+    expect(firecrawlCalls).toBe(0);
   });
 
-  it("falls back to OpenAI for a failed Qwen module when the backup key is configured", async () => {
+  it("does not leave the requested Qwen chain for OpenAI", async () => {
     const { db } = morningBriefJobHarness([]);
     const calls = { qwen: 0, openai: 0 };
     const fetcher: typeof fetch = async (input) => {
@@ -851,23 +809,19 @@ describe("close review aggregation", () => {
       { fetcher, sectionKeys: ["risk"] },
     );
 
-    expect(calls).toEqual({ qwen: 1, openai: 1 });
+    expect(calls).toEqual({ qwen: 3, openai: 0 });
   });
 
-  it("skips Firecrawl when fewer than 40 seconds remain in the batch budget", async () => {
+  it("skips later Qwen tiers when the batch has less than eight seconds left", async () => {
     vi.useFakeTimers();
     try {
       const now = new Date("2026-07-22T23:15:00Z");
       vi.setSystemTime(now);
       const { db } = morningBriefJobHarness([]);
-      const calls = { qwen: 0, firecrawl: 0 };
-      const fetcher: typeof fetch = async (input) => {
-        if (String(input).includes("firecrawl.example")) {
-          calls.firecrawl += 1;
-          return Response.json({ success: true, data: { news: [] } });
-        }
-        calls.qwen += 1;
-        vi.setSystemTime(new Date(now.getTime() + 111_000));
+      let qwenCalls = 0;
+      const fetcher: typeof fetch = async () => {
+        qwenCalls += 1;
+        vi.setSystemTime(new Date(now.getTime() + 143_000));
         return Response.json({ message: "provider unavailable" }, { status: 503 });
       };
 
@@ -883,7 +837,7 @@ describe("close review aggregation", () => {
         { fetcher, sectionKeys: ["risk"] },
       );
 
-      expect(calls).toEqual({ qwen: 1, firecrawl: 0 });
+      expect(qwenCalls).toBe(1);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

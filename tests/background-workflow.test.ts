@@ -11,6 +11,7 @@ describe("production background workflow", () => {
 
     expect(workflow).not.toContain('cron: "2-57/5 * * * *"');
     expect(workflow).toContain('cron: "17 * * * *"');
+    expect(workflow).toContain('cron: "17,32,47,57 23 * * *"');
     expect(workflow).toContain('cron: "27 1 * * 1-5"');
     expect(workflow).toContain('cron: "2 2 * * 1-5"');
     expect(workflow).toContain('cron: "2 3 * * 1-5"');
@@ -33,7 +34,8 @@ describe("production background workflow", () => {
 
     expect(viteConfig).toContain('"17 * * * *"');
     expect(viteConfig).toContain('"50,55 22 * * *"');
-    expect(viteConfig).toContain('"15,20,25,30 23,0 * * *"');
+    expect(viteConfig).toContain('"15,20,25,30,35,40,45,50,55 23 * * *"');
+    expect(viteConfig).toContain('"15,20,25,30 0 * * *"');
     expect(viteConfig).toContain('"0,10,20,25-30 1-8 * * 1-5"');
     expect(viteConfig).not.toContain('"0,30 10-15 * * 1-5"');
     expect(viteConfig).not.toContain('"*/5 18-21 * * 0-4"');

@@ -264,7 +264,8 @@ export function nextRetryAtForCheckpoint(
   if (key.startsWith("breadth-")) {
     return breadthRetryAtForAttempt(now, attempt);
   }
-  // The external scheduler has dedicated 07:20/07:25/07:30 recovery ticks.
+  // The external scheduler has dedicated five-minute recovery ticks through
+  // 07:55, leaving 07:50/07:55 for the verified-evidence finalization path.
   // Keep morning-brief retries aligned with them; the runner only regenerates
   // failed or missing modules, so completed content is never charged twice.
   if (key === "morning-brief") {
