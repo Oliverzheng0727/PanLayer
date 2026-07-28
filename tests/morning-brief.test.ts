@@ -117,7 +117,7 @@ describe("Qwen morning brief generation", () => {
     });
 
     expect(requestUrl).toBe("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions");
-    expect(requestBody.model).toBe("qwen-plus");
+    expect(requestBody.model).toBe("qwen3.7-plus");
     expect(requestBody.enable_search).toBe(true);
     expect(requestBody.search_options).toMatchObject({
       search_strategy: "turbo",

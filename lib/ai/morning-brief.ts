@@ -44,7 +44,7 @@ const REQUIRED_SECTIONS = [
 
 const RECOMMENDATION_LANGUAGE = /建议(买入|卖出|加仓|减仓)|买点|卖点|仓位建议|收益承诺/;
 
-export const QWEN_MORNING_BRIEF_MODEL = "qwen-plus";
+export const QWEN_MORNING_BRIEF_MODEL = "qwen3.7-plus";
 export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const DASHSCOPE_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 

@@ -322,8 +322,8 @@ describe("close review aggregation", () => {
 
       await expect(oldRun).rejects.toThrow(/lease/i);
       expect(globalWrites).toEqual(["标普500"]);
-      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
-      expect(aggregateWrites).toEqual(["qwen-plus"]);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen3.7-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen3.7-plus"]);
     } finally { vi.useRealTimers(); }
   });
 
@@ -354,8 +354,8 @@ describe("close review aggregation", () => {
 
       await expect(oldRun).rejects.toThrow(/lease/i);
       expect(globalWrites).toHaveLength(2);
-      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen-plus" }]);
-      expect(aggregateWrites).toEqual(["qwen-plus"]);
+      expect(sectionWrites).toEqual([{ key: "risk", status: "complete", model: "qwen3.7-plus" }]);
+      expect(aggregateWrites).toEqual(["qwen3.7-plus"]);
     } finally { vi.useRealTimers(); }
   });
 
@@ -451,7 +451,7 @@ describe("close review aggregation", () => {
     expect(resolveMorningBriefProvider({ DASHSCOPE_API_KEY: "qwen", OPENAI_API_KEY: "openai" })).toMatchObject({
       provider: "qwen",
       apiKey: "qwen",
-      model: "qwen-plus",
+      model: "qwen3.7-plus",
     });
     expect(resolveMorningBriefProvider({ OPENAI_API_KEY: "openai" })).toMatchObject({
       provider: "openai",

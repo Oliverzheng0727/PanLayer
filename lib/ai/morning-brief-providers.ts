@@ -60,7 +60,7 @@ export interface ProviderSectionInput {
   externalSources?: FirecrawlBriefSource[];
 }
 
-export const QWEN_BRIEF_SECTION_MODEL = "qwen-plus";
+export const QWEN_BRIEF_SECTION_MODEL = "qwen3.7-plus";
 export const DASHSCOPE_COMPATIBLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 export const DASHSCOPE_SECTION_GENERATION_URL = `${DASHSCOPE_COMPATIBLE_BASE_URL}/chat/completions`;
 export const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
