@@ -1,4 +1,8 @@
-import type { DailyComparison, DailyReview } from "../domain/types";
+import type {
+  DailyComparison,
+  DailyReview,
+  StructuredMarketSignals,
+} from "../domain/types";
 import { isVerifiedSectorMetric } from "../domain/market-structure";
 
 export type CloseReviewStage =
@@ -24,6 +28,85 @@ const CLOSE_REVIEW_CORE_STAGE_SET = new Set<string>(CLOSE_REVIEW_CORE_STAGES);
 
 export function isCloseReviewCoreStage(stage: string): boolean {
   return CLOSE_REVIEW_CORE_STAGE_SET.has(stage);
+}
+
+const STRUCTURED_SIGNAL_CORE_DATASETS = [
+  "hotStocks",
+  "anomalies",
+  "sectors",
+] as const;
+
+export function assessStructuredSignalCore(
+  signals: StructuredMarketSignals | undefined,
+): {
+  status: "complete" | "partial" | "failed";
+  completed: number;
+  expected: number;
+  message: string;
+} {
+  const expected = STRUCTURED_SIGNAL_CORE_DATASETS.length;
+  if (!signals) {
+    return {
+      status: "failed",
+      completed: 0,
+      expected,
+      message: `核心信号 0/${expected}；结构化信号暂缺`,
+    };
+  }
+
+  const completed = STRUCTURED_SIGNAL_CORE_DATASETS.filter((key) => {
+    const evidence = signals.evidence[key];
+    return evidence?.status === "complete" && evidence.validCount > 0;
+  }).length;
+  const status = completed === expected
+    ? "complete"
+    : completed > 0 || signals.datasetSuccess > 0
+      ? "partial"
+      : "failed";
+
+  return {
+    status,
+    completed,
+    expected,
+    message:
+      `核心信号 ${completed}/${expected}；全量扩展 ${signals.datasetSuccess}/${signals.datasetTotal}` +
+      (status === "complete" && signals.status !== "complete" ? "（扩展数据部分，不影响收盘核心）" : ""),
+  };
+}
+
+export function recoverableCloseReviewCoreStages(
+  review: DailyReview | null,
+): CloseReviewStage[] {
+  if (!review || review.status === "failed" || review.status === "demo") return [];
+
+  const stages: CloseReviewStage[] = [];
+  if (
+    review.structure?.status === "complete"
+    && review.metrics.limitUp !== null
+    && review.metrics.limitDown !== null
+  ) {
+    stages.push("board-pools");
+  }
+  if (assessStructuredSignalCore(review.structuredSignals).status === "complete") {
+    stages.push("signals");
+  }
+  if (review.recognitionRanking?.status === "complete") {
+    stages.push("recognition");
+  }
+  if (
+    review.comparison?.marketAmount !== null
+    && review.comparison?.marketAmount !== undefined
+    && (review.comparison.marketCoveragePct ?? 0) >= 95
+  ) {
+    stages.push("aggregate");
+  }
+  if (
+    (review.comparison?.indices.length ?? 0) >= 5
+    && review.comparison?.indices.every((item) => item.status === "complete")
+  ) {
+    stages.push("indices");
+  }
+  return stages;
 }
 
 function preferNumber(current: number | null | undefined, previous: number | null | undefined) {

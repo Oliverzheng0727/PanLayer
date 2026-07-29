@@ -79,9 +79,11 @@ import {
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 import {
+  assessStructuredSignalCore,
   CLOSE_REVIEW_CORE_STAGES,
   isCloseReviewCoreStage,
   mergeCloseReviewWithExisting,
+  recoverableCloseReviewCoreStages,
   type CloseReviewStage,
 } from "./close-review-stages";
 import {
@@ -1363,6 +1365,47 @@ export async function runPanLayerJob(
           .filter((item) => item.status === "complete")
           .map((item) => item.stage),
       );
+      if (!options.force && existingReview) {
+        const recoverableStages = recoverableCloseReviewCoreStages(existingReview);
+        for (const stage of recoverableStages) {
+          if (completedStages.has(stage)) continue;
+          const detail = stage === "signals"
+            ? assessStructuredSignalCore(existingReview.structuredSignals).message
+            : "已由落库复盘证据恢复阶段状态";
+          await finishCloseStage(
+            stage,
+            "complete",
+            `${detail}；未重复请求行情源`,
+            { recoveredFromPersistedReview: true },
+          );
+          completedStages.add(stage);
+        }
+      }
+      const persistedCoreComplete = CLOSE_REVIEW_CORE_STAGES.every((stage) =>
+        completedStages.has(stage)
+      );
+      if (!options.force && existingReview && persistedCoreComplete) {
+        const backgroundHighsComplete = existingReview.metrics.high20 !== null
+          && existingReview.metrics.high20 !== undefined
+          && existingReview.metrics.high120 !== null
+          && existingReview.metrics.allTimeHigh !== null;
+        const message =
+          `收盘复盘核心 complete；阶段 ${CLOSE_REVIEW_CORE_STAGES.length}/${CLOSE_REVIEW_CORE_STAGES.length}；` +
+          `${backgroundHighsComplete ? "新高已核验" : "新高后台初始化中"}；` +
+          `盘中快照 ${existingReview.breadthMeta?.captured ?? existingReview.breadth.length}/6；` +
+          "已复用落库结果，未重复请求行情源";
+        const finishedAt = new Date().toISOString();
+        if (run?.id) {
+          await db.prepare(
+            "UPDATE job_runs SET status='complete', message=?, finished_at=? WHERE id=?",
+          ).bind(message, finishedAt, run.id).run();
+        }
+        await finishCheckpoint("complete", message, {
+          reusedPersistedReview: true,
+          coreStagesComplete: CLOSE_REVIEW_CORE_STAGES.length,
+        });
+        return { ok: true, status: "complete", message };
+      }
       const canReuseStage = (stage: CloseReviewStage) =>
         !options.force && Boolean(existingReview) && completedStages.has(stage);
       const reuseSignals = canReuseStage("signals") && Boolean(existingReview?.structuredSignals);
@@ -1374,6 +1417,7 @@ export async function runPanLayerJob(
         && existingReview.metrics.high120 !== null
         && existingReview.metrics.allTimeHigh !== null;
       const expectedSymbols = await loadExpectedSymbols(db);
+      let quoteFailureReason = "行情源返回空数据，可能为休市日";
       const market = await runDomesticPipeline({
         at: "16:10",
         expectedSymbols,
@@ -1383,9 +1427,43 @@ export async function runPanLayerJob(
         minimumExpectedCount: MINIMUM_ALL_A_UNIVERSE,
         secondarySampleSize: fuyao ? Number.POSITIVE_INFINITY : 240,
         mergeSecondaryMetadata: Boolean(fuyao),
+      }).catch((error) => {
+        quoteFailureReason = error instanceof Error ? error.message : String(error);
+        return null;
       });
-      await persistSourceAudits(db, date, "16:10", market.audits);
-      if (market.status === "failed" || market.quotes.length === 0) throw new Error("行情源返回空数据，可能为休市日");
+      if (market) {
+        await persistSourceAudits(db, date, "16:10", market.audits);
+      }
+      if (!market || market.status === "failed" || market.quotes.length === 0) {
+        if (!options.force && existingReview && completedStages.has("quotes")) {
+          const completedCount = CLOSE_REVIEW_CORE_STAGES.filter((stage) =>
+            completedStages.has(stage)
+          ).length;
+          const preservedStatus = completedCount === CLOSE_REVIEW_CORE_STAGES.length
+            ? "complete"
+            : "partial";
+          const message =
+            `已保留落库收盘数据；核心阶段 ${completedCount}/${CLOSE_REVIEW_CORE_STAGES.length}；` +
+            `本次行情重取失败：${quoteFailureReason}；仅等待缺失阶段自动补跑`;
+          const finishedAt = new Date().toISOString();
+          if (run?.id) {
+            await db.prepare(
+              "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
+            ).bind(preservedStatus, message, finishedAt, run.id).run();
+          }
+          await finishCheckpoint(preservedStatus, message, {
+            preservedExistingReview: true,
+            coreStagesComplete: completedCount,
+            quoteRetryError: quoteFailureReason,
+          });
+          return {
+            ok: true,
+            status: preservedStatus,
+            message,
+          };
+        }
+        throw new Error(quoteFailureReason);
+      }
       await persistStockUniverse(db, market.quotes, new Date().toISOString());
       await finishCloseStage(
         "quotes",
@@ -1609,6 +1687,7 @@ export async function runPanLayerJob(
           existingIndices,
         )
         : existingIndices;
+      const structuredSignalCore = assessStructuredSignalCore(structuredSignals);
       await Promise.all([
         finishCloseStage(
           "board-pools",
@@ -1627,13 +1706,15 @@ export async function runPanLayerJob(
         ),
         finishCloseStage(
           "signals",
-          structuredSignals?.status ?? (fuyao ? "failed" : "partial"),
+          structuredSignalCore.status,
           structuredSignals
-            ? `扶摇结构化信号 ${structuredSignals.datasetSuccess}/${structuredSignals.datasetTotal}`
+            ? structuredSignalCore.message
             : fuyao ? "扶摇结构化信号采集失败" : "扶摇未配置",
           {
             datasetSuccess: structuredSignals?.datasetSuccess ?? 0,
             datasetTotal: structuredSignals?.datasetTotal ?? 7,
+            coreDatasetSuccess: structuredSignalCore.completed,
+            coreDatasetTotal: structuredSignalCore.expected,
             requestIds: structuredSignals?.requestIds ?? [],
           },
         ),

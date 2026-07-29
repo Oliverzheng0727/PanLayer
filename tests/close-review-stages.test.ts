@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { demoReview } from "../lib/data/demo";
 import {
+  assessStructuredSignalCore,
   CLOSE_REVIEW_CORE_STAGES,
   isCloseReviewCoreStage,
   mergeCloseReviewWithExisting,
+  recoverableCloseReviewCoreStages,
 } from "../lib/jobs/close-review-stages";
 
 describe("staged close-review merge", () => {
@@ -99,5 +101,101 @@ describe("staged close-review merge", () => {
     const merged = mergeCloseReviewWithExisting(existing, retry);
 
     expect(merged.comparison?.mainSectors).toEqual([]);
+  });
+
+  it("treats verified fallback signal datasets as a completed close-review core stage", () => {
+    const review = structuredClone(demoReview);
+    review.status = "complete";
+    review.structuredSignals = {
+      schemaVersion: 1,
+      provider: "扶摇 Fuyao",
+      referenceDate: review.date,
+      marketTime: `${review.date}T15:00:00+08:00`,
+      receivedAt: review.updatedAt,
+      status: "partial",
+      datasetTotal: 7,
+      datasetSuccess: 5,
+      requestIds: [],
+      hotStocks: [{ symbol: "000001.SZ", name: "平安银行", rank: 1, rankChange: 0, heat: null }],
+      skyrocket: [],
+      dragonTiger: [],
+      anomalies: [{
+        symbol: "000001.SZ",
+        name: "平安银行",
+        title: "银行",
+        analysis: null,
+        keywords: ["银行"],
+      }],
+      sectors: [{ name: "银行", limitUpCount: 1, averagePct: 1, amountGrowthPct: 2, maxStreak: 1 }],
+      evidence: {
+        hotStocks: {
+          source: "同花顺热榜（降级）",
+          requestId: null,
+          marketTime: `${review.date}T15:00:00+08:00`,
+          receivedAt: review.updatedAt,
+          rawCount: 30,
+          validCount: 30,
+          coveragePct: 100,
+          status: "complete",
+          message: "备用源完成",
+        },
+        anomalies: {
+          source: "同花顺题材（降级）",
+          requestId: null,
+          marketTime: `${review.date}T15:00:00+08:00`,
+          receivedAt: review.updatedAt,
+          rawCount: 30,
+          validCount: 20,
+          coveragePct: 66.67,
+          status: "complete",
+          message: "备用源完成",
+        },
+        sectors: {
+          source: "东方财富板块（降级）",
+          requestId: null,
+          marketTime: `${review.date}T15:00:00+08:00`,
+          receivedAt: review.updatedAt,
+          rawCount: 100,
+          validCount: 100,
+          coveragePct: 100,
+          status: "complete",
+          message: "备用源完成",
+        },
+      },
+      errors: ["扩展龙虎榜暂缺"],
+    };
+
+    expect(assessStructuredSignalCore(review.structuredSignals)).toMatchObject({
+      status: "complete",
+      completed: 3,
+      expected: 3,
+    });
+    expect(recoverableCloseReviewCoreStages(review)).toContain("signals");
+  });
+
+  it("does not promote structured signals when a required verified dataset is missing", () => {
+    const review = structuredClone(demoReview);
+    review.status = "complete";
+    review.structuredSignals = {
+      schemaVersion: 1,
+      provider: "扶摇 Fuyao",
+      referenceDate: review.date,
+      marketTime: `${review.date}T15:00:00+08:00`,
+      receivedAt: review.updatedAt,
+      status: "partial",
+      datasetTotal: 7,
+      datasetSuccess: 2,
+      requestIds: [],
+      hotStocks: [],
+      skyrocket: [],
+      dragonTiger: [],
+      anomalies: [],
+      sectors: [],
+      evidence: {},
+      errors: ["结构化数据不足"],
+    };
+
+    expect(assessStructuredSignalCore(review.structuredSignals).status).toBe("partial");
+    expect(recoverableCloseReviewCoreStages(review)).not.toContain("signals");
   });
 });
