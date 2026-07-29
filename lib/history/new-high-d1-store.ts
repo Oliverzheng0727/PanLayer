@@ -5,14 +5,20 @@ import type { DailyReview } from "../domain/types";
 
 export interface PersistedNewHighProgressSnapshot {
   targetDate: string;
+  /** Stocks with a reusable historical baseline. This value never resets at a new trade date. */
   completed: number;
   currentCursor: number;
   target: number;
+  /** Stocks whose state has also been advanced through targetDate. */
+  dailyCompleted: number;
+  /** States that genuinely need a full-history rebuild. */
+  rebuildPending: number;
   failed: number;
   updatedAt: string;
 }
 
 const NEW_HIGH_PROGRESS_KEY = "new-high-progress-snapshot";
+const NEW_HIGH_PROGRESS_V2_MIGRATION_KEY = "new-high-progress-v2-migrated";
 
 export interface NewHighStateRow {
   symbol: string;
@@ -143,11 +149,11 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
         "LEFT JOIN new_high_states h ON h.symbol = s.symbol " +
         "LEFT JOIN new_high_bootstrap_failures f ON f.symbol = s.symbol " +
         "WHERE UPPER(s.name) NOT LIKE '%ST%' AND " +
-        "(h.symbol IS NULL OR h.status = 'rebuild' OR h.initialized_through < ?) " +
+        "(h.symbol IS NULL OR h.status = 'rebuild') " +
         "AND (f.symbol IS NULL OR f.next_retry_at <= ?) " +
         "ORDER BY CASE WHEN f.symbol IS NULL THEN 0 ELSE 1 END, " +
         "CASE WHEN h.status = 'rebuild' THEN 0 ELSE 1 END, COALESCE(f.attempts, 0), s.symbol LIMIT ?",
-      ).bind(targetDate, new Date().toISOString(), limit).all<{ symbol: string; name: string; sector: string }>();
+      ).bind(new Date().toISOString(), limit).all<{ symbol: string; name: string; sector: string }>();
       return (result.results ?? []).map((row) => ({
         symbol: String(row.symbol),
         name: String(row.name),
@@ -277,29 +283,73 @@ export async function newHighBootstrapTargetDate(
   return fallback.toISOString().slice(0, 10);
 }
 
+async function ensureNewHighProgressV2Migration(db: D1Database) {
+  const migrated = await db.prepare(
+    "SELECT value FROM bootstrap_state WHERE key = ?",
+  ).bind(NEW_HIGH_PROGRESS_V2_MIGRATION_KEY).first<{ value: string }>();
+  if (migrated?.value === "complete") return;
+
+  const updatedAt = new Date().toISOString();
+  // The former 120-day scope upgrade marked every healthy state as `rebuild`.
+  // Those rows still contain a valid historical baseline. Reactivate them once;
+  // a genuinely stale row will be marked for rebuild again by the daily engine.
+  await db.prepare(
+    `UPDATE new_high_states
+        SET status = 'active', updated_at = ?
+      WHERE status = 'rebuild'
+        AND last_date IS NOT NULL AND last_date <> ''
+        AND closes_json IS NOT NULL AND closes_json <> '[]'`,
+  ).bind(updatedAt).run();
+  await db.prepare(
+    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, 'complete', ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+  ).bind(NEW_HIGH_PROGRESS_V2_MIGRATION_KEY, updatedAt).run();
+}
+
 export async function refreshNewHighProgressSnapshot(
   db: D1Database,
   currentDate: string,
 ): Promise<PersistedNewHighProgressSnapshot> {
+  await ensureNewHighProgressV2Migration(db);
   const targetDate = await newHighBootstrapTargetDate(db, currentDate);
-  const [target, completed, failed] = await Promise.all([
+  const [target, baseline, daily, rebuild, failed] = await Promise.all([
     db.prepare(
       "SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'",
     ).first<{ count: number }>(),
     db.prepare(
-      "SELECT COUNT(*) AS count FROM new_high_states WHERE status = 'active' AND initialized_through >= ?",
+      `SELECT COUNT(*) AS count
+         FROM stocks s
+         JOIN new_high_states h ON h.symbol = s.symbol
+        WHERE UPPER(s.name) NOT LIKE '%ST%'
+          AND h.last_date IS NOT NULL AND h.last_date <> ''
+          AND h.closes_json IS NOT NULL AND h.closes_json <> '[]'`,
+    ).first<{ count: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS count
+         FROM stocks s
+         JOIN new_high_states h ON h.symbol = s.symbol
+        WHERE UPPER(s.name) NOT LIKE '%ST%'
+          AND h.status = 'active' AND h.initialized_through >= ?`,
     ).bind(targetDate).first<{ count: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS count
+         FROM stocks s
+         JOIN new_high_states h ON h.symbol = s.symbol
+        WHERE UPPER(s.name) NOT LIKE '%ST%' AND h.status = 'rebuild'`,
+    ).first<{ count: number }>(),
     db.prepare(
       "SELECT COUNT(*) AS count FROM new_high_bootstrap_failures",
     ).first<{ count: number }>(),
   ]);
-  const completedCount = Number(completed?.count ?? 0);
+  const completedCount = Number(baseline?.count ?? 0);
   const updatedAt = new Date().toISOString();
   const snapshot: PersistedNewHighProgressSnapshot = {
     targetDate,
     completed: completedCount,
     currentCursor: completedCount,
     target: Number(target?.count ?? 0),
+    dailyCompleted: Number(daily?.count ?? 0),
+    rebuildPending: Number(rebuild?.count ?? 0),
     failed: Number(failed?.count ?? 0),
     updatedAt,
   };
@@ -325,6 +375,8 @@ export async function readNewHighProgressSnapshot(
         snapshot.targetDate === targetDate
         && Number.isFinite(snapshot.completed)
         && Number.isFinite(snapshot.target)
+        && Number.isFinite(snapshot.dailyCompleted)
+        && Number.isFinite(snapshot.rebuildPending)
         && Number.isFinite(snapshot.failed)
       ) return snapshot;
     } catch {

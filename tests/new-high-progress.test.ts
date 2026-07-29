@@ -27,8 +27,30 @@ describe("new-high initialization progress", () => {
       complete: false,
     });
     expect(formatNewHighProgress(progress)).toBe(
-      "历史行情初始化 34.94% · 1860/5324 · 失败 2",
+      "历史基线 34.94% · 1860/5324 · 今日刷新 34.94% · 1860/5324 · 失败 2",
     );
+  });
+
+  it("keeps the historical baseline while a new trade date refresh starts", () => {
+    const progress = buildNewHighProgress({
+      targetDate: "2026-07-29",
+      completed: 2_287,
+      dailyCompleted: 43,
+      target: 5_321,
+      failed: 67,
+      updatedAt: "2026-07-29T08:00:00.000Z",
+    });
+
+    expect(progress).toMatchObject({
+      completed: 2_287,
+      coveragePct: 42.98,
+      dailyCompleted: 43,
+      dailyCoveragePct: 0.81,
+      ready: false,
+      complete: false,
+    });
+    expect(formatNewHighProgress(progress)).toContain("历史基线 42.98% · 2287/5321");
+    expect(formatNewHighProgress(progress)).toContain("今日刷新 0.81% · 43/5321");
   });
 
   it("marks metrics ready at 95 percent while continuing toward full completion", () => {

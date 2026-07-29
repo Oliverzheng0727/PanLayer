@@ -32,6 +32,8 @@ export interface SidebarProgressModel {
   newHighCompleted: number;
   newHighTarget: number;
   newHighCoveragePct: number;
+  newHighDailyCompleted: number;
+  newHighDailyCoveragePct: number;
   marketSession: boolean;
   tasks: SidebarProgressTask[];
 }
@@ -218,6 +220,8 @@ export function buildSidebarProgress(
     newHighCompleted: newHighProgress.completed,
     newHighTarget: newHighProgress.target,
     newHighCoveragePct: newHighProgress.coveragePct,
+    newHighDailyCompleted: newHighProgress.dailyCompleted ?? newHighProgress.completed,
+    newHighDailyCoveragePct: newHighProgress.dailyCoveragePct ?? newHighProgress.coveragePct,
     marketSession,
     tasks: [
       {
@@ -281,10 +285,11 @@ export function buildSidebarProgress(
       },
       {
         key: "new-high",
-        label: "新高初始化",
+        label: "新高历史基线",
         status: newHighStatus,
         value: `${newHighProgress.completed}/${newHighProgress.target}`,
-        detail: `覆盖 ${newHighProgress.coveragePct.toFixed(2)}%${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
+        detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · 今日刷新 ${newHighProgress.dailyCompleted ?? newHighProgress.completed}/${newHighProgress.target}` +
+          `${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
         updatedAt: newHighProgress.updatedAt,
         nextRetryAt: health.jobs["new-high-bootstrap"]?.nextRetryAt ?? null,
       },

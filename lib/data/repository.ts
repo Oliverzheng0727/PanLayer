@@ -755,6 +755,8 @@ export async function readNewHighProgress(targetDate: string): Promise<NewHighPr
       completed: snapshot.completed,
       currentCursor: snapshot.currentCursor,
       target: snapshot.target,
+      dailyCompleted: snapshot.dailyCompleted,
+      rebuildPending: snapshot.rebuildPending,
       failed: snapshot.failed,
       updatedAt: snapshot.updatedAt,
       minimumTarget: 5_000,

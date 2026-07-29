@@ -129,8 +129,15 @@ export function SidebarDataProgressCard({
         <span className="mt-2 flex items-center justify-between gap-2 text-[10px] text-white/35">
           <span>{model.marketSession ? `盘中 ${model.breadthCompleted}/${model.breadthExpected}` : "盘中 非交易日"}</span>
           <span>
-            新高 {model.newHighCompleted}/{model.newHighTarget}
+            新高历史 {model.newHighCompleted}/{model.newHighTarget}
             {model.newHighTarget > 0 ? ` · ${model.newHighCoveragePct.toFixed(1)}%` : ""}
+          </span>
+        </span>
+        <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
+          <span>今日新高刷新</span>
+          <span>
+            {model.newHighDailyCompleted}/{model.newHighTarget}
+            {model.newHighTarget > 0 ? ` · ${model.newHighDailyCoveragePct.toFixed(1)}%` : ""}
           </span>
         </span>
         <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">

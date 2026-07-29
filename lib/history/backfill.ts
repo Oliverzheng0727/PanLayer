@@ -501,9 +501,10 @@ async function ensureNewHighBackfillScope(db: D1Database, days: number) {
   const currentDays = Number(row?.value ?? 0);
   if (Number.isFinite(currentDays) && currentDays >= days) return;
   const updatedAt = new Date().toISOString();
-  await db.prepare(
-    "UPDATE new_high_states SET status = 'rebuild', updated_at = ? WHERE status = 'active'",
-  ).bind(updatedAt).run();
+  // Historical contribution backfill has its own cursor and must not invalidate
+  // reusable per-stock new-high states. The previous implementation marked the
+  // whole universe as `rebuild`, which made the visible initialization progress
+  // appear to restart and temporarily blocked the daily incremental refresh.
   await db.prepare(
     "INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?) " +
     "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",

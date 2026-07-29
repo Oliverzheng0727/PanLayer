@@ -76,9 +76,10 @@ export function DailyJobHealthPanel({
         : close?.message || "等待 16:10",
     },
     {
-      label: "新高初始化",
+      label: "新高历史基线",
       value: `${newHighProgress.completed}/${newHighProgress.target}`,
-      detail: `覆盖 ${newHighProgress.coveragePct.toFixed(2)}%${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
+      detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · 今日刷新 ${newHighProgress.dailyCompleted ?? newHighProgress.completed}/${newHighProgress.target}` +
+        `${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
     },
     {
       label: "早参",

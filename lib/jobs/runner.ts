@@ -1174,8 +1174,14 @@ export async function runPanLayerJob(
       const coveragePct = snapshot.target > 0
         ? Number((snapshot.completed / snapshot.target * 100).toFixed(2))
         : 0;
-      const remaining = Math.max(0, snapshot.target - snapshot.completed);
-      if (coveragePct >= 95 && snapshot.target > 0) {
+      const dailyCoveragePct = snapshot.target > 0
+        ? Number((snapshot.dailyCompleted / snapshot.target * 100).toFixed(2))
+        : 0;
+      const remaining = Math.max(
+        Math.max(0, snapshot.target - snapshot.completed),
+        snapshot.rebuildPending,
+      );
+      if (coveragePct >= 95 && dailyCoveragePct >= 95 && snapshot.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
       const historyDates = await store.listBackfillDates(targetDate);
@@ -1194,9 +1200,11 @@ export async function runPanLayerJob(
         ? await patchHistoricalReviewsFromContributions({ db, targetDate })
         : null;
       const message =
-        `new-high-bootstrap ${snapshot.completed}/${snapshot.target}; ` +
+        `new-high-baseline ${snapshot.completed}/${snapshot.target}; ` +
+        `daily-refresh ${snapshot.dailyCompleted}/${snapshot.target}; ` +
         `remaining ${remaining}; failed ${snapshot.failed}; ` +
-        `coverage ${coveragePct}%；历史贡献 ${contributionProgress.completed}/${contributionProgress.target}` +
+        `coverage ${coveragePct}%；daily coverage ${dailyCoveragePct}%；` +
+        `历史贡献 ${contributionProgress.completed}/${contributionProgress.target}` +
         `${contributionPatch ? `；回写 ${contributionPatch.patched} 日` : ""}`;
       const status = newHighBootstrapRunStatus({
         remaining,
@@ -1212,6 +1220,7 @@ export async function runPanLayerJob(
         ...snapshot,
         remaining,
         coveragePct,
+        dailyCoveragePct,
         historyContribution: contributionProgress,
         historyContributionPatch: contributionPatch,
       });

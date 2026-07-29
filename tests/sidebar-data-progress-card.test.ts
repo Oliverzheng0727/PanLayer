@@ -66,7 +66,8 @@ describe("sidebar data progress card", () => {
     expect(html).toContain("数据状态");
     expect(html).toContain("任务进度");
     expect(html).toContain("盘中 1/6");
-    expect(html).toContain("新高 124/5317");
+    expect(html).toContain("新高历史 124/5317");
+    expect(html).toContain("今日新高刷新");
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('aria-controls="sidebar-data-progress-details"');
     expect(html).toContain("收盘复盘");
