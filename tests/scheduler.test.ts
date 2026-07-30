@@ -10,7 +10,7 @@ describe("Beijing market schedule", () => {
     expect(jobForBeijingTime("01:30")).toEqual({ type: "history-backfill", days: 120 });
     expect(jobForBeijingTime("01:55")).toEqual({ type: "history-backfill", days: 120 });
     expect(jobForBeijingTime("01:25")).toBeNull();
-    expect(jobForBeijingTime("02:00")).toBeNull();
+    expect(jobForBeijingTime("02:00")).toEqual({ type: "history-contribution-bootstrap" });
     expect(jobForBeijingTime("04:35")).toBeNull();
     expect(jobForBeijingTime("06:45")).toBeNull();
     expect(jobForBeijingTime("04:36")).toBeNull();
@@ -24,7 +24,11 @@ describe("Beijing market schedule", () => {
 
   it("runs the new-high bootstrap every thirty minutes after market close", () => {
     expect(jobForBeijingTime("18:00")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("18:15")).toEqual({ type: "history-contribution-bootstrap" });
+    expect(jobForBeijingTime("18:30")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("18:45")).toEqual({ type: "history-contribution-bootstrap" });
     expect(jobForBeijingTime("21:30")).toEqual({ type: "new-high-bootstrap" });
+    expect(jobForBeijingTime("21:45")).toEqual({ type: "history-contribution-bootstrap" });
     expect(jobForBeijingTime("23:30")).toEqual({ type: "new-high-bootstrap" });
     expect(jobForBeijingTime("18:05")).toBeNull();
     expect(jobForBeijingTime("21:35")).toBeNull();

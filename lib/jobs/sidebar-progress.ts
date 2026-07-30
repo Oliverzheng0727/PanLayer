@@ -34,11 +34,17 @@ export interface SidebarProgressModel {
   newHighCoveragePct: number;
   newHighDailyCompleted: number;
   newHighDailyCoveragePct: number;
+  newHighDailyValue: string;
+  newHighDailyDetail: string;
   marketSession: boolean;
   tasks: SidebarProgressTask[];
 }
 
-const CONTINUOUS_KEYS = new Set(["new-high-bootstrap", "history-backfill"]);
+const CONTINUOUS_KEYS = new Set([
+  "new-high-bootstrap",
+  "history-contribution-bootstrap",
+  "history-backfill",
+]);
 const STATUS_VALUE: Record<SidebarProgressStatus, string> = {
   pending: "等待",
   running: "更新中",
@@ -111,6 +117,29 @@ export function breadthProgressDetail(
   return labels.join(" · ");
 }
 
+export function newHighDailyProgressView(
+  health: Pick<DailyJobHealth, "tradeDate" | "generatedAt" | "jobs" | "marketSession">,
+  progress: NewHighProgress,
+): { value: string; detail: string } {
+  if (health.marketSession === false) {
+    return { value: "非交易日", detail: "等待下一个交易日收盘" };
+  }
+  const closeExpectedAt = health.jobs["close-review"]?.expectedAt
+    ?? `${health.tradeDate}T16:10:00+08:00`;
+  if (new Date(health.generatedAt).getTime() < new Date(closeExpectedAt).getTime()) {
+    return { value: "等待收盘", detail: "16:10 后刷新当日新高状态" };
+  }
+  if (progress.targetDate < health.tradeDate) {
+    return { value: "等待调度", detail: "收盘复盘落库后自动刷新" };
+  }
+  const completed = progress.dailyCompleted ?? progress.completed;
+  const coveragePct = progress.dailyCoveragePct ?? progress.coveragePct;
+  return {
+    value: `${completed}/${progress.target}`,
+    detail: `今日覆盖 ${coveragePct.toFixed(2)}%${progress.failed ? ` · 可重试失败 ${progress.failed}` : ""}`,
+  };
+}
+
 export function buildSidebarProgress(
   health: DailyJobHealth,
   newHighProgress: NewHighProgress,
@@ -174,22 +203,27 @@ export function buildSidebarProgress(
     : "closed";
   const briefStatus = normalizeJobStatus(brief);
   const etfStatus = marketSession ? normalizeJobStatus(etf) : "closed";
-  const newHighStatus: SidebarProgressStatus = newHighProgress.complete
-    ? "complete"
-    : newHighProgress.completed > 0
-      ? "running"
-      : newHighProgress.failed > 0
-        ? "partial"
-      : "pending";
-  const historyContribution = health.background?.historyContribution;
-  const historyFieldDates = health.background?.historyFields?.dates ?? 0;
-  const historyContributionStatus: SidebarProgressStatus = !historyContribution
-    ? "pending"
-    : historyContribution.coveragePct >= 95
+  const newHighCheckpoint = health.jobs["new-high-bootstrap"];
+  const normalizedNewHighCheckpoint = normalizeJobStatus(newHighCheckpoint);
+  const newHighStatus: SidebarProgressStatus = normalizedNewHighCheckpoint !== "pending"
+    ? normalizedNewHighCheckpoint
+    : newHighProgress.complete
       ? "complete"
-      : historyContribution.completed > 0
-        ? "running"
-        : historyContribution.failed > 0
+      : newHighProgress.completed > 0 || newHighProgress.failed > 0
+        ? "partial"
+        : "pending";
+  const newHighDaily = newHighDailyProgressView(health, newHighProgress);
+  const historyContribution = health.background?.historyContribution;
+  const historyFieldDates = health.background?.historyFields?.readyDates ?? 0;
+  const historyCheckpoint = health.jobs["history-contribution-bootstrap"];
+  const normalizedHistoryCheckpoint = normalizeJobStatus(historyCheckpoint);
+  const historyContributionStatus: SidebarProgressStatus = normalizedHistoryCheckpoint !== "pending"
+    ? normalizedHistoryCheckpoint
+    : !historyContribution
+      ? "pending"
+      : historyContribution.dailyRemaining === 0 && historyContribution.failed === 0
+        ? "complete"
+        : historyContribution.completed > 0 || historyContribution.failed > 0
           ? "partial"
           : "pending";
   const fuyaoFields = Object.entries(health.fields ?? {})
@@ -222,6 +256,8 @@ export function buildSidebarProgress(
     newHighCoveragePct: newHighProgress.coveragePct,
     newHighDailyCompleted: newHighProgress.dailyCompleted ?? newHighProgress.completed,
     newHighDailyCoveragePct: newHighProgress.dailyCoveragePct ?? newHighProgress.coveragePct,
+    newHighDailyValue: newHighDaily.value,
+    newHighDailyDetail: newHighDaily.detail,
     marketSession,
     tasks: [
       {
@@ -288,10 +324,9 @@ export function buildSidebarProgress(
         label: "新高历史基线",
         status: newHighStatus,
         value: `${newHighProgress.completed}/${newHighProgress.target}`,
-        detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · 今日刷新 ${newHighProgress.dailyCompleted ?? newHighProgress.completed}/${newHighProgress.target}` +
-          `${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
+        detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · ${newHighDaily.detail}`,
         updatedAt: newHighProgress.updatedAt,
-        nextRetryAt: health.jobs["new-high-bootstrap"]?.nextRetryAt ?? null,
+        nextRetryAt: newHighCheckpoint?.nextRetryAt ?? null,
       },
       {
         key: "history-contribution",
@@ -301,10 +336,10 @@ export function buildSidebarProgress(
           ? `${historyContribution.completed}/${historyContribution.target}`
           : "等待",
         detail: historyContribution
-          ? `覆盖 ${historyContribution.coveragePct.toFixed(2)}% · 字段核验 ${historyFieldDates}/120 日${historyContribution.failed ? ` · 可重试失败 ${historyContribution.failed}` : ""}`
+          ? `基线 ${historyContribution.coveragePct.toFixed(2)}% · 今日刷新 ${historyContribution.dailyCompleted}/${historyContribution.target} · 字段核验 ${historyFieldDates}/120 日${historyContribution.failed ? ` · 可重试失败 ${historyContribution.failed}` : ""}`
           : "达到95%后回写最近120个交易日",
         updatedAt: historyContribution?.updatedAt ?? null,
-        nextRetryAt: health.jobs["new-high-bootstrap"]?.nextRetryAt ?? null,
+        nextRetryAt: historyCheckpoint?.nextRetryAt ?? null,
       },
       {
         key: "morning-brief",

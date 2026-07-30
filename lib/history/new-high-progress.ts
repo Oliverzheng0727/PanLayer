@@ -70,12 +70,18 @@ export function buildNewHighProgress(input: {
   };
 }
 
-export function formatNewHighProgress(progress: NewHighProgress): string {
+export function formatNewHighProgress(
+  progress: NewHighProgress,
+  options: { includeDaily?: boolean } = {},
+): string {
   if (progress.target === 0) return "历史行情初始化等待股票库";
   if (!progress.universeComplete) {
     return `股票库补全中 ${progress.target}/${progress.minimumTarget}+`;
   }
   const failed = progress.failed > 0 ? ` · 失败 ${progress.failed}` : "";
+  if (options.includeDaily === false) {
+    return `历史基线 ${progress.coveragePct.toFixed(2)}% · ${progress.completed}/${progress.target}${failed}`;
+  }
   const dailyCompleted = progress.dailyCompleted ?? progress.completed;
   const dailyCoveragePct = progress.dailyCoveragePct ?? progress.coveragePct;
   return `历史基线 ${progress.coveragePct.toFixed(2)}% · ${progress.completed}/${progress.target}` +

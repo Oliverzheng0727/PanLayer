@@ -41,13 +41,13 @@ describe("remote scheduler", () => {
     expect(normalizeSchedulerProvider(null)).toBe("worker");
   });
 
-  it("plans the evening new-high batch and outstanding catch-up work", () => {
+  it("plans the exact evening history-contribution batch", () => {
     const jobs = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T13:15:00.000Z"),
       checkpoints: [],
     });
 
-    expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
+    expect(jobs.some((job) => job.type === "history-contribution-bootstrap")).toBe(true);
     expect(jobs.length).toBeLessThanOrEqual(2);
   });
 
@@ -57,7 +57,23 @@ describe("remote scheduler", () => {
       checkpoints: [],
     });
 
-    expect(jobs.some((job) => job.type === "new-high-bootstrap")).toBe(true);
+    expect(jobs.some((job) => job.type === "history-contribution-bootstrap")).toBe(true);
+  });
+
+  it("alternates new-high and history contributions instead of running them together", () => {
+    const newHigh = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T10:30:00.000Z"),
+      checkpoints: [],
+    });
+    const contributions = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T10:45:00.000Z"),
+      checkpoints: [],
+    });
+
+    expect(newHigh).toContainEqual({ type: "new-high-bootstrap" });
+    expect(newHigh).not.toContainEqual({ type: "history-contribution-bootstrap" });
+    expect(contributions).toContainEqual({ type: "history-contribution-bootstrap" });
+    expect(contributions).not.toContainEqual({ type: "new-high-bootstrap" });
   });
 
   it("does not rerun an exact-time batch after its checkpoint completed", () => {
@@ -96,11 +112,12 @@ describe("remote scheduler", () => {
     expect(jobs).toContainEqual({ type: "breadth", time: "09:25" });
   });
 
-  it("rotates continuous ETF and new-high work while a close retry remains due", () => {
+  it("rotates continuous background work while a close retry remains due", () => {
     const checkpoints = [
       checkpoint("close-review", "2026-07-24T16:10:00+08:00"),
       checkpoint("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
-      checkpoint("new-high-bootstrap", "2026-07-24T02:00:00+08:00"),
+      checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+      checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
     ];
 
     const first = planRemoteSchedulerJobs({
@@ -111,16 +128,55 @@ describe("remote scheduler", () => {
       now: new Date("2026-07-24T08:25:00.000Z"),
       checkpoints,
     });
+    const third = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:30:00.000Z"),
+      checkpoints,
+    });
 
     expect(first.some((job) => job.type === "close-review")).toBe(true);
     expect(second.some((job) => job.type === "close-review")).toBe(true);
+    expect(third.some((job) => job.type === "close-review")).toBe(true);
     expect(new Set([
       ...first.map((job) => job.type),
       ...second.map((job) => job.type),
+      ...third.map((job) => job.type),
     ])).toEqual(new Set([
       "close-review",
       "etf-metrics-refresh",
       "new-high-bootstrap",
+      "history-contribution-bootstrap",
+    ]));
+  });
+
+  it("fairly rotates three due background jobs when no critical job is due", () => {
+    const completed = (key: DailyJobKey, expectedAt: string): JobCheckpoint => ({
+      ...checkpoint(key, expectedAt),
+      status: "complete",
+    });
+    const checkpoints = [
+      checkpoint("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
+      checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+      checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
+      completed("tier1-rss-prefetch", "2026-07-24T06:50:00+08:00"),
+      completed("tier2-news-prefetch", "2026-07-24T06:55:00+08:00"),
+      completed("morning-brief", "2026-07-24T07:15:00+08:00"),
+      completed("breadth-09:25", "2026-07-24T09:25:00+08:00"),
+      completed("breadth-10:00", "2026-07-24T10:00:00+08:00"),
+      completed("breadth-11:00", "2026-07-24T11:00:00+08:00"),
+      completed("breadth-13:00", "2026-07-24T13:00:00+08:00"),
+      completed("breadth-14:00", "2026-07-24T14:00:00+08:00"),
+      completed("breadth-15:00", "2026-07-24T15:00:00+08:00"),
+      completed("close-review", "2026-07-24T16:10:00+08:00"),
+    ];
+    const selected = [20, 25, 30].map((minute) => planRemoteSchedulerJobs({
+      now: new Date(`2026-07-24T08:${minute}:00.000Z`),
+      checkpoints,
+    }).at(0)?.type);
+
+    expect(new Set(selected)).toEqual(new Set([
+      "etf-metrics-refresh",
+      "new-high-bootstrap",
+      "history-contribution-bootstrap",
     ]));
   });
 
@@ -136,12 +192,16 @@ describe("remote scheduler", () => {
       nextRetryAt: "2026-07-24T08:15:00.000Z",
     };
     const newHighComplete: JobCheckpoint = {
-      ...checkpoint("new-high-bootstrap", "2026-07-24T02:00:00+08:00"),
+      ...checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+      status: "complete",
+    };
+    const contributionComplete: JobCheckpoint = {
+      ...checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
       status: "complete",
     };
     const jobs = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T08:17:00.000Z"),
-      checkpoints: [main, historyMetrics, newHighComplete],
+      checkpoints: [main, historyMetrics, newHighComplete, contributionComplete],
     });
 
     expect(jobs).toContainEqual({ type: "etf-metrics-refresh" });
@@ -187,13 +247,32 @@ describe("remote scheduler", () => {
 
     expect(jobs).toEqual([
       { type: "morning-brief" },
-      { type: "new-high-bootstrap" },
+      { type: "history-contribution-bootstrap" },
     ]);
     expect(jobs.some((job) => (
       job.type === "breadth"
       || job.type === "etf-metrics-refresh"
       || job.type === "close-review"
     ))).toBe(false);
+  });
+
+  it("keeps exact background slots on weekends while suppressing market-session jobs", () => {
+    const saturdayNewHigh = planRemoteSchedulerJobs({
+      now: new Date("2026-07-25T10:00:00.000Z"),
+      checkpoints: [],
+    });
+    const saturdayContribution = planRemoteSchedulerJobs({
+      now: new Date("2026-07-25T10:15:00.000Z"),
+      checkpoints: [],
+    });
+    const saturdayBreadth = planRemoteSchedulerJobs({
+      now: new Date("2026-07-25T01:25:00.000Z"),
+      checkpoints: [],
+    });
+
+    expect(saturdayNewHigh).toContainEqual({ type: "new-high-bootstrap" });
+    expect(saturdayContribution).toContainEqual({ type: "history-contribution-bootstrap" });
+    expect(saturdayBreadth).not.toContainEqual({ type: "breadth", time: "09:25" });
   });
 
   it("can recover a missing morning brief later the same trading day", () => {
@@ -230,7 +309,7 @@ describe("remote scheduler", () => {
       },
     });
 
-    expect(executed).toEqual(["morning-brief", "new-high-bootstrap"]);
+    expect(executed).toEqual(["morning-brief", "history-contribution-bootstrap"]);
     expect(result.jobs).toEqual([
       {
         job: "morning-brief",
@@ -241,7 +320,7 @@ describe("remote scheduler", () => {
         message: "advanced",
       },
       {
-        job: "new-high-bootstrap",
+        job: "history-contribution-bootstrap",
         trigger: "reconcile",
         ok: true,
         status: "complete",
@@ -250,7 +329,7 @@ describe("remote scheduler", () => {
       },
     ]);
     expect(writes.some((values) => String(values[1]).includes("scheduler tick started"))).toBe(true);
-    expect(writes.some((values) => String(values[1]).includes("new-high-bootstrap:complete"))).toBe(true);
+    expect(writes.some((values) => String(values[1]).includes("history-contribution-bootstrap:complete"))).toBe(true);
   });
 
   it("marks an on-slot scheduled job as cron and passes its planned time", async () => {

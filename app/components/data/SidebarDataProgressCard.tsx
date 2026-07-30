@@ -135,10 +135,7 @@ export function SidebarDataProgressCard({
         </span>
         <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
           <span>今日新高刷新</span>
-          <span>
-            {model.newHighDailyCompleted}/{model.newHighTarget}
-            {model.newHighTarget > 0 ? ` · ${model.newHighDailyCoveragePct.toFixed(1)}%` : ""}
-          </span>
+          <span title={model.newHighDailyDetail}>{model.newHighDailyValue}</span>
         </span>
         <span className="mt-1 flex items-center justify-between gap-2 text-[10px] text-white/30">
           <span>调度心跳{health.heartbeat?.provider ? ` · ${health.heartbeat.provider}` : ""}</span>

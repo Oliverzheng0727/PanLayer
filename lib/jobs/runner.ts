@@ -950,6 +950,7 @@ export async function runPanLayerJob(
     message: string,
     result: Record<string, unknown> = {},
     countsAsCompletion = true,
+    nextRetryAtOverride?: string | null,
   ) => {
     const finishedAt = new Date().toISOString();
     await recordJobCheckpoint(db, {
@@ -961,12 +962,14 @@ export async function runPanLayerJob(
       expectedAt: checkpointExpectedAt,
       startedAt: checkpointStartedAt,
       finishedAt,
-      nextRetryAt: nextRetryAtForCheckpoint(
-        checkpointKey,
-        status,
-        new Date(),
-        checkpointAttempt,
-      ),
+      nextRetryAt: nextRetryAtOverride === undefined
+        ? nextRetryAtForCheckpoint(
+            checkpointKey,
+            status,
+            new Date(),
+            checkpointAttempt,
+          )
+        : nextRetryAtOverride,
       message,
       resultJson: JSON.stringify(checkpointResult(
         result,
@@ -1043,6 +1046,47 @@ export async function runPanLayerJob(
           name: "腾讯",
           getQuotes: (symbols: string[]) => fetchTencentQuotes(symbols, fetcher),
         };
+    const ensureBackgroundStockUniverse = async () => {
+      const markerKey = `stock-universe-all-a-refreshed:${date}`;
+      const [marker, current] = await Promise.all([
+        db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
+          .bind(markerKey).first<{ value: string }>(),
+        db.prepare("SELECT COUNT(*) AS count FROM stocks").first<{ count: number }>(),
+      ]);
+      const currentCount = Number(current?.count ?? 0);
+      if (marker?.value === "complete" && currentCount >= MINIMUM_ALL_A_UNIVERSE) return;
+      const universe = await withRetry(
+        () => fuyao
+          ? fuyao.fetchAShareQuotes([], { includeST: true })
+          : provider.getUniverse(),
+        { retries: 2, delayMs: 500 },
+      ).catch(() => []);
+      if (universe.length >= MINIMUM_ALL_A_UNIVERSE) {
+        const updatedAt = new Date().toISOString();
+        await persistStockUniverse(db, universe, updatedAt);
+        await db.prepare(
+          `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, 'complete', ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+        ).bind(markerKey, updatedAt).run();
+        return;
+      }
+      if (currentCount < MINIMUM_ALL_A_UNIVERSE) {
+        throw new Error(`股票主数据覆盖不足 ${Math.max(currentCount, universe.length)}/${MINIMUM_ALL_A_UNIVERSE}`);
+      }
+    };
+    const createAdjustedBarProvider = () => ({
+      getAdjustedBars: async (symbol: string) => {
+        if (fuyao) {
+          const bars = await fuyao
+            .fetchAShareAdjustedBars(symbol, now, { fullHistory: true })
+            .catch(() => []);
+          if (bars.length > 0) return bars;
+        }
+        const fallback = await provider.getAdjustedBars(symbol);
+        if (fallback.length === 0) throw new Error("前复权历史日K暂缺");
+        return fallback;
+      },
+    });
     let finalStatus: "complete" | "partial" | "failed" = "complete";
     let finalMessage = "";
     if (job.type === "tier1-rss-prefetch") {
@@ -1128,43 +1172,8 @@ export async function runPanLayerJob(
     } else if (job.type === "new-high-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
       const store = createD1NewHighStateStore(db);
-      const before = await store.progress(targetDate);
-      if (before.target < MINIMUM_ALL_A_UNIVERSE) {
-        const universe = await withRetry(
-          () => provider.getUniverse(),
-          { retries: 2, delayMs: 500 },
-        );
-        if (universe.length < MINIMUM_ALL_A_UNIVERSE) {
-          throw new Error(`股票主数据覆盖不足 ${universe.length}/${MINIMUM_ALL_A_UNIVERSE}`);
-        }
-        await persistStockUniverse(db, universe, new Date().toISOString());
-      }
-      const adjustedBarsCache = new Map<string, Promise<Awaited<ReturnType<typeof provider.getAdjustedBars>>>>();
-      const adjustedBarProvider = fuyao
-        ? {
-            getAdjustedBars: (symbol: string) => {
-              const cached = adjustedBarsCache.get(symbol);
-              if (cached) return cached;
-              const request = (async () => {
-                const fuyaoBars = await fuyao
-                  .fetchAShareAdjustedBars(symbol, now, { fullHistory: true })
-                  .catch(() => []);
-                if (fuyaoBars.length > 0) return fuyaoBars;
-                return provider.getAdjustedBars(symbol).catch(() => []);
-              })();
-              adjustedBarsCache.set(symbol, request);
-              return request;
-            },
-          }
-        : {
-            getAdjustedBars: (symbol: string) => {
-              const cached = adjustedBarsCache.get(symbol);
-              if (cached) return cached;
-              const request = provider.getAdjustedBars(symbol);
-              adjustedBarsCache.set(symbol, request);
-              return request;
-            },
-          };
+      await ensureBackgroundStockUniverse();
+      const adjustedBarProvider = createAdjustedBarProvider();
       const progress = await runNewHighBootstrapBatch({
         store,
         provider: adjustedBarProvider,
@@ -1186,28 +1195,12 @@ export async function runPanLayerJob(
       if (coveragePct >= 95 && dailyCoveragePct >= 95 && snapshot.target > 0) {
         await patchBackfilledReviewHighCounts(db, targetDate);
       }
-      const historyDates = await store.listBackfillDates(targetDate);
-      const contributionProgress = await runHistoryContributionBatch({
-        db,
-        provider: adjustedBarProvider,
-        targetDate,
-        backfillDates: historyDates.slice(-120),
-        source: fuyao
-          ? "扶摇 Fuyao / 东方财富 / 腾讯前复权日K"
-          : "东方财富 / 腾讯前复权日K",
-        batchSize: 48,
-        concurrency: 4,
-      });
-      const contributionPatch = contributionProgress.coveragePct >= 95
-        ? await patchHistoricalReviewsFromContributions({ db, targetDate })
-        : null;
       const message =
         `new-high-baseline ${snapshot.completed}/${snapshot.target}; ` +
         `daily-refresh ${snapshot.dailyCompleted}/${snapshot.target}; ` +
         `remaining ${remaining}; failed ${snapshot.failed}; ` +
         `coverage ${coveragePct}%；daily coverage ${dailyCoveragePct}%；` +
-        `历史贡献 ${contributionProgress.completed}/${contributionProgress.target}` +
-        `${contributionPatch ? `；回写 ${contributionPatch.patched} 日` : ""}`;
+        `本批成功 ${progress.succeeded}/${progress.attempted}`;
       const status = newHighBootstrapRunStatus({
         remaining,
         failed: snapshot.failed,
@@ -1223,9 +1216,48 @@ export async function runPanLayerJob(
         remaining,
         coveragePct,
         dailyCoveragePct,
-        historyContribution: contributionProgress,
-        historyContributionPatch: contributionPatch,
       });
+      return { ok: true, status, message };
+    } else if (job.type === "history-contribution-bootstrap") {
+      const targetDate = await newHighBootstrapTargetDate(db, date);
+      const store = createD1NewHighStateStore(db);
+      await ensureBackgroundStockUniverse();
+      const historyDates = await store.listBackfillDates(targetDate);
+      const contributionProgress = await runHistoryContributionBatch({
+        db,
+        provider: createAdjustedBarProvider(),
+        targetDate,
+        backfillDates: historyDates.slice(-120),
+        source: fuyao
+          ? "扶摇 Fuyao / 东方财富 / 腾讯前复权日K"
+          : "东方财富 / 腾讯前复权日K",
+        batchSize: 48,
+        concurrency: 4,
+      });
+      const contributionPatch = contributionProgress.coveragePct >= 95
+        ? await patchHistoricalReviewsFromContributions({ db, targetDate })
+        : null;
+      const status = contributionProgress.remaining === 0 && contributionProgress.failed === 0
+        ? "complete"
+        : "partial";
+      const message =
+        `history-contribution-baseline ${contributionProgress.completed}/${contributionProgress.target}; ` +
+        `daily-refresh ${contributionProgress.dailyCompleted}/${contributionProgress.target}; ` +
+        `remaining ${contributionProgress.remaining}; failed ${contributionProgress.failed}; ` +
+        `coverage ${contributionProgress.coveragePct}%；daily coverage ${contributionProgress.dailyCoveragePct}%；` +
+        `本批成功 ${contributionProgress.batchSucceeded ?? 0}/${contributionProgress.batchAttempted ?? 0}` +
+        `${contributionPatch ? `；回写 ${contributionPatch.patched} 日` : ""}`;
+      if (run?.id) {
+        await db.prepare(
+          "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
+        ).bind(status, message, new Date().toISOString(), run.id).run();
+      }
+      await finishCheckpoint(status, message, {
+        ...contributionProgress,
+        historyContributionPatch: contributionPatch,
+      }, true, contributionProgress.batchAttempted === 0 && contributionProgress.remaining > 0
+        ? contributionProgress.nextRetryAt ?? undefined
+        : undefined);
       return { ok: true, status, message };
     } else if (job.type === "etf-metrics-refresh") {
       const frozenPopularity = await readThsPopularitySnapshot(db, date);

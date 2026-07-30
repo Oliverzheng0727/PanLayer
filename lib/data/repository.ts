@@ -215,6 +215,8 @@ export interface DailyJobHealth {
     historyContribution: HistoryContributionProgress | null;
     historyFields: {
       dates: number;
+      checkedDates: number;
+      readyDates: number;
       fields: Record<string, {
         complete: number;
         partial: number;
@@ -883,7 +885,16 @@ export async function readDataHealth() {
           fields[key][item.status] += 1;
         }
       }
-      return { dates: records.length, fields };
+      const readyDates = records.filter((record) => (
+        record.breadth?.status === "complete"
+        && record.marketAmount?.status === "complete"
+      )).length;
+      return {
+        dates: records.length,
+        checkedDates: records.length,
+        readyDates,
+        fields,
+      };
     })(),
   };
   daily.fields.fuyaoEtf = {

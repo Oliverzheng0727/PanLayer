@@ -185,7 +185,7 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
         "SELECT attempts FROM new_high_bootstrap_failures WHERE symbol = ?",
       ).bind(symbol).first<{ attempts: number }>();
       const attempts = Number(previous?.attempts ?? 0) + 1;
-      const delays = [15, 60, 360];
+      const delays = [15, 60, 360, 1_440];
       const delayMinutes = delays[Math.min(attempts - 1, delays.length - 1)];
       const nextRetryAt = new Date(Date.now() + delayMinutes * 60_000).toISOString();
       const sanitized = message.replace(/\s+/g, " ").slice(0, 500);
@@ -338,7 +338,12 @@ export async function refreshNewHighProgressSnapshot(
         WHERE UPPER(s.name) NOT LIKE '%ST%' AND h.status = 'rebuild'`,
     ).first<{ count: number }>(),
     db.prepare(
-      "SELECT COUNT(*) AS count FROM new_high_bootstrap_failures",
+      `SELECT COUNT(*) AS count
+         FROM new_high_bootstrap_failures f
+         JOIN stocks s ON s.symbol = f.symbol
+         LEFT JOIN new_high_states h ON h.symbol = f.symbol
+        WHERE UPPER(s.name) NOT LIKE '%ST%'
+          AND (h.symbol IS NULL OR h.status = 'rebuild')`,
     ).first<{ count: number }>(),
   ]);
   const completedCount = Number(baseline?.count ?? 0);

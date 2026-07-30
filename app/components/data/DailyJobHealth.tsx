@@ -1,6 +1,9 @@
 import type { DailyJobHealth } from "../../../lib/data/repository";
 import type { NewHighProgress } from "../../../lib/history/new-high-progress";
-import { breadthProgressDetail } from "../../../lib/jobs/sidebar-progress";
+import {
+  breadthProgressDetail,
+  newHighDailyProgressView,
+} from "../../../lib/jobs/sidebar-progress";
 import { isCloseReviewCoreStage } from "../../../lib/jobs/close-review-stages";
 import { clockTime } from "./LiveDataStatus";
 
@@ -55,6 +58,9 @@ export function DailyJobHealthPanel({
       : brief?.finishedAt
         ? `${clockTime(brief.finishedAt)}${legacyRegenerated ? " · 重新生成" : briefLate ? " · 延迟" : " · 准时"}`
         : brief?.message || "等待 07:15";
+  const newHighDaily = newHighDailyProgressView(health, newHighProgress);
+  const historyContribution = health.background?.historyContribution;
+  const historyReadyDates = health.background?.historyFields?.readyDates ?? 0;
 
   const items = [
     {
@@ -78,8 +84,16 @@ export function DailyJobHealthPanel({
     {
       label: "新高历史基线",
       value: `${newHighProgress.completed}/${newHighProgress.target}`,
-      detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · 今日刷新 ${newHighProgress.dailyCompleted ?? newHighProgress.completed}/${newHighProgress.target}` +
-        `${newHighProgress.failed ? ` · 失败 ${newHighProgress.failed}` : ""}`,
+      detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · 今日 ${newHighDaily.value} · ${newHighDaily.detail}`,
+    },
+    {
+      label: "历史宽度与成交额",
+      value: historyContribution
+        ? `${historyContribution.completed}/${historyContribution.target}`
+        : "等待",
+      detail: historyContribution
+        ? `今日刷新 ${historyContribution.dailyCompleted}/${historyContribution.target} · 字段核验 ${historyReadyDates}/120 日`
+        : "后台独立初始化，达到95%后回写",
     },
     {
       label: "早参",
@@ -89,7 +103,7 @@ export function DailyJobHealthPanel({
   ];
 
   return (
-    <div className="mb-7 grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label="每日数据任务状态">
+    <div className="mb-7 grid gap-2 sm:grid-cols-2 xl:grid-cols-5" aria-label="每日数据任务状态">
       {items.map((item) => (
         <div key={item.label} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
           <div className="flex items-center justify-between gap-3 text-xs">

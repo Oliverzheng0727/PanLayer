@@ -85,15 +85,12 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(workspace).not.toContain("继续初始化");
   });
 
-  it("schedules resumable initialization hourly across weekdays and weekends", async () => {
+  it("schedules resumable initialization fairly across weekdays and weekends", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
     expect(config).toContain('"17 * * * *"');
-    expect(config).not.toContain('"0,30 10-15 * * 1-5"');
-    expect(config).not.toContain('"*/5 18-21 * * 0-4"');
-    expect(config).not.toContain('"0-45/5 22 * * 0-4"');
-    expect(config).toContain('"50,55 22 * * *"');
-    expect(config).toContain('"15,20,25,30,35,40,45,50,55 23 * * *"');
-    expect(config).toContain('"15,20,25,30 0 * * *"');
+    expect(config).toContain('"*/5 17-23 * * *"');
+    expect(config).toContain('"*/5 0-8 * * 1-5"');
+    expect(config).toContain('"0,15,30,45 10-15 * * *"');
   });
 
   it("keeps the header and date column frozen inside a two-axis scroll area", async () => {

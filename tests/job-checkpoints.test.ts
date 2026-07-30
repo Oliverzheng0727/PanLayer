@@ -26,6 +26,11 @@ describe("daily job checkpoints", () => {
       "etf-metrics-refresh",
       "close-review",
       "new-high-bootstrap",
+      "history-contribution-bootstrap",
+    ]));
+    expect(expectedDailyJobs("2026-07-24")).toEqual(expect.arrayContaining([
+      { key: "new-high-bootstrap", expectedAt: "2026-07-24T08:30:00+08:00" },
+      { key: "history-contribution-bootstrap", expectedAt: "2026-07-24T02:00:00+08:00" },
     ]));
   });
 
@@ -64,6 +69,12 @@ describe("daily job checkpoints", () => {
     )).toBe("2026-07-24T08:05:00.000Z");
     expect(nextRetryAtForCheckpoint(
       "etf-metrics-refresh",
+      "partial",
+      now,
+      20,
+    )).toBe("2026-07-24T08:05:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "history-contribution-bootstrap",
       "partial",
       now,
       20,

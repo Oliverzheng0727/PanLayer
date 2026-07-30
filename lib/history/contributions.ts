@@ -15,6 +15,14 @@ export const HISTORY_CONTRIBUTION_SCHEMA_STATEMENTS = [
     updated_at TEXT NOT NULL
   )`,
   "CREATE INDEX IF NOT EXISTS history_contribution_progress_idx ON history_bar_contributions(target_date, status)",
+  `CREATE TABLE IF NOT EXISTS history_contribution_failures (
+    symbol TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL,
+    next_retry_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS history_contribution_retry_idx ON history_contribution_failures(next_retry_at, attempts)",
 ];
 
 interface ContributionBar {
@@ -36,12 +44,26 @@ interface ContributionRow {
 }
 
 export interface HistoryContributionProgress {
+  /** Reusable contribution rows; this baseline does not reset each trade day. */
   completed: number;
   target: number;
+  /** Rows refreshed through targetDate. */
+  dailyCompleted: number;
+  dailyRemaining: number;
+  dailyCoveragePct: number;
   failed: number;
+  /** Remaining rows for the current targetDate refresh. */
   remaining: number;
   coveragePct: number;
   updatedAt: string | null;
+  nextRetryAt?: string | null;
+  batchAttempted?: number;
+  batchSucceeded?: number;
+}
+
+export function historyContributionRetryDelayMinutes(attempts: number): number {
+  const delays = [15, 60, 360, 1_440];
+  return delays[Math.min(Math.max(0, Math.trunc(attempts) - 1), delays.length - 1)];
 }
 
 function parseBars(value: string): ContributionBar[] {
@@ -86,30 +108,54 @@ export async function readHistoryContributionProgress(
   db: D1Database,
   targetDate: string,
 ): Promise<HistoryContributionProgress> {
-  void targetDate;
-  const [target, completed, failed, latest] = await Promise.all([
+  const [target, completed, daily, failed, latest, nextRetry] = await Promise.all([
     db.prepare("SELECT COUNT(*) AS count FROM stocks").first<{ count: number }>(),
     db.prepare(
-      "SELECT COUNT(*) AS count FROM history_bar_contributions WHERE status = 'complete'",
+      `SELECT COUNT(*) AS count
+         FROM history_bar_contributions c
+         JOIN stocks s ON s.symbol = c.symbol
+        WHERE c.status = 'complete'`,
     ).first<{ count: number }>(),
     db.prepare(
-      "SELECT COUNT(*) AS count FROM history_bar_contributions WHERE status = 'failed'",
+      `SELECT COUNT(*) AS count
+         FROM history_bar_contributions c
+         JOIN stocks s ON s.symbol = c.symbol
+        WHERE c.status = 'complete' AND c.target_date >= ?`,
+    ).bind(targetDate).first<{ count: number }>(),
+    db.prepare(
+      `SELECT COUNT(*) AS count
+         FROM history_contribution_failures f
+         JOIN stocks s ON s.symbol = f.symbol`,
     ).first<{ count: number }>(),
     db.prepare(
-      "SELECT MAX(updated_at) AS updated_at FROM history_bar_contributions",
+      `SELECT MAX(updated_at) AS updated_at FROM (
+        SELECT updated_at FROM history_bar_contributions
+        UNION ALL
+        SELECT updated_at FROM history_contribution_failures
+      )`,
     ).first<{ updated_at: string | null }>(),
+    db.prepare(
+      "SELECT MIN(next_retry_at) AS next_retry_at FROM history_contribution_failures",
+    ).first<{ next_retry_at: string | null }>(),
   ]);
   const targetCount = Number(target?.count ?? 0);
   const completedCount = Number(completed?.count ?? 0);
+  const dailyCompleted = Number(daily?.count ?? 0);
   return {
     completed: completedCount,
     target: targetCount,
+    dailyCompleted,
+    dailyRemaining: Math.max(0, targetCount - dailyCompleted),
+    dailyCoveragePct: targetCount > 0
+      ? Number((dailyCompleted / targetCount * 100).toFixed(2))
+      : 0,
     failed: Number(failed?.count ?? 0),
-    remaining: Math.max(0, targetCount - completedCount),
+    remaining: Math.max(0, targetCount - dailyCompleted),
     coveragePct: targetCount > 0
       ? Number((completedCount / targetCount * 100).toFixed(2))
       : 0,
     updatedAt: latest?.updated_at ?? null,
+    nextRetryAt: nextRetry?.next_retry_at ?? null,
   };
 }
 
@@ -130,18 +176,23 @@ export async function runHistoryContributionBatch({
   batchSize?: number;
   concurrency?: number;
 }): Promise<HistoryContributionProgress> {
-  const retryBefore = new Date(Date.now() - 15 * 60_000).toISOString();
+  const nowIso = new Date().toISOString();
   const candidates = await db.prepare(
-    `SELECT s.symbol, s.name
+    `SELECT s.symbol, s.name, COALESCE(f.attempts, 0) AS failure_attempts
        FROM stocks s
        LEFT JOIN history_bar_contributions c ON c.symbol = s.symbol
-      WHERE c.symbol IS NULL
-         OR c.target_date < ?
-         OR (c.status <> 'complete' AND c.updated_at <= ?)
-      ORDER BY CASE WHEN c.symbol IS NULL THEN 0 ELSE 1 END, s.symbol
+       LEFT JOIN history_contribution_failures f ON f.symbol = s.symbol
+      WHERE (
+        c.symbol IS NULL
+        OR c.target_date < ?
+        OR c.status <> 'complete'
+      )
+        AND (f.symbol IS NULL OR f.next_retry_at <= ?)
+      ORDER BY CASE WHEN c.symbol IS NULL THEN 0 ELSE 1 END,
+        COALESCE(f.attempts, 0), s.symbol
       LIMIT ?`,
-  ).bind(targetDate, retryBefore, Math.min(100, Math.max(1, batchSize)))
-    .all<{ symbol: string; name: string }>();
+  ).bind(targetDate, nowIso, Math.min(100, Math.max(1, batchSize)))
+    .all<{ symbol: string; name: string; failure_attempts: number }>();
   const dateSet = new Set(backfillDates);
   const receivedAt = new Date().toISOString();
   const results = await mapWithConcurrency(
@@ -184,33 +235,67 @@ export async function runHistoryContributionBatch({
       }
     },
   );
-  if (results.length > 0) {
-    await db.batch(results.map((result) => db.prepare(
-      `INSERT INTO history_bar_contributions
-        (symbol, name, is_st, first_date, target_date, bars_json, source, status, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const statements: D1PreparedStatement[] = [];
+  for (const result of results) {
+    if (result.status === "complete") {
+      statements.push(
+        db.prepare(
+          `INSERT INTO history_bar_contributions
+            (symbol, name, is_st, first_date, target_date, bars_json, source, status, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'complete', ?)
+           ON CONFLICT(symbol) DO UPDATE SET
+             name=excluded.name,
+             is_st=excluded.is_st,
+             first_date=excluded.first_date,
+             target_date=excluded.target_date,
+             bars_json=excluded.bars_json,
+             source=excluded.source,
+             status=excluded.status,
+             updated_at=excluded.updated_at`,
+        ).bind(
+          result.symbol,
+          result.name,
+          /(?:\*?ST|退)/i.test(result.name) ? 1 : 0,
+          result.firstDate,
+          targetDate,
+          JSON.stringify(result.bars),
+          source,
+          receivedAt,
+        ),
+        db.prepare("DELETE FROM history_contribution_failures WHERE symbol = ?").bind(result.symbol),
+      );
+      continue;
+    }
+    const attempts = Number(result.failure_attempts ?? 0) + 1;
+    const nextRetryAt = new Date(
+      Date.now() + historyContributionRetryDelayMinutes(attempts) * 60_000,
+    ).toISOString();
+    statements.push(db.prepare(
+      `INSERT INTO history_contribution_failures
+        (symbol, attempts, last_error, next_retry_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(symbol) DO UPDATE SET
-         name=excluded.name,
-         is_st=excluded.is_st,
-         first_date=excluded.first_date,
-         target_date=excluded.target_date,
-         bars_json=excluded.bars_json,
-         source=excluded.source,
-         status=excluded.status,
+         attempts=excluded.attempts,
+         last_error=excluded.last_error,
+         next_retry_at=excluded.next_retry_at,
          updated_at=excluded.updated_at`,
     ).bind(
       result.symbol,
-      result.name,
-      /(?:\*?ST|退)/i.test(result.name) ? 1 : 0,
-      result.firstDate,
-      targetDate,
-      JSON.stringify(result.bars),
-      result.error ? `${source} · ${result.error.slice(0, 180)}` : source,
-      result.status,
+      attempts,
+      result.error.replace(/\s+/g, " ").slice(0, 500),
+      nextRetryAt,
       receivedAt,
-    )));
+    ));
   }
-  return readHistoryContributionProgress(db, targetDate);
+  for (let offset = 0; offset < statements.length; offset += 100) {
+    await db.batch(statements.slice(offset, offset + 100));
+  }
+  const progress = await readHistoryContributionProgress(db, targetDate);
+  return {
+    ...progress,
+    batchAttempted: results.length,
+    batchSucceeded: results.filter((result) => result.status === "complete").length,
+  };
 }
 
 function fieldState(
@@ -250,6 +335,7 @@ export async function patchHistoricalReviewsFromContributions({
     ...row,
     bars: new Map(parseBars(row.bars_json).map((bar) => [bar.date, bar])),
   }));
+  const hasStUniverse = rows.some((row) => Boolean(row.is_st));
   const statements: D1PreparedStatement[] = [];
   const verifiedAt = new Date().toISOString();
   for (const stored of reviews.results ?? []) {
@@ -265,7 +351,10 @@ export async function patchHistoricalReviewsFromContributions({
       return bar && Number.isFinite(bar.pctChange) ? [bar] : [];
     });
     const breadthCoverage = eligibleNonST.length > 0
-      ? Number((validNonST.length / eligibleNonST.length * 100).toFixed(2))
+      ? Math.min(
+          progress.coveragePct,
+          Number((validNonST.length / eligibleNonST.length * 100).toFixed(2)),
+        )
       : 0;
     const eligibleAll = rows.filter((row) => row.first_date && row.first_date <= stored.trade_date);
     const validAmount = eligibleAll.flatMap((row) => {
@@ -275,10 +364,13 @@ export async function patchHistoricalReviewsFromContributions({
         : [];
     });
     const amountCoverage = eligibleAll.length > 0
-      ? Number((validAmount.length / eligibleAll.length * 100).toFixed(2))
+      ? Math.min(
+          progress.coveragePct,
+          Number((validAmount.length / eligibleAll.length * 100).toFixed(2)),
+        )
       : 0;
     const breadthReady = breadthCoverage >= minimumCoveragePct;
-    const amountReady = amountCoverage >= minimumCoveragePct;
+    const amountReady = hasStUniverse && amountCoverage >= minimumCoveragePct;
     if (!breadthReady && !amountReady) continue;
     const breadth15 = breadthReady
       ? {
@@ -336,7 +428,11 @@ export async function patchHistoricalReviewsFromContributions({
             "全市场历史前复权日K成交额聚合",
             amountCoverage,
             verifiedAt,
-            amountReady ? null : "含ST全A成交额覆盖率未达到95%",
+            amountReady
+              ? null
+              : hasStUniverse
+                ? "含ST全A成交额覆盖率未达到95%"
+                : "股票主数据尚未覆盖ST，不能按含ST全A口径回写",
           ),
         },
       },

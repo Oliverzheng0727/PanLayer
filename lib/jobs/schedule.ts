@@ -5,6 +5,7 @@ export type ScheduledJob =
   | { type: "breadth"; time: string }
   | { type: "close-review" }
   | { type: "new-high-bootstrap" }
+  | { type: "history-contribution-bootstrap" }
   | { type: "etf-metrics-refresh" }
   | { type: "history-backfill"; days: number };
 
@@ -14,6 +15,7 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
   if (["01:30", "01:35", "01:40", "01:45", "01:50", "01:55"].includes(time)) {
     return { type: "history-backfill", days: 120 };
   }
+  if (time === "02:00") return { type: "history-contribution-bootstrap" };
   if (time === "06:50") return { type: "tier1-rss-prefetch" };
   if (time === "06:55") return { type: "tier2-news-prefetch" };
   if (time === "07:15") return { type: "morning-brief" };
@@ -24,9 +26,18 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
     && Number.isInteger(minute)
     && hour >= 18
     && hour <= 23
-    && minute % 30 === 0
+    && (minute === 0 || minute === 30)
   ) {
     return { type: "new-high-bootstrap" };
+  }
+  if (
+    Number.isInteger(hour)
+    && Number.isInteger(minute)
+    && hour >= 18
+    && hour <= 23
+    && (minute === 15 || minute === 45)
+  ) {
+    return { type: "history-contribution-bootstrap" };
   }
   if (BREADTH_TIMES.has(time)) return { type: "breadth", time };
   if (time === "15:30") return { type: "etf-metrics-refresh" };

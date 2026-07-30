@@ -38,6 +38,7 @@ export interface SchedulerRunContext {
 
 export function isCriticalSchedulerJob(job: ScheduledJob): boolean {
   return job.type !== "new-high-bootstrap"
+    && job.type !== "history-contribution-bootstrap"
     && job.type !== "etf-metrics-refresh"
     && job.type !== "history-backfill";
 }
@@ -168,7 +169,14 @@ export function planRemoteSchedulerJobs({
   const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
   const scheduledJob = jobForBeijingTime(scheduledTime);
   const exactJob = marketSession
-    || (scheduledJob && ["tier1-rss-prefetch", "tier2-news-prefetch", "morning-brief"].includes(scheduledJob.type))
+    || (scheduledJob && [
+      "tier1-rss-prefetch",
+      "tier2-news-prefetch",
+      "morning-brief",
+      "new-high-bootstrap",
+      "history-contribution-bootstrap",
+      "history-backfill",
+    ].includes(scheduledJob.type))
     ? scheduledJob
     : null;
   const catchUpJobs = planCatchUpJobs({
@@ -205,7 +213,10 @@ export function planRemoteSchedulerJobs({
       return !checkpoint || isCheckpointRetryable(checkpoint, now);
     });
   const isContinuous = (job: ScheduledJob) => (
-    job.type === "new-high-bootstrap" || job.type === "etf-metrics-refresh"
+    job.type === "new-high-bootstrap"
+    || job.type === "history-contribution-bootstrap"
+    || job.type === "etf-metrics-refresh"
+    || job.type === "history-backfill"
   );
   const critical = candidates.filter((job) => !isContinuous(job));
   if (!exactJob) {
@@ -216,10 +227,18 @@ export function planRemoteSchedulerJobs({
   const continuous = candidates
     .filter(isContinuous)
     .sort((left, right) => left.type.localeCompare(right.type));
+  const exactContinuous = exactJob && isContinuous(exactJob)
+    ? continuous.find((job) => scheduledJobKey(job) === scheduledJobKey(exactJob))
+    : null;
+  // Exact background slots are deliberate: new-high and history-contribution
+  // alternate after close so they never compete for the same upstream bars.
+  if (exactContinuous) {
+    return critical.length > 0 ? [critical[0], exactContinuous] : [exactContinuous];
+  }
   if (continuous.length === 0) return critical.slice(0, 2);
   const tick = Math.floor(now.getTime() / (5 * 60_000));
   const selectedContinuous = continuous[tick % continuous.length];
-  if (critical.length === 0) return continuous.slice(0, 2);
+  if (critical.length === 0) return [selectedContinuous];
 
   return [
     critical[0],

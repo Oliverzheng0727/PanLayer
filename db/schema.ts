@@ -180,6 +180,16 @@ export const historyBarContributions = sqliteTable("history_bar_contributions", 
   index("history_contribution_progress_idx").on(table.targetDate, table.status),
 ]);
 
+export const historyContributionFailures = sqliteTable("history_contribution_failures", {
+  symbol: text("symbol").primaryKey(),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error").notNull(),
+  nextRetryAt: text("next_retry_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("history_contribution_retry_idx").on(table.nextRetryAt, table.attempts),
+]);
+
 export const marketSourceAudits = sqliteTable("market_source_audits", {
   tradeDate: text("trade_date").notNull(),
   snapshotTime: text("snapshot_time").notNull(),

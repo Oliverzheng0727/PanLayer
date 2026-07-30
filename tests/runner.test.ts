@@ -160,6 +160,7 @@ describe("close review aggregation", () => {
     expect(leaseLabelForJob({ type: "breadth", time: "10:00" })).toBe("breadth-10:00");
     expect(leaseLabelForJob({ type: "close-review" })).toBe("close-review");
     expect(leaseLabelForJob({ type: "history-backfill", days: 120 })).toBe("history-backfill");
+    expect(leaseLabelForJob({ type: "history-contribution-bootstrap" })).toBe("history-contribution-bootstrap");
   });
 
   it("runs one resumable history-backfill batch and reports progress", async () => {

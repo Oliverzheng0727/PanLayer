@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("production background workflow", () => {
-  it("uses one hourly recovery tick plus exact Beijing market checkpoints", async () => {
+  it("uses an hourly fallback plus exact and fair five-minute scheduler windows", async () => {
     const [workflow, route, viteConfig] = await Promise.all([
       readFile(new URL("../.github/workflows/panlayer-background.yml", import.meta.url), "utf8"),
       readFile(new URL("../app/api/v1/internal/scheduler/tick/route.ts", import.meta.url), "utf8"),
@@ -36,12 +36,8 @@ describe("production background workflow", () => {
     expect(route).not.toContain('{ trigger: "reconcile" }');
 
     expect(viteConfig).toContain('"17 * * * *"');
-    expect(viteConfig).toContain('"50,55 22 * * *"');
-    expect(viteConfig).toContain('"15,20,25,30,35,40,45,50,55 23 * * *"');
-    expect(viteConfig).toContain('"15,20,25,30 0 * * *"');
-    expect(viteConfig).toContain('"0,10,20,25-30 1-8 * * 1-5"');
-    expect(viteConfig).not.toContain('"0,30 10-15 * * 1-5"');
-    expect(viteConfig).not.toContain('"*/5 18-21 * * 0-4"');
-    expect(viteConfig).not.toContain('"*/5 0-10 * * 1-5"');
+    expect(viteConfig).toContain('"*/5 17-23 * * *"');
+    expect(viteConfig).toContain('"*/5 0-8 * * 1-5"');
+    expect(viteConfig).toContain('"0,15,30,45 10-15 * * *"');
   });
 });

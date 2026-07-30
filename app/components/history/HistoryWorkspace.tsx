@@ -181,7 +181,9 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
         </button>
         <div><strong>历史数据表</strong><span>当前查看 {selected || "暂无记录"} · 固定表头与日期列{strictRecognitionStart ? ` · 辨识度新口径始于 ${strictRecognitionStart}` : ""}</span></div>
         <label><Filter size={13} /><input value={sector} onChange={(event) => { setSector(event.target.value); setVisibleCount(12); }} placeholder="筛选热点板块" /></label>
-        <span className={`new-high-progress ${newHighProgress.ready ? "ready" : ""}`}>{formatNewHighProgress(newHighProgress)}</span>
+        <span className={`new-high-progress ${newHighProgress.ready ? "ready" : ""}`}>
+          {formatNewHighProgress(newHighProgress, { includeDaily: false })}
+        </span>
         <span className="history-count">已显示 {Math.min(visible.length, sorted.length)} / {sorted.length}</span>
       </div>
       <div className={`history-layout ${calendarCollapsed ? "calendar-collapsed" : ""}`}>

@@ -41,6 +41,7 @@ describe("sidebar progress model", () => {
         "breadth-10:00": job("failed", "2026-07-24T10:00:00+08:00", "timeout"),
         "breadth-11:00": job("pending", "2026-07-24T11:00:00+08:00"),
         "new-high-bootstrap": job("partial", "2026-07-24T02:00:00+08:00"),
+        "history-contribution-bootstrap": job("partial", "2026-07-24T02:00:00+08:00"),
         "history-backfill": job("partial", "2026-07-24T01:30:00+08:00"),
         "close-review": job("pending", "2026-07-24T16:10:00+08:00"),
       },
@@ -173,5 +174,76 @@ describe("sidebar progress model", () => {
       status: "complete",
       value: "6/6",
     });
+  });
+
+  it("shows waiting for close instead of a misleading zero daily refresh", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-24",
+      generatedAt: "2026-07-24T02:00:00Z",
+      marketSession: true,
+      jobs: {
+        "close-review": job("pending", "2026-07-24T16:10:00+08:00"),
+      },
+    };
+    const currentProgress = {
+      ...progress,
+      targetDate: "2026-07-24",
+      dailyCompleted: 0,
+      dailyCoveragePct: 0,
+    };
+
+    const result = buildSidebarProgress(health, currentProgress, "complete");
+    expect(result.newHighDailyValue).toBe("等待收盘");
+    expect(result.newHighDailyDetail).toContain("16:10");
+    expect(result.tasks.find((item) => item.key === "new-high")?.detail).not.toContain("0/5317");
+  });
+
+  it("uses independent checkpoints and progress for the two background pipelines", () => {
+    const newHighRetry = "2026-07-24T10:05:00.000Z";
+    const historyRetry = "2026-07-24T10:10:00.000Z";
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-24",
+      generatedAt: "2026-07-24T09:00:00Z",
+      marketSession: true,
+      jobs: {
+        "new-high-bootstrap": {
+          ...job("partial", "2026-07-24T08:30:00+08:00"),
+          nextRetryAt: newHighRetry,
+        },
+        "history-contribution-bootstrap": {
+          ...job("partial", "2026-07-24T02:00:00+08:00"),
+          nextRetryAt: historyRetry,
+        },
+      },
+      background: {
+        historyContribution: {
+          completed: 3_730,
+          target: 5_326,
+          dailyCompleted: 110,
+          dailyRemaining: 5_216,
+          dailyCoveragePct: 2.07,
+          failed: 4,
+          remaining: 5_216,
+          coveragePct: 70.03,
+          updatedAt: "2026-07-24T08:59:00.000Z",
+        },
+        historyFields: {
+          dates: 15,
+          checkedDates: 15,
+          readyDates: 8,
+          fields: {},
+        },
+      },
+    };
+
+    const result = buildSidebarProgress(health, progress, "complete");
+    expect(result.dueTotal).toBe(0);
+    expect(result.tasks.find((item) => item.key === "new-high")?.nextRetryAt).toBe(newHighRetry);
+    expect(result.tasks.find((item) => item.key === "history-contribution")).toMatchObject({
+      status: "partial",
+      value: "3730/5326",
+      nextRetryAt: historyRetry,
+    });
+    expect(result.tasks.find((item) => item.key === "history-contribution")?.detail).toContain("字段核验 8/120");
   });
 });

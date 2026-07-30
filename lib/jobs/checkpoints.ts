@@ -8,6 +8,7 @@ export type DailyJobKey =
   | `breadth-${BreadthCheckpointTime}`
   | "close-review"
   | "new-high-bootstrap"
+  | "history-contribution-bootstrap"
   | "etf-metrics-refresh"
   | "history-backfill";
 
@@ -124,6 +125,7 @@ const MARKET_SESSION_TIMES: Array<[Exclude<DailyJobKey,
   | "tier2-news-prefetch"
   | "morning-brief"
   | "new-high-bootstrap"
+  | "history-contribution-bootstrap"
   | "history-backfill"
 >, string]> = [
   ["breadth-09:25", "09:25"],
@@ -149,7 +151,8 @@ export function expectedDailyJobs(
       key,
       expectedAt: `${tradeDate}T${time}:00+08:00`,
     })),
-    { key: "new-high-bootstrap", expectedAt: `${tradeDate}T02:00:00+08:00` },
+    { key: "new-high-bootstrap", expectedAt: `${tradeDate}T08:30:00+08:00` },
+    { key: "history-contribution-bootstrap", expectedAt: `${tradeDate}T02:00:00+08:00` },
     { key: "history-backfill", expectedAt: `${tradeDate}T01:30:00+08:00` },
   ];
 }
@@ -273,7 +276,12 @@ export function nextRetryAtForCheckpoint(
   }
   if (
     status === "partial"
-    && (key === "new-high-bootstrap" || key === "etf-metrics-refresh" || key === "history-backfill")
+    && (
+      key === "new-high-bootstrap"
+      || key === "history-contribution-bootstrap"
+      || key === "etf-metrics-refresh"
+      || key === "history-backfill"
+    )
   ) {
     return new Date(now.getTime() + 5 * 60_000).toISOString();
   }

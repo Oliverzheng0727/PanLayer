@@ -193,7 +193,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     && overviewHigh20 === null
     && overviewHigh120 === null
     && overviewAllTimeHigh === null
-    ? `20日新高 / 120日新高 / 历史新高暂缺 · ${formatNewHighProgress(currentNewHighProgress)}`
+    ? `20日新高 / 120日新高 / 历史新高暂缺 · ${formatNewHighProgress(currentNewHighProgress, { includeDaily: false })}`
     : `20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`;
   const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
   const selectTrendDate = useCallback((date: string) => {

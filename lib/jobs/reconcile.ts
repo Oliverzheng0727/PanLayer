@@ -19,8 +19,9 @@ const CATCH_UP_MINUTES: Record<DailyJobKey, number> = {
   "breadth-15:00": 20,
   "close-review": 470,
   "new-high-bootstrap": 24 * 60,
+  "history-contribution-bootstrap": 24 * 60,
   "etf-metrics-refresh": 510,
-  "history-backfill": 45,
+  "history-backfill": 90,
 };
 
 function keyToJob(key: DailyJobKey): ScheduledJob | null {
@@ -34,6 +35,7 @@ function keyToJob(key: DailyJobKey): ScheduledJob | null {
     || key === "morning-brief"
     || key === "close-review"
     || key === "new-high-bootstrap"
+    || key === "history-contribution-bootstrap"
     || key === "etf-metrics-refresh"
   ) {
     return { type: key };
