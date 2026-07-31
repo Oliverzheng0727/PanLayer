@@ -265,6 +265,37 @@ export async function reopenNewHighBootstrapCheckpoint(
   return Number(result.meta?.changes ?? 0) > 0;
 }
 
+/**
+ * A morning checkpoint may be complete for yesterday's review date. Once the
+ * close review advances the target date, a partial daily refresh is
+ * authoritative and must be allowed to reopen that same calendar-day
+ * checkpoint for background continuation.
+ */
+export async function reopenDailyNewHighRefreshCheckpoint(
+  db: D1Database,
+  input: {
+    tradeDate: string;
+    nextRetryAt: string;
+    message: string;
+  },
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE job_checkpoints
+        SET status = 'partial', started_at = NULL, finished_at = NULL,
+            next_retry_at = ?, message = ?, updated_at = ?
+      WHERE trade_date = ?
+        AND job_key = 'daily-new-high-refresh'
+        AND stage = 'main'
+        AND status = 'complete'`,
+  ).bind(
+    input.nextRetryAt,
+    input.message,
+    new Date().toISOString(),
+    input.tradeDate,
+  ).run();
+  return Number(result.meta?.changes ?? 0) > 0;
+}
+
 export function scheduledJobKey(job: {
   type: string;
   time?: string;

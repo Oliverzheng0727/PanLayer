@@ -77,6 +77,23 @@ export async function POST(request: Request) {
       status: nextModule.status === "failed" ? 502 : nextModule.status === "partial" ? 207 : 200,
     });
   }
+  if (action === "continue-daily-new-high-refresh") {
+    const nextRefresh = await runPanLayerJob(
+      { type: "daily-new-high-refresh" },
+      now,
+      runtimeEnv,
+      { trigger: "manual", force: true },
+    );
+    return Response.json({
+      ok: nextRefresh.ok,
+      status: nextRefresh.status,
+      date: beijingDateParts(now).date,
+      message: "历史新高已安全继续推进一个批次",
+      nextRefresh,
+    }, {
+      status: nextRefresh.status === "failed" ? 502 : nextRefresh.status === "partial" ? 207 : 200,
+    });
+  }
   const result = await executeRemoteSchedulerTick({
     db: runtimeEnv.DB,
     now,

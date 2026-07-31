@@ -25,14 +25,17 @@ describe("production background workflow", () => {
     expect(workflow).toContain("X-PanLayer-Action: regenerate-morning-brief");
     expect(workflow).toContain("continue-morning-brief");
     expect(workflow).toContain("X-PanLayer-Action: continue-morning-brief");
+    expect(workflow).toContain("continue-daily-new-high-refresh");
+    expect(workflow).toContain("X-PanLayer-Action: continue-daily-new-high-refresh");
     expect(workflow).toContain("scheduled_time");
     expect(workflow).toContain("X-PanLayer-Scheduled-Time");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
     expect(route).toContain('action === "continue-morning-brief"');
+    expect(route).toContain('action === "continue-daily-new-high-refresh"');
     expect(route).toContain('normalizeSchedulerProvider(request.headers.get("x-panlayer-scheduler"))');
-    expect(route.match(/\{ trigger: "manual" \}/g)).toHaveLength(2);
+    expect(route.match(/trigger: "manual"/g)).toHaveLength(3);
     expect(route).not.toContain('{ trigger: "reconcile" }');
 
     expect(viteConfig).toContain('"17 * * * *"');

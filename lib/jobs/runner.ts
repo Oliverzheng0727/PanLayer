@@ -98,6 +98,7 @@ import {
   nextRetryAtForCheckpoint,
   readJobExecutionMetadata,
   recordJobCheckpoint,
+  reopenDailyNewHighRefreshCheckpoint,
   reopenNewHighBootstrapCheckpoint,
   retryAtForAttempt,
   scheduledJobKey,
@@ -1737,6 +1738,16 @@ export async function runPanLayerJob(
       const noProgressRetryAt = !terminal && result.processed === 0
         ? dailyNewHighNoProgressRetryAt(now)
         : undefined;
+      if (!terminal) {
+        const dailyRetryAt = noProgressRetryAt ?? nextSchedulerTickAtOrAfter(
+          new Date(Date.now() + 60_000),
+        ).toISOString();
+        await reopenDailyNewHighRefreshCheckpoint(db, {
+          tradeDate: date,
+          nextRetryAt: dailyRetryAt,
+          message,
+        });
+      }
       await finishCheckpoint(status, message, {
         ...result,
         historyPatched: historyPublication.patched,

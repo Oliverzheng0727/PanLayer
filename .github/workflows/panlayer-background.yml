@@ -33,6 +33,7 @@ on:
           - tick
           - regenerate-morning-brief
           - continue-morning-brief
+          - continue-daily-new-high-refresh
       scheduled_time:
         description: Optional Unix milliseconds used only for protected catch-up runs
         required: false
@@ -59,6 +60,8 @@ jobs:
             action_header=(-H "X-PanLayer-Action: regenerate-morning-brief")
           elif [ "${PANLAYER_ACTION}" = "continue-morning-brief" ]; then
             action_header=(-H "X-PanLayer-Action: continue-morning-brief")
+          elif [ "${PANLAYER_ACTION}" = "continue-daily-new-high-refresh" ]; then
+            action_header=(-H "X-PanLayer-Action: continue-daily-new-high-refresh")
           fi
           if [ -n "${PANLAYER_SCHEDULED_TIME}" ]; then
             scheduled_header=(-H "X-PanLayer-Scheduled-Time: ${PANLAYER_SCHEDULED_TIME}")

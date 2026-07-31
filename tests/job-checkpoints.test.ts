@@ -6,6 +6,7 @@ import {
   nextRetryAtForCheckpoint,
   readJobExecutionMetadata,
   recordJobCheckpoint,
+  reopenDailyNewHighRefreshCheckpoint,
   reopenNewHighBootstrapCheckpoint,
   type JobCheckpoint,
 } from "../lib/jobs/checkpoints";
@@ -222,6 +223,47 @@ describe("daily job checkpoints", () => {
     expect(sql).toContain("job_key = 'new-high-bootstrap'");
     expect(sql).toContain("stage = 'main'");
     expect(sql).toContain("status = 'complete'");
+  });
+
+  it("reopens a completed daily refresh after the close target advances", async () => {
+    const row = {
+      tradeDate: "2026-07-24",
+      key: "daily-new-high-refresh",
+      stage: "main",
+      status: "complete",
+      nextRetryAt: null as string | null,
+      message: "yesterday complete",
+    };
+    const db = {
+      prepare() {
+        return {
+          values: [] as unknown[],
+          bind(...values: unknown[]) {
+            this.values = values;
+            return this;
+          },
+          async run() {
+            const [nextRetryAt, message, , tradeDate] = this.values as string[];
+            if (row.tradeDate === tradeDate && row.status === "complete") {
+              row.status = "partial";
+              row.nextRetryAt = nextRetryAt;
+              row.message = message;
+              return { meta: { changes: 1 } };
+            }
+            return { meta: { changes: 0 } };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    await expect(reopenDailyNewHighRefreshCheckpoint(db, {
+      tradeDate: row.tradeDate,
+      nextRetryAt: "2026-07-24T08:25:00.000Z",
+      message: "daily refresh 200/5326",
+    })).resolves.toBe(true);
+    expect(row.status).toBe("partial");
+    expect(row.nextRetryAt).toBe("2026-07-24T08:25:00.000Z");
+    expect(row.message).toContain("200/5326");
   });
 
   it("keeps automatic completion separate from later manual reruns", () => {
