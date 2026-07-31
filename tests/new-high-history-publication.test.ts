@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { demoReview } from "../lib/data/demo";
 import type { DailyReview } from "../lib/domain/types";
-import { publishHistoricalNewHighCountsWhenReady } from "../lib/jobs/runner";
+import {
+  publishHistoricalNewHighCountsWhenReady,
+  publishHistoricalNewHighCountsWithDiagnostics,
+} from "../lib/jobs/runner";
 
 type Counts = { high20: number; high120: number; allTimeHigh: number };
 
@@ -10,6 +13,8 @@ interface FakeD1Options {
   details?: Record<string, Counts>;
   markers?: Record<string, string>;
   applyUpdates?: boolean;
+  verifiedStateThroughDate?: string | null;
+  historicalCompleted?: number;
 }
 
 function reviewFor(date: string): DailyReview {
@@ -42,10 +47,24 @@ function fakeD1(options: FakeD1Options = {}) {
         if (normalized.startsWith("SELECT MAX(trade_date) AS trade_date")) {
           const targetDate = String(statement.args[0]);
           const tradeDate = [...reviews.keys()]
-            .filter((date) => date < targetDate)
+            .filter((date) => normalized.includes("trade_date < ?")
+              ? date < targetDate
+              : date <= targetDate)
             .sort()
             .at(-1) ?? null;
           return { trade_date: tradeDate } as T;
+        }
+        if (normalized.startsWith("SELECT h.last_date FROM stocks")) {
+          const fallback = [...reviews.keys()].sort().at(-1) ?? null;
+          return { last_date: options.verifiedStateThroughDate === undefined
+            ? fallback
+            : options.verifiedStateThroughDate } as T;
+        }
+        if (
+          normalized.startsWith("SELECT COUNT(*) AS count FROM stocks s")
+          && normalized.includes("h.last_date >= ?")
+        ) {
+          return { count: options.historicalCompleted ?? 95 } as T;
         }
         if (normalized.startsWith("SELECT value FROM bootstrap_state")) {
           const value = markers.get(String(statement.args[0]));
@@ -142,14 +161,14 @@ describe("historical new-high publication", () => {
       high120: 12,
       allTimeHigh: 5,
     });
-    expect(harness.markers.get("new-high-history-published:2026-07-30")).toBe("v2:95/100");
+    expect(harness.markers.get("new-high-history-published:2026-07-30")).toBe("v3:95/100");
   });
 
   it("does not trust a matching marker while persisted review metrics are still null", async () => {
     const harness = fakeD1({
       reviews: { "2026-07-30": reviewFor("2026-07-30") },
       details: { "2026-07-30": { high20: 14, high120: 7, allTimeHigh: 2 } },
-      markers: { "new-high-history-published:2026-07-30": "v2:95/100" },
+      markers: { "new-high-history-published:2026-07-30": "v3:95/100" },
     });
 
     await expect(publishHistoricalNewHighCountsWhenReady(
@@ -195,5 +214,73 @@ describe("historical new-high publication", () => {
       0,
     )).resolves.toBe(0);
     expect(harness.markers.size).toBe(0);
+  });
+
+  it("publishes only through the date covered by at least 95 percent of historical states", async () => {
+    const harness = fakeD1({
+      reviews: {
+        "2026-07-29": reviewFor("2026-07-29"),
+        "2026-07-30": reviewFor("2026-07-30"),
+      },
+      details: {
+        "2026-07-29": { high20: 18, high120: 10, allTimeHigh: 4 },
+        "2026-07-30": { high20: 22, high120: 13, allTimeHigh: 6 },
+      },
+      verifiedStateThroughDate: "2026-07-29",
+    });
+
+    const result = await publishHistoricalNewHighCountsWithDiagnostics(
+      harness.db,
+      "2026-07-31",
+      95,
+      100,
+      0,
+    );
+
+    expect(result).toMatchObject({
+      patched: 1,
+      reason: "published",
+      requestedThroughDate: "2026-07-30",
+      verifiedStateThroughDate: "2026-07-29",
+      throughDate: "2026-07-29",
+      historicalStateCoveragePct: 95,
+      missingBefore: 1,
+      missingAfter: 0,
+    });
+    expect(harness.readReview("2026-07-29").metrics.high20).toBe(18);
+    expect(harness.readReview("2026-07-30").metrics.high20).toBeNull();
+  });
+
+  it("reports the exact readiness gate instead of an unexplained zero", async () => {
+    const baselinePending = fakeD1({
+      reviews: { "2026-07-30": reviewFor("2026-07-30") },
+    });
+    await expect(publishHistoricalNewHighCountsWithDiagnostics(
+      baselinePending.db,
+      "2026-07-31",
+      94,
+      100,
+      0,
+    )).resolves.toMatchObject({
+      patched: 0,
+      reason: "baseline-not-ready",
+      baselineCoveragePct: 94,
+    });
+
+    const historicalPending = fakeD1({
+      reviews: { "2026-07-30": reviewFor("2026-07-30") },
+      verifiedStateThroughDate: null,
+    });
+    await expect(publishHistoricalNewHighCountsWithDiagnostics(
+      historicalPending.db,
+      "2026-07-31",
+      95,
+      100,
+      0,
+    )).resolves.toMatchObject({
+      patched: 0,
+      reason: "historical-state-not-ready",
+      requestedThroughDate: "2026-07-30",
+    });
   });
 });

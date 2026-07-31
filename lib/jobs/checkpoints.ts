@@ -234,6 +234,37 @@ export async function recordJobCheckpoint(db: D1Database, checkpoint: JobCheckpo
   ).run();
 }
 
+/**
+ * Explicitly reopen the baseline bootstrap after the daily engine discovers
+ * states that need a full rebuild. The normal checkpoint upsert deliberately
+ * protects complete jobs from accidental downgrades, so this narrowly scoped
+ * transition is the only supported exception.
+ */
+export async function reopenNewHighBootstrapCheckpoint(
+  db: D1Database,
+  input: {
+    tradeDate: string;
+    nextRetryAt: string;
+    message: string;
+  },
+): Promise<boolean> {
+  const result = await db.prepare(
+    `UPDATE job_checkpoints
+        SET status = 'partial', started_at = NULL, finished_at = NULL,
+            next_retry_at = ?, message = ?, updated_at = ?
+      WHERE trade_date = ?
+        AND job_key = 'new-high-bootstrap'
+        AND stage = 'main'
+        AND status = 'complete'`,
+  ).bind(
+    input.nextRetryAt,
+    input.message,
+    new Date().toISOString(),
+    input.tradeDate,
+  ).run();
+  return Number(result.meta?.changes ?? 0) > 0;
+}
+
 export function scheduledJobKey(job: {
   type: string;
   time?: string;

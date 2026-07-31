@@ -98,6 +98,7 @@ import {
   nextRetryAtForCheckpoint,
   readJobExecutionMetadata,
   recordJobCheckpoint,
+  reopenNewHighBootstrapCheckpoint,
   retryAtForAttempt,
   scheduledJobKey,
   type JobExecutionMetadata,
@@ -1050,7 +1051,32 @@ async function publishVerifiedDailyNewHighCounts(
   return true;
 }
 
-const NEW_HIGH_HISTORY_PUBLICATION_VERSION = "v2";
+const NEW_HIGH_HISTORY_PUBLICATION_VERSION = "v3";
+const NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT = 95;
+
+export type HistoricalNewHighPublicationReason =
+  | "published"
+  | "baseline-not-ready"
+  | "historical-state-not-ready"
+  | "no-review-through-date"
+  | "already-published"
+  | "no-parseable-review"
+  | "post-write-verification-failed";
+
+export interface HistoricalNewHighPublicationResult {
+  patched: number;
+  reason: HistoricalNewHighPublicationReason;
+  targetDate: string;
+  requestedThroughDate: string | null;
+  verifiedStateThroughDate: string | null;
+  throughDate: string | null;
+  baselineCoveragePct: number;
+  historicalStateCoveragePct: number;
+  reviewTotal: number;
+  missingBefore: number;
+  missingAfter: number;
+  markerMatched: boolean;
+}
 
 async function readHistoricalNewHighReviewState(
   db: D1Database,
@@ -1063,16 +1089,219 @@ async function readHistoricalNewHighReviewState(
   for (const row of rows.results ?? []) {
     try {
       const review = JSON.parse(row.payload) as DailyReview;
+      const evidence = review.historyMeta?.fields?.newHighs;
       if (
         !Number.isFinite(review.metrics.high20)
         || !Number.isFinite(review.metrics.high120)
         || !Number.isFinite(review.metrics.allTimeHigh)
+        || evidence?.status !== "complete"
+        || !Number.isFinite(evidence.coveragePct)
+        || Number(evidence.coveragePct) < NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT
       ) missing += 1;
     } catch {
       missing += 1;
     }
   }
   return { total: rows.results?.length ?? 0, missing };
+}
+
+async function latestVerifiedHistoricalStateDate(
+  db: D1Database,
+  target: number,
+): Promise<string | null> {
+  const minimumCompleted = Math.ceil(target * NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT / 100);
+  if (minimumCompleted <= 0) return null;
+  const row = await db.prepare(
+    `SELECT h.last_date
+      FROM stocks s
+      JOIN new_high_states h ON h.symbol = s.symbol
+     WHERE UPPER(s.name) NOT LIKE '%ST%'
+        AND h.last_date IS NOT NULL AND h.last_date <> ''
+        AND h.closes_json IS NOT NULL AND h.closes_json <> '[]'
+      ORDER BY h.last_date DESC
+      LIMIT 1 OFFSET ?`,
+  ).bind(minimumCompleted - 1).first<{ last_date: string | null }>();
+  return row?.last_date ?? null;
+}
+
+function emptyHistoricalPublicationResult(input: {
+  reason: HistoricalNewHighPublicationReason;
+  targetDate: string;
+  baselineCoveragePct: number;
+  requestedThroughDate?: string | null;
+  verifiedStateThroughDate?: string | null;
+  throughDate?: string | null;
+  historicalStateCoveragePct?: number;
+  reviewTotal?: number;
+  missingBefore?: number;
+  missingAfter?: number;
+  markerMatched?: boolean;
+}): HistoricalNewHighPublicationResult {
+  return {
+    patched: 0,
+    reason: input.reason,
+    targetDate: input.targetDate,
+    requestedThroughDate: input.requestedThroughDate ?? null,
+    verifiedStateThroughDate: input.verifiedStateThroughDate ?? null,
+    throughDate: input.throughDate ?? null,
+    baselineCoveragePct: input.baselineCoveragePct,
+    historicalStateCoveragePct: input.historicalStateCoveragePct ?? 0,
+    reviewTotal: input.reviewTotal ?? 0,
+    missingBefore: input.missingBefore ?? 0,
+    missingAfter: input.missingAfter ?? 0,
+    markerMatched: input.markerMatched ?? false,
+  };
+}
+
+export async function publishHistoricalNewHighCountsWithDiagnostics(
+  db: D1Database,
+  targetDate: string,
+  baselineCompleted: number,
+  baselineTarget: number,
+  dailyCoveragePct: number,
+): Promise<HistoricalNewHighPublicationResult> {
+  const baselineCoveragePct = baselineTarget > 0
+    ? Number((baselineCompleted / baselineTarget * 100).toFixed(2))
+    : 0;
+  if (baselineCoveragePct < NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT) {
+    return emptyHistoricalPublicationResult({
+      reason: "baseline-not-ready",
+      targetDate,
+      baselineCoveragePct,
+    });
+  }
+  const requestedThroughDate = dailyCoveragePct >= NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT
+    ? targetDate
+    : (await db.prepare(
+        "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date < ?",
+      ).bind(targetDate).first<{ trade_date: string | null }>())?.trade_date ?? null;
+  if (!requestedThroughDate) {
+    return emptyHistoricalPublicationResult({
+      reason: "no-review-through-date",
+      targetDate,
+      baselineCoveragePct,
+    });
+  }
+  const verifiedStateThroughDate = await latestVerifiedHistoricalStateDate(db, baselineTarget);
+  if (!verifiedStateThroughDate) {
+    return emptyHistoricalPublicationResult({
+      reason: "historical-state-not-ready",
+      targetDate,
+      requestedThroughDate,
+      baselineCoveragePct,
+    });
+  }
+  const maximumVerifiedDate = verifiedStateThroughDate < requestedThroughDate
+    ? verifiedStateThroughDate
+    : requestedThroughDate;
+  const throughDate = (await db.prepare(
+    "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date <= ?",
+  ).bind(maximumVerifiedDate).first<{ trade_date: string | null }>())?.trade_date ?? null;
+  if (!throughDate) {
+    return emptyHistoricalPublicationResult({
+      reason: "no-review-through-date",
+      targetDate,
+      requestedThroughDate,
+      verifiedStateThroughDate,
+      baselineCoveragePct,
+    });
+  }
+  const historicalCompleted = Number((await db.prepare(
+    `SELECT COUNT(*) AS count
+      FROM stocks s
+      JOIN new_high_states h ON h.symbol = s.symbol
+     WHERE UPPER(s.name) NOT LIKE '%ST%'
+        AND h.last_date >= ?
+        AND h.closes_json IS NOT NULL AND h.closes_json <> '[]'`,
+  ).bind(throughDate).first<{ count: number }>())?.count ?? 0);
+  const historicalStateCoveragePct = baselineTarget > 0
+    ? Number((historicalCompleted / baselineTarget * 100).toFixed(2))
+    : 0;
+  if (historicalStateCoveragePct < NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT) {
+    return emptyHistoricalPublicationResult({
+      reason: "historical-state-not-ready",
+      targetDate,
+      requestedThroughDate,
+      verifiedStateThroughDate,
+      throughDate,
+      baselineCoveragePct,
+      historicalStateCoveragePct,
+    });
+  }
+  const markerKey = `new-high-history-published:${throughDate}`;
+  const markerValue = `${NEW_HIGH_HISTORY_PUBLICATION_VERSION}:${baselineCompleted}/${baselineTarget}`;
+  const marker = await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
+    .bind(markerKey).first<{ value: string }>();
+  const before = await readHistoricalNewHighReviewState(db, throughDate);
+  const markerMatched = marker?.value === markerValue;
+  if (markerMatched && before.total > 0 && before.missing === 0) {
+    return emptyHistoricalPublicationResult({
+      reason: "already-published",
+      targetDate,
+      requestedThroughDate,
+      verifiedStateThroughDate,
+      throughDate,
+      baselineCoveragePct,
+      historicalStateCoveragePct,
+      reviewTotal: before.total,
+      markerMatched,
+    });
+  }
+  const patched = await patchBackfilledReviewHighCounts(db, throughDate, {
+    coveragePct: historicalStateCoveragePct,
+  });
+  if (patched <= 0) {
+    return emptyHistoricalPublicationResult({
+      reason: "no-parseable-review",
+      targetDate,
+      requestedThroughDate,
+      verifiedStateThroughDate,
+      throughDate,
+      baselineCoveragePct,
+      historicalStateCoveragePct,
+      reviewTotal: before.total,
+      missingBefore: before.missing,
+      markerMatched,
+    });
+  }
+  const verified = await readHistoricalNewHighReviewState(db, throughDate);
+  if (verified.total === 0 || verified.missing > 0) {
+    return {
+      ...emptyHistoricalPublicationResult({
+        reason: "post-write-verification-failed",
+        targetDate,
+        requestedThroughDate,
+        verifiedStateThroughDate,
+        throughDate,
+        baselineCoveragePct,
+        historicalStateCoveragePct,
+        reviewTotal: verified.total,
+        missingBefore: before.missing,
+        missingAfter: verified.missing,
+        markerMatched,
+      }),
+      patched,
+    };
+  }
+  const updatedAt = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+  ).bind(markerKey, markerValue, updatedAt).run();
+  return {
+    patched,
+    reason: "published",
+    targetDate,
+    requestedThroughDate,
+    verifiedStateThroughDate,
+    throughDate,
+    baselineCoveragePct,
+    historicalStateCoveragePct,
+    reviewTotal: verified.total,
+    missingBefore: before.missing,
+    missingAfter: verified.missing,
+    markerMatched,
+  };
 }
 
 export async function publishHistoricalNewHighCountsWhenReady(
@@ -1082,34 +1311,13 @@ export async function publishHistoricalNewHighCountsWhenReady(
   baselineTarget: number,
   dailyCoveragePct: number,
 ): Promise<number> {
-  const baselineCoveragePct = baselineTarget > 0
-    ? Number((baselineCompleted / baselineTarget * 100).toFixed(2))
-    : 0;
-  if (baselineCoveragePct < 95) return 0;
-  const throughDate = dailyCoveragePct >= 95
-    ? targetDate
-    : (await db.prepare(
-        "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date < ?",
-      ).bind(targetDate).first<{ trade_date: string | null }>())?.trade_date ?? null;
-  if (!throughDate) return 0;
-  const markerKey = `new-high-history-published:${throughDate}`;
-  const markerValue = `${NEW_HIGH_HISTORY_PUBLICATION_VERSION}:${baselineCompleted}/${baselineTarget}`;
-  const marker = await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
-    .bind(markerKey).first<{ value: string }>();
-  const before = await readHistoricalNewHighReviewState(db, throughDate);
-  if (marker?.value === markerValue && before.total > 0 && before.missing === 0) return 0;
-  const patched = await patchBackfilledReviewHighCounts(db, throughDate, {
-    coveragePct: baselineCoveragePct,
-  });
-  if (patched <= 0) return 0;
-  const verified = await readHistoricalNewHighReviewState(db, throughDate);
-  if (verified.total === 0 || verified.missing > 0) return patched;
-  const updatedAt = new Date().toISOString();
-  await db.prepare(
-    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-  ).bind(markerKey, markerValue, updatedAt).run();
-  return patched;
+  return (await publishHistoricalNewHighCountsWithDiagnostics(
+    db,
+    targetDate,
+    baselineCompleted,
+    baselineTarget,
+    dailyCoveragePct,
+  )).patched;
 }
 
 export async function runPanLayerJob(
@@ -1438,7 +1646,7 @@ export async function runPanLayerJob(
         Math.max(0, snapshot.target - snapshot.completed),
         snapshot.rebuildPending,
       );
-      const historyPatched = await publishHistoricalNewHighCountsWhenReady(
+      const historyPublication = await publishHistoricalNewHighCountsWithDiagnostics(
         db,
         targetDate,
         snapshot.completed,
@@ -1451,7 +1659,10 @@ export async function runPanLayerJob(
         `remaining ${remaining}; failed ${snapshot.failed}; ` +
         `coverage ${coveragePct}%；daily coverage ${dailyCoveragePct}%；` +
         `本批成功 ${progress.succeeded}/${progress.attempted}；` +
-        `历史回写 ${historyPatched} 日；` +
+        `历史回写 ${historyPublication.patched} 日（${historyPublication.reason}` +
+        `${historyPublication.throughDate ? `，截至 ${historyPublication.throughDate}` : ""}` +
+        `${historyPublication.reviewTotal > 0 ? `，记录 ${historyPublication.reviewTotal}` : ""}` +
+        `${historyPublication.missingBefore > 0 ? `，写前缺失 ${historyPublication.missingBefore}` : ""}）；` +
         `${dailyRefresh ? `当日推进 ${dailyRefresh.processed} 只` : "当日收盘快照待就绪"}`;
       const status = newHighBootstrapRunStatus({
         remaining,
@@ -1469,7 +1680,8 @@ export async function runPanLayerJob(
         coveragePct,
         dailyCoveragePct,
         dailyRefresh,
-        historyPatched,
+        historyPatched: historyPublication.patched,
+        historyPublication,
       });
       return { ok: true, status, message };
     } else if (job.type === "daily-new-high-refresh") {
@@ -1483,7 +1695,7 @@ export async function runPanLayerJob(
       const dailyCoveragePct = snapshot.target > 0
         ? Number((snapshot.dailyCompleted / snapshot.target * 100).toFixed(2))
         : 0;
-      const historyPatched = await publishHistoricalNewHighCountsWhenReady(
+      const historyPublication = await publishHistoricalNewHighCountsWithDiagnostics(
         db,
         targetDate,
         snapshot.completed,
@@ -1496,13 +1708,26 @@ export async function runPanLayerJob(
       const published = result.status === "complete"
         ? await publishVerifiedDailyNewHighCounts(db, result)
         : false;
+      if (result.rebuild > 0) {
+        const rebuildRetryAt = nextSchedulerTickAtOrAfter(
+          new Date(Date.now() + 60_000),
+        ).toISOString();
+        await reopenNewHighBootstrapCheckpoint(db, {
+          tradeDate: date,
+          nextRetryAt: rebuildRetryAt,
+          message: `daily refresh queued ${result.rebuild} states for baseline rebuild`,
+        });
+      }
       const terminal = result.remaining === 0 && result.rebuild === 0;
       const status = terminal ? "complete" : "partial";
       const message =
         `daily-new-high ${result.dailyCompleted}/${result.target} ` +
         `(${result.dailyCoveragePct}%)；本批 ${result.processed}；` +
         `剩余 ${result.remaining}；重建 ${result.rebuild}；` +
-        `历史回写 ${historyPatched} 日；` +
+        `历史回写 ${historyPublication.patched} 日（${historyPublication.reason}` +
+        `${historyPublication.throughDate ? `，截至 ${historyPublication.throughDate}` : ""}` +
+        `${historyPublication.reviewTotal > 0 ? `，记录 ${historyPublication.reviewTotal}` : ""}` +
+        `${historyPublication.missingBefore > 0 ? `，写前缺失 ${historyPublication.missingBefore}` : ""}）；` +
         `${published ? "正式数据已发布" : "未达正式发布门槛"}`;
       if (run?.id) {
         await db.prepare(
@@ -1512,7 +1737,11 @@ export async function runPanLayerJob(
       const noProgressRetryAt = !terminal && result.processed === 0
         ? dailyNewHighNoProgressRetryAt(now)
         : undefined;
-      await finishCheckpoint(status, message, { ...result, historyPatched }, terminal, noProgressRetryAt);
+      await finishCheckpoint(status, message, {
+        ...result,
+        historyPatched: historyPublication.patched,
+        historyPublication,
+      }, terminal, noProgressRetryAt);
       return { ok: true, status, message };
     } else if (job.type === "history-contribution-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);

@@ -6,6 +6,7 @@ import {
   nextRetryAtForCheckpoint,
   readJobExecutionMetadata,
   recordJobCheckpoint,
+  reopenNewHighBootstrapCheckpoint,
   type JobCheckpoint,
 } from "../lib/jobs/checkpoints";
 
@@ -168,6 +169,59 @@ describe("daily job checkpoints", () => {
 
     expect(sql).toContain("job_checkpoints.status = 'complete'");
     expect(sql).toContain("excluded.status <> 'complete'");
+  });
+
+  it("explicitly reopens a completed new-high bootstrap when daily refresh queues rebuilds", async () => {
+    const row = {
+      tradeDate: "2026-07-24",
+      key: "new-high-bootstrap",
+      stage: "main",
+      status: "complete",
+      nextRetryAt: null as string | null,
+      message: "baseline complete",
+    };
+    let sql = "";
+    const db = {
+      prepare(statement: string) {
+        sql = statement;
+        return {
+          values: [] as unknown[],
+          bind(...values: unknown[]) {
+            this.values = values;
+            return this;
+          },
+          async run() {
+            const [nextRetryAt, message, , tradeDate] = this.values as string[];
+            if (
+              row.tradeDate === tradeDate
+              && row.key === "new-high-bootstrap"
+              && row.stage === "main"
+              && row.status === "complete"
+            ) {
+              row.status = "partial";
+              row.nextRetryAt = nextRetryAt;
+              row.message = message;
+              return { meta: { changes: 1 } };
+            }
+            return { meta: { changes: 0 } };
+          },
+        };
+      },
+    } as unknown as D1Database;
+
+    const reopened = await reopenNewHighBootstrapCheckpoint(db, {
+      tradeDate: "2026-07-24",
+      nextRetryAt: "2026-07-24T08:20:00.000Z",
+      message: "daily refresh queued 200 states for baseline rebuild",
+    });
+
+    expect(reopened).toBe(true);
+    expect(row.status).toBe("partial");
+    expect(row.nextRetryAt).toBe("2026-07-24T08:20:00.000Z");
+    expect(row.message).toContain("200 states");
+    expect(sql).toContain("job_key = 'new-high-bootstrap'");
+    expect(sql).toContain("stage = 'main'");
+    expect(sql).toContain("status = 'complete'");
   });
 
   it("keeps automatic completion separate from later manual reruns", () => {

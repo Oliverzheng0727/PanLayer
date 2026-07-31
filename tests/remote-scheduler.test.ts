@@ -156,6 +156,29 @@ describe("remote scheduler", () => {
     expect(refreshTick).not.toContainEqual({ type: "new-high-bootstrap" });
   });
 
+  it("selects a completed bootstrap after daily refresh explicitly reopens it", () => {
+    const reopenedBootstrap: JobCheckpoint = {
+      ...completedCheckpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+      status: "partial",
+      startedAt: null,
+      finishedAt: null,
+      nextRetryAt: "2026-07-24T08:20:00.000Z",
+      message: "daily refresh queued 200 states for baseline rebuild",
+    };
+    const partialRefresh: JobCheckpoint = {
+      ...checkpoint("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
+      nextRetryAt: "2026-07-24T08:20:00.000Z",
+    };
+
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:20:00.000Z"),
+      checkpoints: [partialRefresh, reopenedBootstrap],
+    });
+
+    expect(jobs).toContainEqual({ type: "new-high-bootstrap" });
+    expect(jobs).not.toContainEqual({ type: "daily-new-high-refresh" });
+  });
+
   it("rotates continuous background work while a close retry remains due", () => {
     const checkpoints = [
       checkpoint("close-review", "2026-07-24T16:10:00+08:00"),

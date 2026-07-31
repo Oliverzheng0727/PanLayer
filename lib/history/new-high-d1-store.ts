@@ -532,11 +532,46 @@ async function runD1DailyNewHighRefreshBatchInternal({
     oldestCandidateDate,
     targetDate,
   ).all<DailyNewHighContributionRow>();
+  // Historical close snapshots were introduced after the reusable 120-day
+  // per-symbol contribution cache. A state can therefore legitimately lag by
+  // several dates even though no immutable daily snapshot exists for those
+  // older dates. Extract only the required cached bars as a deterministic
+  // fallback instead of sending every such symbol through a full-history
+  // rebuild.
+  const cachedContributionRows = await db.prepare(
+    `SELECT c.symbol, c.name AS contribution_name,
+            CAST(json_extract(bar.value, '$.date') AS TEXT) AS trade_date,
+            CAST(json_extract(bar.value, '$.pctChange') AS REAL) AS pct_change,
+            CASE
+              WHEN json_type(bar.value, '$.amount') IN ('integer', 'real')
+                THEN CAST(json_extract(bar.value, '$.amount') AS REAL)
+              ELSE NULL
+            END AS amount
+       FROM history_bar_contributions c,
+            json_each(c.bars_json) AS bar
+      WHERE c.status = 'complete'
+        AND c.target_date > ?
+        AND c.symbol IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+        AND CAST(json_extract(bar.value, '$.date') AS TEXT) > ?
+        AND CAST(json_extract(bar.value, '$.date') AS TEXT) <= ?
+      ORDER BY c.symbol, trade_date`,
+  ).bind(
+    oldestCandidateDate,
+    JSON.stringify(candidateSymbols),
+    oldestCandidateDate,
+    targetDate,
+  ).all<DailyNewHighContributionRow>();
   const contributionsBySymbol = new Map<string, Map<string, DailyNewHighContributionRow>>();
   for (const row of contributionRows.results ?? []) {
     const byDate = contributionsBySymbol.get(row.symbol) ?? new Map();
     byDate.set(row.trade_date, row);
     contributionsBySymbol.set(row.symbol, byDate);
+  }
+  const cachedContributionsBySymbol = new Map<string, Map<string, DailyNewHighContributionRow>>();
+  for (const row of cachedContributionRows.results ?? []) {
+    const byDate = cachedContributionsBySymbol.get(row.symbol) ?? new Map();
+    byDate.set(row.trade_date, row);
+    cachedContributionsBySymbol.set(row.symbol, byDate);
   }
 
   const updatedStates: NewHighState[] = [];
@@ -546,11 +581,14 @@ async function runD1DailyNewHighRefreshBatchInternal({
   for (const row of candidateRows) {
     const stateExpectedDates = expectedDates.filter((date) => date > row.last_date);
     const byDate = contributionsBySymbol.get(row.symbol);
+    const cachedByDate = cachedContributionsBySymbol.get(row.symbol);
     let state = decodeNewHighStateRow(row);
     const stateDetails: HighDetail[] = [];
     let requiresRebuild = stateExpectedDates.length === 0;
     for (const tradeDate of stateExpectedDates) {
-      const contribution = byDate?.get(tradeDate);
+      // Prefer the immutable all-market close snapshot. Use the per-symbol
+      // history cache only when that older daily snapshot does not exist.
+      const contribution = byDate?.get(tradeDate) ?? cachedByDate?.get(tradeDate);
       if (!contribution) {
         requiresRebuild = true;
         break;

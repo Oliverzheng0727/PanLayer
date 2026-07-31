@@ -371,6 +371,21 @@ describe("D1 new-high state serialization", () => {
         }),
         status: "active",
       }],
+      ["000004.SZ", {
+        ...encodeNewHighState({
+          symbol: "000004.SZ",
+          name: "历史缓存补齐样本",
+          sector: "机械",
+          lastDate: "2026-07-28",
+          lastClose: 40,
+          closes: [39, 40],
+          allTimeHigh: 40,
+          allTimeHighDate: "2026-07-28",
+          firstClose: 20,
+          initializedThrough: "2026-07-28",
+        }),
+        status: "active",
+      }],
     ]);
     const expectedDates = ["2026-07-29", "2026-07-30", targetDate];
     const contributions = [
@@ -381,6 +396,12 @@ describe("D1 new-high state serialization", () => {
       ["000003.SZ", "2026-07-29", 1],
       // 000003.SZ deliberately has no 2026-07-30 row.
       ["000003.SZ", targetDate, 1],
+      // The all-market snapshot only exists for the target day for 000004.SZ.
+      ["000004.SZ", targetDate, 1],
+    ] as const;
+    const cachedContributions = [
+      ["000004.SZ", "2026-07-29", 1],
+      ["000004.SZ", "2026-07-30", 1],
     ] as const;
 
     const db = {
@@ -404,9 +425,9 @@ describe("D1 new-high state serialization", () => {
             }
             if (normalized.includes("FROM history_daily_contribution_meta")) {
               return {
-                expected_count: 3,
-                valid_count: 3,
-                non_st_count: 3,
+                expected_count: 4,
+                valid_count: 4,
+                non_st_count: 4,
                 coverage_pct: 100,
                 source: "fixture",
                 received_at: "2026-07-31T07:00:00.000Z",
@@ -431,6 +452,22 @@ describe("D1 new-high state serialization", () => {
               const symbols = new Set(JSON.parse(String(statement.args[0])) as string[]);
               return {
                 results: contributions.flatMap(([symbol, tradeDate, pctChange]) =>
+                  symbols.has(symbol)
+                    ? [{
+                        trade_date: tradeDate,
+                        symbol,
+                        contribution_name: states.get(symbol)?.name ?? symbol,
+                        pct_change: pctChange,
+                        amount: 300_000_000,
+                      }]
+                    : []
+                ),
+              };
+            }
+            if (normalized.includes("FROM history_bar_contributions c")) {
+              const symbols = new Set(JSON.parse(String(statement.args[1])) as string[]);
+              return {
+                results: cachedContributions.flatMap(([symbol, tradeDate, pctChange]) =>
                   symbols.has(symbol)
                     ? [{
                         trade_date: tradeDate,
@@ -469,15 +506,15 @@ describe("D1 new-high state serialization", () => {
     const result = await runD1DailyNewHighRefreshBatch({
       db,
       targetDate,
-      batchSize: 3,
+      batchSize: 4,
     });
 
     expect(result).toMatchObject({
-      target: 3,
-      dailyCompleted: 2,
-      dailyCoveragePct: 66.67,
+      target: 4,
+      dailyCompleted: 3,
+      dailyCoveragePct: 75,
       remaining: 1,
-      processed: 3,
+      processed: 4,
       rebuild: 1,
       status: "partial",
       error: null,
@@ -498,6 +535,11 @@ describe("D1 new-high state serialization", () => {
       last_date: "2026-07-28",
       last_close: 30,
     });
+    expect(states.get("000004.SZ")).toMatchObject({
+      status: "active",
+      last_date: targetDate,
+    });
+    expect(Number(states.get("000004.SZ")?.last_close)).toBeCloseTo(40 * 1.01 ** 3, 8);
   });
 
   it("does not advance states without a verified immutable close snapshot", async () => {
