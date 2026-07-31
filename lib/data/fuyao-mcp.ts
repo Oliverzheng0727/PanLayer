@@ -731,13 +731,36 @@ export class FuyaoMcpClient {
   async fetchAShareAdjustedBars(
     symbol: string,
     now = new Date(),
-    options: { lookbackDays?: number; fullHistory?: boolean } = {},
+    options: {
+      lookbackDays?: number;
+      fullHistory?: boolean;
+      startAt?: string | number | Date;
+      endAt?: string | number | Date;
+    } = {},
   ): Promise<AdjustedBar[]> {
-    const end = now.getTime();
+    const parseBoundary = (
+      value: string | number | Date | undefined,
+      fallback: number,
+    ) => {
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === "number") return value;
+      if (typeof value === "string") {
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return fallback;
+    };
+    const end = parseBoundary(options.endAt, now.getTime());
     const lookbackDays = Math.max(45, options.lookbackDays ?? 10 * 365);
     const start = options.fullHistory
       ? Date.parse("1990-01-01T00:00:00+08:00")
-      : end - lookbackDays * 24 * 60 * 60 * 1_000;
+      : parseBoundary(
+          options.startAt,
+          end - lookbackDays * 24 * 60 * 60 * 1_000,
+        );
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
+      throw new Error("Fuyao adjusted-bar range is invalid");
+    }
     const maximumWindowMs = 10 * 365 * 24 * 60 * 60 * 1_000;
     const windows: Array<{ start: number; end: number }> = [];
     for (let cursor = start; cursor < end; cursor += maximumWindowMs + 1) {

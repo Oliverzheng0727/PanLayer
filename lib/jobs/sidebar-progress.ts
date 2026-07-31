@@ -221,7 +221,7 @@ export function buildSidebarProgress(
     ? normalizedHistoryCheckpoint
     : !historyContribution
       ? "pending"
-      : historyContribution.dailyRemaining === 0 && historyContribution.failed === 0
+      : historyContribution.dailyComplete
         ? "complete"
         : historyContribution.completed > 0 || historyContribution.failed > 0
           ? "partial"
@@ -336,7 +336,13 @@ export function buildSidebarProgress(
           ? `${historyContribution.completed}/${historyContribution.target}`
           : "等待",
         detail: historyContribution
-          ? `基线 ${historyContribution.coveragePct.toFixed(2)}% · 今日刷新 ${historyContribution.dailyCompleted}/${historyContribution.target} · 字段核验 ${historyFieldDates}/120 日${historyContribution.failed ? ` · 可重试失败 ${historyContribution.failed}` : ""}`
+          ? `基线 ${historyContribution.coveragePct.toFixed(2)}% · ${
+            historyContribution.dailyComplete
+              ? `已同步至 ${historyContribution.targetDate} · 收盘快照 ${historyContribution.dailyCompleted}/${historyContribution.target}`
+              : historyContribution.dailyCompleted > 0
+                ? `目标 ${historyContribution.targetDate} · 收盘快照 ${historyContribution.dailyCompleted}/${historyContribution.target}`
+                : `等待 ${historyContribution.targetDate} 收盘快照 · 历史基线不重置`
+          } · 字段核验 ${historyFieldDates}/120 日${historyContribution.failed ? ` · 基线退避 ${historyContribution.failed} 只` : ""}`
           : "达到95%后回写最近120个交易日",
         updatedAt: historyContribution?.updatedAt ?? null,
         nextRetryAt: historyCheckpoint?.nextRetryAt ?? null,

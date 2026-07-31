@@ -74,6 +74,8 @@ import {
 import {
   HISTORY_CONTRIBUTION_SCHEMA_STATEMENTS,
   patchHistoricalReviewsFromContributions,
+  persistDailyHistoryContributions,
+  readDailyHistoryContributionMeta,
   runHistoryContributionBatch,
 } from "../history/contributions";
 import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
@@ -789,11 +791,78 @@ export async function loadExpectedSymbols(db: D1Database): Promise<string[]> {
 }
 
 async function persistStockUniverse(db: D1Database, quotes: Quote[], updatedAt: string) {
-  for (let offset = 0; offset < quotes.length; offset += 200) {
-    const statements = quotes.slice(offset, offset + 200).map((quote) => db.prepare(`INSERT INTO stocks (symbol, name, exchange, board, sector, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(symbol) DO UPDATE SET name=excluded.name, exchange=excluded.exchange, board=excluded.board, sector=excluded.sector, updated_at=excluded.updated_at`)
-      .bind(quote.symbol, quote.name, quote.exchange, quote.board, quote.sector, updatedAt));
-    if (statements.length) await db.batch(statements);
+  const unique = new Map(quotes.map((quote) => [quote.symbol, quote]));
+  const rows = [...unique.values()];
+  for (let offset = 0; offset < rows.length; offset += 1_000) {
+    const payload = rows.slice(offset, offset + 1_000).map((quote) => ({
+      symbol: quote.symbol,
+      name: quote.name,
+      exchange: quote.exchange,
+      board: quote.board,
+      sector: quote.sector,
+    }));
+    await db.prepare(
+      `INSERT INTO stocks (symbol, name, exchange, board, sector, updated_at)
+       SELECT CAST(json_extract(value, '$.symbol') AS TEXT),
+              CAST(json_extract(value, '$.name') AS TEXT),
+              CAST(json_extract(value, '$.exchange') AS TEXT),
+              CAST(json_extract(value, '$.board') AS TEXT),
+              CAST(json_extract(value, '$.sector') AS TEXT),
+              ?
+         FROM json_each(?)
+        WHERE true
+       ON CONFLICT(symbol) DO UPDATE SET
+         name=excluded.name,
+         exchange=excluded.exchange,
+         board=excluded.board,
+         sector=excluded.sector,
+         updated_at=excluded.updated_at`,
+    ).bind(updatedAt, JSON.stringify(payload)).run();
   }
+}
+
+function marketAggregateFromQuotes({
+  quotes,
+  expectedCount,
+  source,
+  date,
+  receivedAt,
+  upstreamStatus,
+}: {
+  quotes: Quote[];
+  expectedCount: number;
+  source: string;
+  date: string;
+  receivedAt: string;
+  upstreamStatus: "complete" | "partial" | "failed";
+}): MarketAggregate {
+  const valid = quotes.filter((quote) =>
+    Number.isFinite(quote.amount) && quote.amount >= 0
+  );
+  const denominator = Math.max(1, expectedCount, quotes.length);
+  const coveragePct = Number((valid.length / denominator * 100).toFixed(2));
+  const status = coveragePct >= 95 && upstreamStatus === "complete"
+    ? "complete" as const
+    : valid.length > 0
+      ? "partial" as const
+      : "failed" as const;
+  return {
+    amount: status === "complete"
+      ? Number((valid.reduce((sum, quote) => sum + quote.amount, 0) / 100_000_000).toFixed(2))
+      : null,
+    rawCount: quotes.length,
+    validCount: valid.length,
+    coveragePct,
+    marketTime: `${date}T15:00:00+08:00`,
+    receivedAt,
+    source,
+    status,
+    message: status === "complete"
+      ? `复用收盘全A快照，成交额覆盖率 ${coveragePct}%`
+      : `收盘全A快照成交额覆盖率 ${coveragePct}%${
+        upstreamStatus !== "complete" ? `；上游核验状态 ${upstreamStatus}` : ""
+      }`,
+  };
 }
 
 function previousWeekday(date: string): string {
@@ -1034,7 +1103,7 @@ export async function runPanLayerJob(
     const quotePrimary = fuyao
       ? {
           name: "扶摇 Fuyao",
-          getQuotes: () => fuyao.fetchAShareQuotes([]),
+          getQuotes: () => fuyao.fetchAShareQuotes([], { includeST: true }),
         }
       : provider;
     const quoteCrossSource = fuyao
@@ -1085,6 +1154,26 @@ export async function runPanLayerJob(
         const fallback = await provider.getAdjustedBars(symbol);
         if (fallback.length === 0) throw new Error("前复权历史日K暂缺");
         return fallback;
+      },
+    });
+    const createContributionBarProvider = () => ({
+      getAdjustedBars: createAdjustedBarProvider().getAdjustedBars,
+      getAdjustedBarsForRange: async (
+        symbol: string,
+        startDate: string,
+        endDate: string,
+      ) => {
+        if (fuyao) {
+          const bars = await fuyao.fetchAShareAdjustedBars(symbol, now, {
+            startAt: `${startDate}T00:00:00+08:00`,
+            endAt: `${endDate}T23:59:59+08:00`,
+          }).catch(() => []);
+          if (bars.length > 0) return bars;
+        }
+        const fallback = await provider.getAdjustedBars(symbol);
+        const ranged = fallback.filter((bar) => bar.date >= startDate && bar.date <= endDate);
+        if (ranged.length === 0) throw new Error("增量前复权日K暂缺");
+        return ranged;
       },
     });
     let finalStatus: "complete" | "partial" | "failed" = "complete";
@@ -1225,18 +1314,34 @@ export async function runPanLayerJob(
       const historyDates = await store.listBackfillDates(targetDate);
       const contributionProgress = await runHistoryContributionBatch({
         db,
-        provider: createAdjustedBarProvider(),
+        provider: createContributionBarProvider(),
         targetDate,
         backfillDates: historyDates.slice(-120),
         source: fuyao
           ? "扶摇 Fuyao / 东方财富 / 腾讯前复权日K"
           : "东方财富 / 腾讯前复权日K",
-        batchSize: 48,
-        concurrency: 4,
+        batchSize: 10,
+        concurrency: 2,
       });
-      const contributionPatch = contributionProgress.coveragePct >= 95
-        ? await patchHistoricalReviewsFromContributions({ db, targetDate })
+      const baselinePatchKey = "history-contribution-baseline-patched-v2";
+      const baselinePatchMarker = contributionProgress.coveragePct >= 95
+        ? await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
+            .bind(baselinePatchKey).first<{ value: string }>()
         : null;
+      let contributionPatch = null;
+      if (contributionProgress.coveragePct >= 95 && !baselinePatchMarker) {
+        contributionPatch = await patchHistoricalReviewsFromContributions({ db, targetDate });
+        await db.prepare(
+          `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+        ).bind(baselinePatchKey, targetDate, new Date().toISOString()).run();
+      } else if (contributionProgress.dailyCoveragePct >= 95) {
+        contributionPatch = await patchHistoricalReviewsFromContributions({
+          db,
+          targetDate,
+          reviewDates: [targetDate],
+        });
+      }
       const status = contributionProgress.remaining === 0 && contributionProgress.failed === 0
         ? "complete"
         : "partial";
@@ -1416,7 +1521,15 @@ export async function runPanLayerJob(
       const persistedCoreComplete = CLOSE_REVIEW_CORE_STAGES.every((stage) =>
         completedStages.has(stage)
       );
-      if (!options.force && existingReview && persistedCoreComplete) {
+      const persistedDailyContribution = await readDailyHistoryContributionMeta(db, date);
+      const dailyContributionComplete = persistedDailyContribution?.status === "complete"
+        && persistedDailyContribution.coveragePct >= 95;
+      if (
+        !options.force
+        && existingReview
+        && persistedCoreComplete
+        && dailyContributionComplete
+      ) {
         const backgroundHighsComplete = existingReview.metrics.high20 !== null
           && existingReview.metrics.high20 !== undefined
           && existingReview.metrics.high120 !== null
@@ -1424,6 +1537,7 @@ export async function runPanLayerJob(
         const message =
           `收盘复盘核心 complete；阶段 ${CLOSE_REVIEW_CORE_STAGES.length}/${CLOSE_REVIEW_CORE_STAGES.length}；` +
           `${backgroundHighsComplete ? "新高已核验" : "新高后台初始化中"}；` +
+          "历史宽度与成交额增量已落库；" +
           `盘中快照 ${existingReview.breadthMeta?.captured ?? existingReview.breadth.length}/6；` +
           "已复用落库结果，未重复请求行情源";
         const finishedAt = new Date().toISOString();
@@ -1496,12 +1610,26 @@ export async function runPanLayerJob(
         }
         throw new Error(quoteFailureReason);
       }
-      await persistStockUniverse(db, market.quotes, new Date().toISOString());
+      const closeReceivedAt = new Date().toISOString();
+      await persistStockUniverse(db, market.quotes, closeReceivedAt);
+      const dailyContribution = await persistDailyHistoryContributions({
+        db,
+        targetDate: date,
+        quotes: market.quotes,
+        source: market.source,
+        marketTime: `${date}T15:00:00+08:00`,
+        upstreamStatus: market.status,
+        receivedAt: closeReceivedAt,
+      });
       await finishCloseStage(
         "quotes",
         market.status,
-        market.message,
-        { quoteCount: market.quotes.length, source: market.source },
+        `${market.message}；${dailyContribution.message}`,
+        {
+          quoteCount: market.quotes.length,
+          source: market.source,
+          historyContribution: dailyContribution,
+        },
       );
       const [
         limitPool,
@@ -1553,22 +1681,28 @@ export async function runPanLayerJob(
       const disabledFuyaoDatasets = new Set<"anomalies" | "sectors">();
       if (anomalyCircuit) disabledFuyaoDatasets.add("anomalies");
       if (sectorCircuit) disabledFuyaoDatasets.add("sectors");
-      const [freshStructuredSignals, fuyaoAggregate] = fuyao
-        ? await Promise.all([
-            reuseSignals
-              ? Promise.resolve(existingReview?.structuredSignals)
-              : fuyao.fetchStructuredMarketSignals(
-                  date,
-                  now,
-                  fuyaoPool ?? undefined,
-                  { disabledDatasets: disabledFuyaoDatasets },
-                ).catch(() => undefined),
-            withRetry(
-              () => fuyao.fetchMarketAggregate([], "15:00", now),
-              { retries: 2, delayMs: 250 },
-            ).catch(() => null),
-        ])
-        : [reuseSignals ? existingReview?.structuredSignals : undefined, null] as const;
+      const freshStructuredSignals = fuyao
+        ? reuseSignals
+          ? existingReview?.structuredSignals
+          : await fuyao.fetchStructuredMarketSignals(
+              date,
+              now,
+              fuyaoPool ?? undefined,
+              { disabledDatasets: disabledFuyaoDatasets },
+            ).catch(() => undefined)
+        : reuseSignals
+          ? existingReview?.structuredSignals
+          : undefined;
+      const fuyaoAggregate = fuyao && market.source.includes("扶摇")
+        ? marketAggregateFromQuotes({
+            quotes: market.quotes,
+            expectedCount: Math.max(expectedSymbols.length, MINIMUM_ALL_A_UNIVERSE),
+            source: market.source,
+            date,
+            receivedAt: closeReceivedAt,
+            upstreamStatus: market.status,
+          })
+        : null;
       if (freshStructuredSignals && !reuseSignals) {
         const updateCircuit = async (
           dataset: "anomalies" | "sectors",
@@ -1821,6 +1955,13 @@ export async function runPanLayerJob(
       });
       const review = mergeCloseReviewWithExisting(existingReview, nextReview);
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), review.source, review.status, new Date().toISOString()).run();
+      if (dailyContribution.status === "complete") {
+        await patchHistoricalReviewsFromContributions({
+          db,
+          targetDate: date,
+          reviewDates: [date],
+        });
+      }
       await finishCloseStage(
         "assemble",
         review.status === "complete" ? "complete" : "partial",

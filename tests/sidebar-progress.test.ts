@@ -217,11 +217,13 @@ describe("sidebar progress model", () => {
       },
       background: {
         historyContribution: {
+          targetDate: "2026-07-24",
           completed: 3_730,
           target: 5_326,
           dailyCompleted: 110,
           dailyRemaining: 5_216,
           dailyCoveragePct: 2.07,
+          dailyComplete: false,
           failed: 4,
           remaining: 5_216,
           coveragePct: 70.03,
@@ -245,5 +247,37 @@ describe("sidebar progress model", () => {
       nextRetryAt: historyRetry,
     });
     expect(result.tasks.find((item) => item.key === "history-contribution")?.detail).toContain("字段核验 8/120");
+  });
+
+  it("accepts a 95% close snapshot without requiring every stock row", () => {
+    const health: DailyJobHealth = {
+      tradeDate: "2026-07-29",
+      generatedAt: "2026-07-29T08:30:00Z",
+      marketSession: true,
+      jobs: {},
+      background: {
+        historyContribution: {
+          targetDate: "2026-07-29",
+          completed: 5_532,
+          target: 5_533,
+          dailyCompleted: 5_532,
+          dailyRemaining: 1,
+          dailyCoveragePct: 99.98,
+          dailyComplete: true,
+          failed: 0,
+          remaining: 1,
+          coveragePct: 99.98,
+          updatedAt: "2026-07-29T08:20:00.000Z",
+        },
+      },
+    };
+
+    const result = buildSidebarProgress(health, progress, "complete");
+    expect(result.tasks.find((item) => item.key === "history-contribution")).toMatchObject({
+      status: "complete",
+      value: "5532/5533",
+    });
+    expect(result.tasks.find((item) => item.key === "history-contribution")?.detail)
+      .toContain("已同步至 2026-07-29");
   });
 });

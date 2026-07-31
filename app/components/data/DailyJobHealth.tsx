@@ -92,7 +92,13 @@ export function DailyJobHealthPanel({
         ? `${historyContribution.completed}/${historyContribution.target}`
         : "等待",
       detail: historyContribution
-        ? `今日刷新 ${historyContribution.dailyCompleted}/${historyContribution.target} · 字段核验 ${historyReadyDates}/120 日`
+        ? `${
+          historyContribution.dailyComplete
+            ? `已同步至 ${historyContribution.targetDate} · 收盘快照 ${historyContribution.dailyCompleted}/${historyContribution.target}`
+            : historyContribution.dailyCompleted > 0
+              ? `目标 ${historyContribution.targetDate} · 收盘快照 ${historyContribution.dailyCompleted}/${historyContribution.target}`
+              : `等待 ${historyContribution.targetDate} 收盘快照 · 历史基线不重置`
+        } · 字段核验 ${historyReadyDates}/120 日`
         : "后台独立初始化，达到95%后回写",
     },
     {

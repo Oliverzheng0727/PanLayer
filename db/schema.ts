@@ -190,6 +190,38 @@ export const historyContributionFailures = sqliteTable("history_contribution_fai
   index("history_contribution_retry_idx").on(table.nextRetryAt, table.attempts),
 ]);
 
+export const historyDailyContributions = sqliteTable("history_daily_contributions", {
+  tradeDate: text("trade_date").notNull(),
+  symbol: text("symbol").notNull(),
+  name: text("name").notNull(),
+  isST: integer("is_st", { mode: "boolean" }).notNull(),
+  pctChange: real("pct_change").notNull(),
+  amount: real("amount"),
+  source: text("source").notNull(),
+  receivedAt: text("received_at").notNull(),
+  status: text("status").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.tradeDate, table.symbol] }),
+  index("history_daily_contribution_date_idx").on(
+    table.tradeDate,
+    table.status,
+    table.receivedAt,
+  ),
+]);
+
+export const historyDailyContributionMeta = sqliteTable("history_daily_contribution_meta", {
+  tradeDate: text("trade_date").primaryKey(),
+  expectedCount: integer("expected_count").notNull(),
+  validCount: integer("valid_count").notNull(),
+  nonSTCount: integer("non_st_count").notNull(),
+  coveragePct: real("coverage_pct").notNull(),
+  source: text("source").notNull(),
+  marketTime: text("market_time"),
+  receivedAt: text("received_at").notNull(),
+  status: text("status").notNull(),
+  message: text("message").notNull().default(""),
+});
+
 export const marketSourceAudits = sqliteTable("market_source_audits", {
   tradeDate: text("trade_date").notNull(),
   snapshotTime: text("snapshot_time").notNull(),

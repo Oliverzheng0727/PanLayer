@@ -178,6 +178,48 @@ describe("Fuyao REST adapter", () => {
     expect(bars.length).toBe(windows.length);
   });
 
+  it("uses an explicit narrow range for daily contribution increments", async () => {
+    const windows: Array<{ start: number; end: number }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      windows.push({
+        start: Number(url.searchParams.get("start")),
+        end: Number(url.searchParams.get("end")),
+      });
+      return restResult({
+        item: [
+          {
+            date_ms: Date.parse("2026-07-29T00:00:00+08:00"),
+            close_price: 10,
+            turnover: 100,
+          },
+          {
+            date_ms: Date.parse("2026-07-30T00:00:00+08:00"),
+            close_price: 11,
+            turnover: 200,
+          },
+        ],
+      });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    const bars = await client.fetchAShareAdjustedBars(
+      "600000.SH",
+      new Date("2026-07-31T00:00:00Z"),
+      {
+        startAt: "2026-07-29T00:00:00+08:00",
+        endAt: "2026-07-30T23:59:59+08:00",
+      },
+    );
+
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toEqual({
+      start: Date.parse("2026-07-29T00:00:00+08:00"),
+      end: Date.parse("2026-07-30T23:59:59+08:00"),
+    });
+    expect(bars.at(-1)?.pctChange).toBe(10);
+  });
+
   it("uses the REST-only full anomaly list before candidate fallback", async () => {
     const requestedPaths: string[] = [];
     const date = "2026-07-24";
