@@ -66,10 +66,13 @@ import { runHistoryBackfillBatch } from "../history/backfill";
 import { formatEtfMetricsProgress, runEtfMetricsRefreshBatch } from "../etf/metrics-refresh";
 import { breadthCompleteness } from "../history/overview";
 import {
+  applyNewHighCountsToReview,
   createD1NewHighStateStore,
   newHighBootstrapTargetDate,
   patchBackfilledReviewHighCounts,
   refreshNewHighProgressSnapshot,
+  runD1DailyNewHighRefreshBatch,
+  type D1DailyNewHighRefreshBatchResult,
 } from "../history/new-high-d1-store";
 import {
   HISTORY_CONTRIBUTION_SCHEMA_STATEMENTS,
@@ -78,7 +81,7 @@ import {
   readDailyHistoryContributionMeta,
   runHistoryContributionBatch,
 } from "../history/contributions";
-import { newHighBootstrapRunStatus, runNewHighBootstrapBatch, updateDailyNewHighSnapshot } from "../history/new-high-pipeline";
+import { newHighBootstrapRunStatus, runNewHighBootstrapBatch } from "../history/new-high-pipeline";
 import { beijingDateParts, jobForBeijingTime, type ScheduledJob } from "./schedule";
 import {
   assessStructuredSignalCore,
@@ -970,6 +973,109 @@ async function persistOpeningBreadthBackfill({
   };
 }
 
+async function publishVerifiedDailyNewHighCounts(
+  db: D1Database,
+  result: D1DailyNewHighRefreshBatchResult,
+): Promise<boolean> {
+  if (
+    result.status !== "complete"
+    || result.high20 === null
+    || result.high120 === null
+    || result.allTimeHigh === null
+  ) return false;
+  const row = await db.prepare(
+    "SELECT payload FROM daily_reviews WHERE trade_date = ?",
+  ).bind(result.targetDate).first<{ payload: string }>();
+  if (!row?.payload) return false;
+  let review: DailyReview;
+  try {
+    review = JSON.parse(row.payload) as DailyReview;
+  } catch (error) {
+    throw new Error(
+      `cannot publish daily new-high counts for ${result.targetDate}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const verifiedAt = new Date().toISOString();
+  const withCounts = applyNewHighCountsToReview(review, {
+    high20: result.high20,
+    high120: result.high120,
+    allTimeHigh: result.allTimeHigh,
+  });
+  const patched: DailyReview = {
+    ...withCounts,
+    updatedAt: verifiedAt,
+    historyMeta: {
+      ...(withCounts.historyMeta ?? { backfilled: false, receivedAt: verifiedAt }),
+      schemaVersion: 2,
+      receivedAt: verifiedAt,
+      fields: {
+        ...withCounts.historyMeta?.fields,
+        newHighs: {
+          status: "complete",
+          source: "全市场前复权日K新高状态（收盘快照分批核验）",
+          coveragePct: result.dailyCoveragePct,
+          reason: result.remaining > 0
+            ? `已达到正式发布门槛；剩余 ${result.remaining} 只继续后台补齐`
+            : null,
+          verifiedAt,
+        },
+      },
+    },
+  };
+  await db.prepare(
+    "UPDATE daily_reviews SET payload = ?, updated_at = ? WHERE trade_date = ?",
+  ).bind(JSON.stringify(patched), verifiedAt, result.targetDate).run();
+  await recordJobCheckpoint(db, {
+    tradeDate: result.targetDate,
+    key: "close-review",
+    stage: "new-highs",
+    status: "complete",
+    attempt: 1,
+    expectedAt: expectedAtForJob(result.targetDate, "close-review"),
+    startedAt: verifiedAt,
+    finishedAt: verifiedAt,
+    nextRetryAt: null,
+    message: `新高已核验；覆盖率 ${result.dailyCoveragePct}%`,
+    resultJson: JSON.stringify(result),
+  });
+  return true;
+}
+
+async function publishHistoricalNewHighCountsWhenReady(
+  db: D1Database,
+  targetDate: string,
+  baselineCompleted: number,
+  baselineTarget: number,
+  dailyCoveragePct: number,
+): Promise<number> {
+  const baselineCoveragePct = baselineTarget > 0
+    ? Number((baselineCompleted / baselineTarget * 100).toFixed(2))
+    : 0;
+  if (baselineCoveragePct < 95) return 0;
+  const throughDate = dailyCoveragePct >= 95
+    ? targetDate
+    : (await db.prepare(
+        "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date < ?",
+      ).bind(targetDate).first<{ trade_date: string | null }>())?.trade_date ?? null;
+  if (!throughDate) return 0;
+  const markerKey = `new-high-history-published:${throughDate}`;
+  const markerValue = `${baselineCompleted}/${baselineTarget}`;
+  const marker = await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
+    .bind(markerKey).first<{ value: string }>();
+  if (marker?.value === markerValue) return 0;
+  const patched = await patchBackfilledReviewHighCounts(db, throughDate, {
+    coveragePct: baselineCoveragePct,
+  });
+  const updatedAt = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+  ).bind(markerKey, markerValue, updatedAt).run();
+  return patched;
+}
+
 export async function runPanLayerJob(
   job: ScheduledJob,
   now: Date,
@@ -1270,6 +1376,21 @@ export async function runPanLayerJob(
         batchSize: 48,
         concurrency: 4,
       });
+      const dailyMeta = await readDailyHistoryContributionMeta(db, targetDate);
+      let dailyRefresh: D1DailyNewHighRefreshBatchResult | null = null;
+      if (dailyMeta?.status === "complete" && dailyMeta.coveragePct >= 95) {
+        dailyRefresh = await runD1DailyNewHighRefreshBatch({
+          db,
+          targetDate,
+          batchSize: 200,
+        });
+        if (dailyRefresh.status === "failed") {
+          throw new Error(dailyRefresh.error ?? "daily new-high refresh failed");
+        }
+        if (dailyRefresh.status === "complete") {
+          await publishVerifiedDailyNewHighCounts(db, dailyRefresh);
+        }
+      }
       const snapshot = await refreshNewHighProgressSnapshot(db, targetDate);
       const coveragePct = snapshot.target > 0
         ? Number((snapshot.completed / snapshot.target * 100).toFixed(2))
@@ -1281,15 +1402,21 @@ export async function runPanLayerJob(
         Math.max(0, snapshot.target - snapshot.completed),
         snapshot.rebuildPending,
       );
-      if (coveragePct >= 95 && dailyCoveragePct >= 95 && snapshot.target > 0) {
-        await patchBackfilledReviewHighCounts(db, targetDate);
-      }
+      const historyPatched = await publishHistoricalNewHighCountsWhenReady(
+        db,
+        targetDate,
+        snapshot.completed,
+        snapshot.target,
+        dailyCoveragePct,
+      );
       const message =
         `new-high-baseline ${snapshot.completed}/${snapshot.target}; ` +
         `daily-refresh ${snapshot.dailyCompleted}/${snapshot.target}; ` +
         `remaining ${remaining}; failed ${snapshot.failed}; ` +
         `coverage ${coveragePct}%；daily coverage ${dailyCoveragePct}%；` +
-        `本批成功 ${progress.succeeded}/${progress.attempted}`;
+        `本批成功 ${progress.succeeded}/${progress.attempted}；` +
+        `历史回写 ${historyPatched} 日；` +
+        `${dailyRefresh ? `当日推进 ${dailyRefresh.processed} 只` : "当日收盘快照待就绪"}`;
       const status = newHighBootstrapRunStatus({
         remaining,
         failed: snapshot.failed,
@@ -1305,7 +1432,39 @@ export async function runPanLayerJob(
         remaining,
         coveragePct,
         dailyCoveragePct,
+        dailyRefresh,
+        historyPatched,
       });
+      return { ok: true, status, message };
+    } else if (job.type === "daily-new-high-refresh") {
+      const targetDate = await newHighBootstrapTargetDate(db, date);
+      const result = await runD1DailyNewHighRefreshBatch({
+        db,
+        targetDate,
+        batchSize: 200,
+      });
+      if (result.status === "failed") {
+        throw new Error(result.error ?? "daily new-high refresh failed");
+      }
+      const published = result.status === "complete"
+        ? await publishVerifiedDailyNewHighCounts(db, result)
+        : false;
+      const terminal = result.remaining === 0 && result.rebuild === 0;
+      const status = terminal ? "complete" : "partial";
+      const message =
+        `daily-new-high ${result.dailyCompleted}/${result.target} ` +
+        `(${result.dailyCoveragePct}%)；本批 ${result.processed}；` +
+        `剩余 ${result.remaining}；重建 ${result.rebuild}；` +
+        `${published ? "正式数据已发布" : "未达正式发布门槛"}`;
+      if (run?.id) {
+        await db.prepare(
+          "UPDATE job_runs SET status=?, message=?, finished_at=? WHERE id=?",
+        ).bind(status, message, new Date().toISOString(), run.id).run();
+      }
+      const noProgressRetryAt = !terminal && result.processed === 0
+        ? new Date(Date.now() + 30 * 60_000).toISOString()
+        : undefined;
+      await finishCheckpoint(status, message, { ...result }, terminal, noProgressRetryAt);
       return { ok: true, status, message };
     } else if (job.type === "history-contribution-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
@@ -1918,21 +2077,19 @@ export async function runPanLayerJob(
             coveragePct: 100,
             status: "complete" as const,
           }
-        : await updateDailyNewHighSnapshot({
-            store: createD1NewHighStateStore(db),
-            tradeDate: date,
-            quotes: market.quotes,
-          }).catch(() => ({
+        : {
             high20: null,
             high120: null,
             allTimeHigh: null,
             coveragePct: 0,
             status: "partial" as const,
-          }));
+          };
       await finishCloseStage(
         "new-highs",
         highSnapshot.status,
-        highSnapshot.status === "complete" ? "新高数据完整" : `新高覆盖率 ${highSnapshot.coveragePct}%`,
+        highSnapshot.status === "complete"
+          ? "新高数据完整"
+          : "等待16:15独立分批刷新；收盘复盘不再执行全量D1写入",
         highSnapshot,
       );
       const breadth = await loadBreadth(db, date);

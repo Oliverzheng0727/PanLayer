@@ -121,6 +121,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
   const [liveMarket, setLiveMarket] = useState<LiveMarketPayload | null>(null);
   const [currentIntradayBreadth, setCurrentIntradayBreadth] = useState(intradayBreadth);
   const [currentNewHighProgress, setCurrentNewHighProgress] = useState(newHighProgress);
+  const [currentHistory, setCurrentHistory] = useState(history);
   const [selectedHistoryDate, setSelectedHistoryDate] = useState(
     () => history.find((row) => row.date === review.date)?.date ?? history[0]?.date ?? review.date,
   );
@@ -158,9 +159,9 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
   const verifiedSectors = review.sectors.filter(isVerifiedSectorMetric);
   const activeSource = liveMarket?.source ?? review.source;
   const activeReceivedAt = liveMarket?.receivedAt ?? review.updatedAt;
-  const selectedHistoryRow = history.find((row) => row.date === selectedHistoryDate)
-    ?? history.find((row) => row.date === review.date)
-    ?? history[0]
+  const selectedHistoryRow = currentHistory.find((row) => row.date === selectedHistoryDate)
+    ?? currentHistory.find((row) => row.date === review.date)
+    ?? currentHistory[0]
     ?? null;
   const selectedHistoricalOverview = selectedHistoryRow ? historyRowToOverview(selectedHistoryRow) : null;
   const isViewingCurrentReview = selectedHistoricalOverview === null || selectedHistoricalOverview.date === review.date;
@@ -312,10 +313,11 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
               <SectionHeading eyebrow="DAILY ARCHIVE" title="历史日历" description="选择任一交易日，上方概览同步切换；表格可上下与横向滚动比较。" />
               <HistoryWorkspace
                 ref={historyWorkspaceRef}
-                initialRows={history}
+                initialRows={currentHistory}
                 initialNewHighProgress={currentNewHighProgress}
                 onSelectedRowChange={selectHistoryRow}
                 onNewHighProgressChange={setCurrentNewHighProgress}
+                onRowsChange={setCurrentHistory}
               />
             </div>
           </section>
@@ -429,7 +431,7 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
       {trendMetric && (
         <MetricTrendDrawer
           metric={trendMetric}
-          rows={history}
+          rows={currentHistory}
           currentDate={overviewDate}
           onSelectDate={selectTrendDate}
           onClose={() => setTrendMetric(null)}

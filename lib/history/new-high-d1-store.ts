@@ -1,4 +1,5 @@
 import type { NewHighState } from "./new-high-engine";
+import { applyDailyQuoteToNewHighState } from "./new-high-engine";
 import type { HighDetail } from "./high-details";
 import type { NewHighStateStore } from "./new-high-pipeline";
 import type { DailyReview } from "../domain/types";
@@ -19,6 +20,39 @@ export interface PersistedNewHighProgressSnapshot {
 
 const NEW_HIGH_PROGRESS_KEY = "new-high-progress-snapshot";
 const NEW_HIGH_PROGRESS_V2_MIGRATION_KEY = "new-high-progress-v2-migrated";
+
+export interface D1DailyNewHighRefreshBatchInput {
+  db: D1Database;
+  targetDate: string;
+  /** The D1 worker budget is protected even if a caller supplies a larger value. */
+  batchSize?: number;
+  minimumCoveragePct?: number;
+}
+
+export interface D1DailyNewHighRefreshBatchResult {
+  targetDate: string;
+  target: number;
+  dailyCompleted: number;
+  dailyCoveragePct: number;
+  remaining: number;
+  /** Rows consumed by this invocation, including rows moved to the rebuild queue. */
+  processed: number;
+  /** New-high detail rows written by this invocation. */
+  details: number;
+  /** Stale or invalid states moved to the full-history rebuild queue. */
+  rebuild: number;
+  high20: number | null;
+  high120: number | null;
+  allTimeHigh: number | null;
+  status: "complete" | "partial" | "failed";
+  error: string | null;
+}
+
+interface DailyNewHighContributionRow extends NewHighStateRow {
+  contribution_name: string;
+  pct_change: number;
+  amount: number | null;
+}
 
 export interface NewHighStateRow {
   symbol: string;
@@ -270,6 +304,380 @@ export function createD1NewHighStateStore(db: D1Database): NewHighStateStore {
   };
 }
 
+function dailyNewHighTargetStatement(db: D1Database) {
+  return db.prepare(
+    "SELECT COUNT(*) AS count FROM stocks WHERE UPPER(name) NOT LIKE '%ST%'",
+  );
+}
+
+function dailyNewHighCompletedStatement(db: D1Database, targetDate: string) {
+  return db.prepare(
+    `SELECT COUNT(*) AS count
+       FROM stocks s
+       JOIN new_high_states h ON h.symbol = s.symbol
+      WHERE UPPER(s.name) NOT LIKE '%ST%'
+        AND h.status = 'active'
+        AND h.last_date >= ?`,
+  ).bind(targetDate);
+}
+
+function dailyNewHighCoverage(completed: number, target: number) {
+  return target > 0 ? Number((completed / target * 100).toFixed(2)) : 0;
+}
+
+function dailyNewHighResult(input: {
+  targetDate: string;
+  target: number;
+  dailyCompleted: number;
+  processed?: number;
+  details?: number;
+  rebuild?: number;
+  minimumCoveragePct: number;
+  counts?: { high20: number; high120: number; allTimeHigh: number };
+  status?: "complete" | "partial" | "failed";
+  error?: string | null;
+}): D1DailyNewHighRefreshBatchResult {
+  const dailyCoveragePct = dailyNewHighCoverage(input.dailyCompleted, input.target);
+  const publishable = dailyCoveragePct >= input.minimumCoveragePct && Boolean(input.counts);
+  return {
+    targetDate: input.targetDate,
+    target: input.target,
+    dailyCompleted: input.dailyCompleted,
+    dailyCoveragePct,
+    remaining: Math.max(0, input.target - input.dailyCompleted),
+    processed: input.processed ?? 0,
+    details: input.details ?? 0,
+    rebuild: input.rebuild ?? 0,
+    high20: publishable ? input.counts!.high20 : null,
+    high120: publishable ? input.counts!.high120 : null,
+    allTimeHigh: publishable ? input.counts!.allTimeHigh : null,
+    status: input.status ?? (publishable ? "complete" : "partial"),
+    error: input.error ?? null,
+  };
+}
+
+function dailyQuoteForContribution(row: DailyNewHighContributionRow, targetDate: string) {
+  const previousClose = Number(row.last_close);
+  const pctChange = Number(row.pct_change);
+  const amount = Number(row.amount);
+  if (
+    row.amount === null
+    || row.amount === undefined
+    || !Number.isFinite(previousClose)
+    || previousClose <= 0
+    || !Number.isFinite(pctChange)
+    || pctChange <= -100
+    || !Number.isFinite(amount)
+    || amount < 0
+  ) return null;
+  const price = previousClose * (1 + pctChange / 100);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const suffix = row.symbol.toUpperCase().split(".").at(-1);
+  const exchange = suffix === "BJ" ? "BJ" : suffix === "SZ" ? "SZ" : "SH";
+  const code = row.symbol.split(".")[0];
+  const board = exchange === "BJ"
+    ? "BEIJING"
+    : exchange === "SZ" && /^(300|301)/.test(code)
+      ? "CHINEXT"
+      : exchange === "SH" && /^(688|689)/.test(code)
+        ? "STAR"
+        : "MAIN";
+  return {
+    symbol: row.symbol,
+    name: row.contribution_name || row.name,
+    exchange,
+    board,
+    isST: false,
+    isNoLimitDay: false,
+    previousClose,
+    open: price,
+    price,
+    high: price,
+    low: price,
+    pctChange,
+    amount,
+    turnoverRate: null,
+    limitUpPrice: 0,
+    limitDownPrice: 0,
+    sector: row.sector || "未分类",
+    firstLimitTime: null,
+    limitStreak: 0,
+    listingDate: null,
+    marketTime: targetDate,
+  } as const;
+}
+
+/**
+ * Advances at most 200 normalized new-high states from the immutable close
+ * snapshot. The snapshot stores pct_change rather than close, so the adjusted
+ * close is reconstructed from the state's previous adjusted close. All writes
+ * for a batch are issued together and are idempotent by date + symbol.
+ */
+async function runD1DailyNewHighRefreshBatchInternal({
+  db,
+  targetDate,
+  batchSize = 200,
+  minimumCoveragePct = 95,
+}: D1DailyNewHighRefreshBatchInput): Promise<D1DailyNewHighRefreshBatchResult> {
+  const boundedBatchSize = Math.min(200, Math.max(1, Math.floor(batchSize)));
+  const coverageThreshold = Math.min(100, Math.max(1, minimumCoveragePct));
+  const [targetRow, completedRow, metadata] = await Promise.all([
+    dailyNewHighTargetStatement(db).first<{ count: number }>(),
+    dailyNewHighCompletedStatement(db, targetDate).first<{ count: number }>(),
+    db.prepare(
+      `SELECT expected_count, valid_count, non_st_count, coverage_pct,
+              source, received_at, status
+         FROM history_daily_contribution_meta
+        WHERE trade_date = ?
+        ORDER BY received_at DESC
+        LIMIT 1`,
+    ).bind(targetDate).first<{
+      expected_count: number;
+      valid_count: number;
+      non_st_count: number;
+      coverage_pct: number;
+      source: string;
+      received_at: string;
+      status: string;
+    }>(),
+  ]);
+  const target = Number(targetRow?.count ?? 0);
+  const initialCompleted = Number(completedRow?.count ?? 0);
+  if (target <= 0) {
+    return dailyNewHighResult({
+      targetDate,
+      target,
+      dailyCompleted: initialCompleted,
+      minimumCoveragePct: coverageThreshold,
+      status: "failed",
+      error: "new-high universe is empty",
+    });
+  }
+  if (!metadata?.received_at || metadata.status !== "complete") {
+    return dailyNewHighResult({
+      targetDate,
+      target,
+      dailyCompleted: initialCompleted,
+      minimumCoveragePct: coverageThreshold,
+      status: "failed",
+      error: metadata
+        ? `daily contribution snapshot is ${metadata.status}`
+        : "daily contribution snapshot is missing",
+    });
+  }
+
+  const reference = await db.prepare(
+    `SELECT MAX(last_date) AS last_date
+       FROM new_high_states
+      WHERE status = 'active' AND last_date < ?`,
+  ).bind(targetDate).first<{ last_date: string | null }>();
+  const referenceDate = reference?.last_date ?? null;
+  if (!referenceDate) {
+    const counts = initialCompleted >= target * coverageThreshold / 100
+      ? await createD1NewHighStateStore(db).countDetails(targetDate)
+      : undefined;
+    return dailyNewHighResult({
+      targetDate,
+      target,
+      dailyCompleted: initialCompleted,
+      minimumCoveragePct: coverageThreshold,
+      counts,
+      status: counts ? "complete" : "partial",
+      error: counts ? null : "no previous new-high state is available",
+    });
+  }
+
+  const candidates = await db.prepare(
+    `SELECT h.symbol, h.name, h.sector, h.last_date, h.last_close,
+            h.closes_json, h.all_time_high, h.all_time_high_date,
+            h.first_close, h.initialized_through,
+            d.name AS contribution_name, d.pct_change, d.amount
+       FROM history_daily_contributions d
+       JOIN new_high_states h ON h.symbol = d.symbol
+       JOIN stocks s ON s.symbol = d.symbol
+      WHERE d.trade_date = ?
+        AND d.received_at = ?
+        AND d.status = 'complete'
+        AND d.is_st = 0
+        AND UPPER(s.name) NOT LIKE '%ST%'
+        AND h.status = 'active'
+        AND h.last_date < ?
+      ORDER BY h.symbol
+      LIMIT ?`,
+  ).bind(targetDate, metadata.received_at, targetDate, boundedBatchSize)
+    .all<DailyNewHighContributionRow>();
+
+  const updatedStates: NewHighState[] = [];
+  const details: HighDetail[] = [];
+  const rebuildSymbols: string[] = [];
+  for (const row of candidates.results ?? []) {
+    if (row.last_date !== referenceDate) {
+      rebuildSymbols.push(row.symbol);
+      continue;
+    }
+    const quote = dailyQuoteForContribution(row, targetDate);
+    if (!quote) {
+      rebuildSymbols.push(row.symbol);
+      continue;
+    }
+    const result = applyDailyQuoteToNewHighState(
+      decodeNewHighStateRow(row),
+      quote,
+      targetDate,
+    );
+    if (result.status === "needs-rebuild") {
+      rebuildSymbols.push(row.symbol);
+      continue;
+    }
+    if (result.status === "updated") {
+      updatedStates.push(result.state);
+      details.push(...result.details);
+    }
+  }
+
+  const updatedAt = new Date().toISOString();
+  const processedSymbols = updatedStates.map((state) => state.symbol);
+  const statePayload = updatedStates.map((state) => ({
+    ...encodeNewHighState(state),
+    updated_at: updatedAt,
+  }));
+  const detailPayload = details.map((detail) => ({
+    trade_date: detail.date,
+    type: detail.type,
+    symbol: detail.symbol,
+    name: detail.name,
+    sector: detail.sector,
+    pct_change: detail.pctChange,
+    close: detail.close,
+    high_price: detail.highPrice,
+    amount: detail.amount,
+    interval_pct: detail.intervalPct,
+    high_date: detail.highDate,
+    is_all_time: detail.isAllTime ? 1 : 0,
+  }));
+  if (processedSymbols.length > 0 || rebuildSymbols.length > 0) {
+    await db.batch([
+      db.prepare(
+        `DELETE FROM new_high_details
+          WHERE trade_date = ?
+            AND symbol IN (SELECT CAST(value AS TEXT) FROM json_each(?))`,
+      ).bind(targetDate, JSON.stringify(processedSymbols)),
+      db.prepare(
+        `INSERT INTO new_high_states
+          (symbol, name, sector, last_date, last_close, closes_json,
+           all_time_high, all_time_high_date, first_close,
+           initialized_through, status, updated_at)
+         SELECT CAST(json_extract(value, '$.symbol') AS TEXT),
+                CAST(json_extract(value, '$.name') AS TEXT),
+                CAST(json_extract(value, '$.sector') AS TEXT),
+                CAST(json_extract(value, '$.last_date') AS TEXT),
+                CAST(json_extract(value, '$.last_close') AS REAL),
+                CAST(json_extract(value, '$.closes_json') AS TEXT),
+                CAST(json_extract(value, '$.all_time_high') AS REAL),
+                CAST(json_extract(value, '$.all_time_high_date') AS TEXT),
+                CAST(json_extract(value, '$.first_close') AS REAL),
+                CAST(json_extract(value, '$.initialized_through') AS TEXT),
+                'active',
+                CAST(json_extract(value, '$.updated_at') AS TEXT)
+           FROM json_each(?)
+          WHERE true
+         ON CONFLICT(symbol) DO UPDATE SET
+           name=excluded.name, sector=excluded.sector,
+           last_date=excluded.last_date, last_close=excluded.last_close,
+           closes_json=excluded.closes_json,
+           all_time_high=excluded.all_time_high,
+           all_time_high_date=excluded.all_time_high_date,
+           first_close=excluded.first_close,
+           initialized_through=excluded.initialized_through,
+           status='active', updated_at=excluded.updated_at`,
+      ).bind(JSON.stringify(statePayload)),
+      db.prepare(
+        `INSERT INTO new_high_details
+          (trade_date, type, symbol, name, sector, pct_change, close,
+           high_price, amount, interval_pct, high_date, is_all_time)
+         SELECT CAST(json_extract(value, '$.trade_date') AS TEXT),
+                CAST(json_extract(value, '$.type') AS TEXT),
+                CAST(json_extract(value, '$.symbol') AS TEXT),
+                CAST(json_extract(value, '$.name') AS TEXT),
+                CAST(json_extract(value, '$.sector') AS TEXT),
+                CAST(json_extract(value, '$.pct_change') AS REAL),
+                CAST(json_extract(value, '$.close') AS REAL),
+                CAST(json_extract(value, '$.high_price') AS REAL),
+                CAST(json_extract(value, '$.amount') AS REAL),
+                CAST(json_extract(value, '$.interval_pct') AS REAL),
+                CAST(json_extract(value, '$.high_date') AS TEXT),
+                CAST(json_extract(value, '$.is_all_time') AS INTEGER)
+           FROM json_each(?)
+          WHERE true
+         ON CONFLICT(trade_date, type, symbol) DO UPDATE SET
+           name=excluded.name, sector=excluded.sector,
+           pct_change=excluded.pct_change, close=excluded.close,
+           high_price=excluded.high_price, amount=excluded.amount,
+           interval_pct=excluded.interval_pct,
+           high_date=excluded.high_date, is_all_time=excluded.is_all_time`,
+      ).bind(JSON.stringify(detailPayload)),
+      db.prepare(
+        `UPDATE new_high_states
+            SET status = 'rebuild', updated_at = ?
+          WHERE symbol IN (SELECT CAST(value AS TEXT) FROM json_each(?))`,
+      ).bind(updatedAt, JSON.stringify(rebuildSymbols)),
+    ]);
+  }
+
+  const finalCompletedRow = await dailyNewHighCompletedStatement(db, targetDate)
+    .first<{ count: number }>();
+  const dailyCompleted = Number(finalCompletedRow?.count ?? initialCompleted + updatedStates.length);
+  const complete = dailyNewHighCoverage(dailyCompleted, target) >= coverageThreshold;
+  const counts = complete
+    ? await createD1NewHighStateStore(db).countDetails(targetDate)
+    : undefined;
+  const processed = updatedStates.length + rebuildSymbols.length;
+  const noProgress = processed === 0 && dailyCompleted < target;
+  return dailyNewHighResult({
+    targetDate,
+    target,
+    dailyCompleted,
+    processed,
+    details: details.length,
+    rebuild: rebuildSymbols.length,
+    minimumCoveragePct: coverageThreshold,
+    counts,
+    status: complete ? "complete" : "partial",
+    error: noProgress ? "no eligible daily contribution rows remain" : null,
+  });
+}
+
+export async function runD1DailyNewHighRefreshBatch(
+  input: D1DailyNewHighRefreshBatchInput,
+): Promise<D1DailyNewHighRefreshBatchResult> {
+  try {
+    return await runD1DailyNewHighRefreshBatchInternal(input);
+  } catch (error) {
+    let target = 0;
+    let dailyCompleted = 0;
+    try {
+      const [targetRow, completedRow] = await Promise.all([
+        dailyNewHighTargetStatement(input.db).first<{ count: number }>(),
+        dailyNewHighCompletedStatement(input.db, input.targetDate).first<{ count: number }>(),
+      ]);
+      target = Number(targetRow?.count ?? 0);
+      dailyCompleted = Number(completedRow?.count ?? 0);
+    } catch {
+      // The original error is the actionable failure; health queries are best effort.
+    }
+    return dailyNewHighResult({
+      targetDate: input.targetDate,
+      target,
+      dailyCompleted,
+      minimumCoveragePct: Math.min(100, Math.max(1, input.minimumCoveragePct ?? 95)),
+      status: "failed",
+      error: (error instanceof Error ? error.message : String(error))
+        .replace(/\s+/g, " ")
+        .slice(0, 500),
+    });
+  }
+}
+
 export async function newHighBootstrapTargetDate(
   db: D1Database,
   currentDate: string,
@@ -329,7 +737,7 @@ export async function refreshNewHighProgressSnapshot(
          FROM stocks s
          JOIN new_high_states h ON h.symbol = s.symbol
         WHERE UPPER(s.name) NOT LIKE '%ST%'
-          AND h.status = 'active' AND h.initialized_through >= ?`,
+          AND h.status = 'active' AND h.last_date >= ?`,
     ).bind(targetDate).first<{ count: number }>(),
     db.prepare(
       `SELECT COUNT(*) AS count
@@ -394,7 +802,11 @@ export async function readNewHighProgressSnapshot(
 export async function patchBackfilledReviewHighCounts(
   db: D1Database,
   targetDate: string,
+  options: { coveragePct?: number } = {},
 ): Promise<number> {
+  const coveragePct = Number.isFinite(options.coveragePct)
+    ? Math.min(100, Math.max(0, Number(options.coveragePct)))
+    : 100;
   const rows = await db.prepare(
     "SELECT trade_date, payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120",
   ).bind(targetDate).all<{ trade_date: string; payload: string }>();
@@ -420,7 +832,7 @@ export async function patchBackfilledReviewHighCounts(
           newHighs: {
             status: "complete",
             source: "全市场前复权日K新高状态",
-            coveragePct: 100,
+            coveragePct,
             reason: null,
             verifiedAt,
           },

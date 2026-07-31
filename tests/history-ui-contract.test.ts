@@ -85,6 +85,22 @@ describe("PanLayer history comparison workspace UI contract", () => {
     expect(workspace).not.toContain("继续初始化");
   });
 
+  it("reloads every history page when progressive new-high coverage changes", async () => {
+    const [dashboard, workspace] = await Promise.all([
+      readFile(new URL("../app/components/Dashboard.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/components/history/HistoryWorkspace.tsx", import.meta.url), "utf8"),
+    ]);
+
+    expect(workspace).toContain("const [rows, setRows] = useState(initialRows)");
+    expect(workspace).toContain("newHighProgressFingerprint");
+    expect(workspace).toContain("while (cursor !== null && !visitedCursors.has(cursor))");
+    expect(workspace).toContain('limit: "100"');
+    expect(workspace).toContain("onRowsChange?.(refreshedRows)");
+    expect(dashboard).toContain("const [currentHistory, setCurrentHistory] = useState(history)");
+    expect(dashboard).toContain("onRowsChange={setCurrentHistory}");
+    expect(dashboard).toContain("rows={currentHistory}");
+  });
+
   it("schedules resumable initialization fairly across weekdays and weekends", async () => {
     const config = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
     expect(config).toContain('"17 * * * *"');

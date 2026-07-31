@@ -55,6 +55,17 @@ describe("daily job reconciliation", () => {
     expect(jobs).toContainEqual({ type: "etf-metrics-refresh" });
   });
 
+  it("keeps an incomplete daily new-high refresh recoverable for 24 hours", () => {
+    const jobs = planCatchUpJobs({
+      tradeDate: "2026-07-24",
+      now: new Date("2026-07-24T13:00:00Z"),
+      checkpoints: [],
+      limit: 20,
+    });
+
+    expect(jobs).toContainEqual({ type: "daily-new-high-refresh" });
+  });
+
   it("lets the hourly fallback recover a missed 01:30 history batch at 02:17", () => {
     const jobs = planCatchUpJobs({
       tradeDate: "2026-07-24",

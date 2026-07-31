@@ -4,6 +4,7 @@ export type ScheduledJob =
   | { type: "morning-brief" }
   | { type: "breadth"; time: string }
   | { type: "close-review" }
+  | { type: "daily-new-high-refresh" }
   | { type: "new-high-bootstrap" }
   | { type: "history-contribution-bootstrap" }
   | { type: "etf-metrics-refresh" }
@@ -42,6 +43,7 @@ export function jobForBeijingTime(time: string): ScheduledJob | null {
   if (BREADTH_TIMES.has(time)) return { type: "breadth", time };
   if (time === "15:30") return { type: "etf-metrics-refresh" };
   if (time === "16:10") return { type: "close-review" };
+  if (time === "16:15") return { type: "daily-new-high-refresh" };
   return null;
 }
 

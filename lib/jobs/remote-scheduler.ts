@@ -37,7 +37,8 @@ export interface SchedulerRunContext {
 }
 
 export function isCriticalSchedulerJob(job: ScheduledJob): boolean {
-  return job.type !== "new-high-bootstrap"
+  return job.type !== "daily-new-high-refresh"
+    && job.type !== "new-high-bootstrap"
     && job.type !== "history-contribution-bootstrap"
     && job.type !== "etf-metrics-refresh"
     && job.type !== "history-backfill";
@@ -213,7 +214,8 @@ export function planRemoteSchedulerJobs({
       return !checkpoint || isCheckpointRetryable(checkpoint, now);
     });
   const isContinuous = (job: ScheduledJob) => (
-    job.type === "new-high-bootstrap"
+    job.type === "daily-new-high-refresh"
+    || job.type === "new-high-bootstrap"
     || job.type === "history-contribution-bootstrap"
     || job.type === "etf-metrics-refresh"
     || job.type === "history-backfill"
@@ -230,10 +232,18 @@ export function planRemoteSchedulerJobs({
   const exactContinuous = exactJob && isContinuous(exactJob)
     ? continuous.find((job) => scheduledJobKey(job) === scheduledJobKey(exactJob))
     : null;
-  // Exact background slots are deliberate: new-high and history-contribution
-  // alternate after close so they never compete for the same upstream bars.
+  // Preserve deliberately assigned background slots so baseline and history
+  // work cannot be starved by a long daily refresh.
   if (exactContinuous) {
     return critical.length > 0 ? [critical[0], exactContinuous] : [exactContinuous];
+  }
+  // Once the 16:15 daily refresh starts, advance it on every five-minute
+  // scheduler tick until the verified coverage threshold is reached. The
+  // historical baseline and other background work resume automatically after
+  // this finite, checkpointed job completes.
+  const dailyNewHighRefresh = continuous.find((job) => job.type === "daily-new-high-refresh");
+  if (dailyNewHighRefresh) {
+    return critical.length > 0 ? [critical[0], dailyNewHighRefresh] : [dailyNewHighRefresh];
   }
   if (continuous.length === 0) return critical.slice(0, 2);
   const tick = Math.floor(now.getTime() / (5 * 60_000));

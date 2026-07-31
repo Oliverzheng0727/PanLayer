@@ -2,7 +2,7 @@
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Filter, Maximize2, Minimize2 } from "lucide-react";
-import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
+import { HISTORY_SORT_FIELDS, queryHistoryRows, type HistoryPage, type HistoryRow, type HistorySortField, type SortOrder } from "../../../lib/history/query";
 import { formatNewHighProgress, type NewHighProgress } from "../../../lib/history/new-high-progress";
 import { HistoryCalendar } from "./HistoryCalendar";
 import { HistoryTable } from "./HistoryTable";
@@ -26,13 +26,25 @@ interface HistoryWorkspaceProps {
   initialNewHighProgress: NewHighProgress;
   onSelectedRowChange?: (row: HistoryRow) => void;
   onNewHighProgressChange?: (progress: NewHighProgress) => void;
+  onRowsChange?: (rows: HistoryRow[]) => void;
 }
 
 export interface HistoryWorkspaceHandle {
   selectDate: (date: string) => void;
 }
 
-export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorkspaceProps>(function HistoryWorkspace({ initialRows = [], initialNewHighProgress, onSelectedRowChange, onNewHighProgressChange }, ref) {
+function newHighProgressFingerprint(progress: NewHighProgress) {
+  return [
+    progress.updatedAt ?? "",
+    progress.completed,
+    progress.coveragePct,
+    progress.dailyCompleted ?? "",
+    progress.dailyCoveragePct ?? "",
+  ].join("|");
+}
+
+export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorkspaceProps>(function HistoryWorkspace({ initialRows = [], initialNewHighProgress, onSelectedRowChange, onNewHighProgressChange, onRowsChange }, ref) {
+  const [rows, setRows] = useState(initialRows);
   const [sort, setSort] = useState<HistorySortField>("date");
   const [order, setOrder] = useState<SortOrder>("desc");
   const [sector, setSector] = useState("");
@@ -45,22 +57,27 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
   const [calendarCollapsed, setCalendarCollapsed] = useState(false);
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useRef({ top: 0, left: 0 });
+  const restorationStarted = useRef(false);
+  const historyRefreshInFlight = useRef(false);
+  const lastProgressFingerprint = useRef(newHighProgressFingerprint(initialNewHighProgress));
 
-  const sorted = useMemo(() => queryHistoryRows(initialRows, {
+  const sorted = useMemo(() => queryHistoryRows(rows, {
     sort,
     order,
     sector,
     cursor: 0,
-    limit: Math.max(1, initialRows.length),
-  }).items, [initialRows, order, sector, sort]);
+    limit: Math.max(1, rows.length),
+  }).items, [order, rows, sector, sort]);
   const visible = sorted.slice(0, visibleCount);
-  const strictRecognitionStart = useMemo(() => initialRows
+  const strictRecognitionStart = useMemo(() => rows
     .filter((row) => row.recognitionRanking?.schemaVersion === 2)
     .map((row) => row.date)
     .toSorted()
-    .at(0) ?? null, [initialRows]);
+    .at(0) ?? null, [rows]);
 
   useEffect(() => {
+    if (restorationStarted.current) return;
+    restorationStarted.current = true;
     let stored: StoredHistoryView = {};
     try {
       stored = JSON.parse(sessionStorage.getItem(HISTORY_VIEW_KEY) ?? "{}") as StoredHistoryView;
@@ -120,23 +137,62 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
     };
   }, [isFullscreen]);
 
+  const refreshAllHistoryRows = useCallback(async () => {
+    if (historyRefreshInFlight.current) return;
+    historyRefreshInFlight.current = true;
+    try {
+      const refreshed: HistoryRow[] = [];
+      const visitedCursors = new Set<number>();
+      let cursor: number | null = 0;
+      while (cursor !== null && !visitedCursors.has(cursor)) {
+        visitedCursors.add(cursor);
+        const params = new URLSearchParams({
+          from: "2000-01-01",
+          to: "9999-12-31",
+          sort: "date",
+          order: "desc",
+          cursor: String(cursor),
+          limit: "100",
+        });
+        const response = await fetch(`/api/v1/history?${params}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const page = await response.json() as HistoryPage;
+        if (!Array.isArray(page.items)) return;
+        refreshed.push(...page.items);
+        cursor = page.nextCursor;
+      }
+      const refreshedRows = [...new Map(refreshed.map((row) => [row.date, row])).values()]
+        .toSorted((left, right) => right.date.localeCompare(left.date));
+      setRows(refreshedRows);
+      onRowsChange?.(refreshedRows);
+    } catch {
+      return;
+    } finally {
+      historyRefreshInFlight.current = false;
+    }
+  }, [onRowsChange]);
+
   const refreshNewHighProgress = useCallback(async () => {
     const response = await fetch("/api/v1/new-high/progress", { cache: "no-store" });
     if (!response.ok) return;
     const progress = await response.json() as NewHighProgress;
+    const fingerprint = newHighProgressFingerprint(progress);
+    const historyChanged = fingerprint !== lastProgressFingerprint.current;
+    lastProgressFingerprint.current = fingerprint;
     setNewHighProgress(progress);
     onNewHighProgressChange?.(progress);
-  }, [onNewHighProgressChange]);
+    if (historyChanged) await refreshAllHistoryRows();
+  }, [onNewHighProgressChange, refreshAllHistoryRows]);
 
   useEffect(() => {
-    if (newHighProgress.complete) return;
+    if (newHighProgress.complete && newHighProgress.dailyComplete === true && (newHighProgress.rebuildPending ?? 0) === 0) return;
     const initial = window.setTimeout(() => void refreshNewHighProgress(), 0);
     const interval = window.setInterval(() => void refreshNewHighProgress(), 60_000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, [newHighProgress.complete, refreshNewHighProgress]);
+  }, [newHighProgress.complete, newHighProgress.dailyComplete, newHighProgress.rebuildPending, refreshNewHighProgress]);
 
   const cycleSort = (field: HistorySortField) => {
     setVisibleCount(12);
@@ -147,22 +203,22 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
 
   const selectDate = useCallback((date: string) => {
     setSelected(date);
-    const row = initialRows.find((item) => item.date === date);
+    const row = rows.find((item) => item.date === date);
     if (row) onSelectedRowChange?.(row);
     let index = sorted.findIndex((row) => row.date === date);
     if (index < 0 && sector) {
       setSector("");
-      index = queryHistoryRows(initialRows, {
+      index = queryHistoryRows(rows, {
         sort,
         order,
         sector: "",
         cursor: 0,
-        limit: Math.max(1, initialRows.length),
+        limit: Math.max(1, rows.length),
       }).items.findIndex((item) => item.date === date);
     }
     if (index >= visibleCount) setVisibleCount(index + 1);
     requestAnimationFrame(() => document.querySelector(`[data-history-date="${date}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }));
-  }, [initialRows, onSelectedRowChange, order, sector, sort, sorted, visibleCount]);
+  }, [onSelectedRowChange, order, rows, sector, sort, sorted, visibleCount]);
 
   useImperativeHandle(ref, () => ({ selectDate }), [selectDate]);
 
@@ -189,7 +245,7 @@ export const HistoryWorkspace = forwardRef<HistoryWorkspaceHandle, HistoryWorksp
       <div className={`history-layout ${calendarCollapsed ? "calendar-collapsed" : ""}`}>
         <HistoryCalendar
           key={selected.slice(0, 7)}
-          dates={initialRows.map((row) => row.date)}
+          dates={rows.map((row) => row.date)}
           selected={selected}
           collapsed={calendarCollapsed}
           onSelect={selectDate}

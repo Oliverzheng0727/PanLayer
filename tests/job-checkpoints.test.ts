@@ -25,11 +25,13 @@ describe("daily job checkpoints", () => {
       "breadth-15:00",
       "etf-metrics-refresh",
       "close-review",
+      "daily-new-high-refresh",
       "new-high-bootstrap",
       "history-contribution-bootstrap",
     ]));
     expect(expectedDailyJobs("2026-07-24")).toEqual(expect.arrayContaining([
       { key: "new-high-bootstrap", expectedAt: "2026-07-24T08:30:00+08:00" },
+      { key: "daily-new-high-refresh", expectedAt: "2026-07-24T16:15:00+08:00" },
       { key: "history-contribution-bootstrap", expectedAt: "2026-07-24T02:00:00+08:00" },
     ]));
   });
@@ -61,6 +63,12 @@ describe("daily job checkpoints", () => {
 
   it("keeps healthy continuous partial jobs on a five-minute cadence", () => {
     const now = new Date("2026-07-24T08:00:00.000Z");
+    expect(nextRetryAtForCheckpoint(
+      "daily-new-high-refresh",
+      "partial",
+      now,
+      20,
+    )).toBe("2026-07-24T08:05:00.000Z");
     expect(nextRetryAtForCheckpoint(
       "new-high-bootstrap",
       "partial",

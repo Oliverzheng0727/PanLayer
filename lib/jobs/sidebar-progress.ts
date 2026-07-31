@@ -41,6 +41,7 @@ export interface SidebarProgressModel {
 }
 
 const CONTINUOUS_KEYS = new Set([
+  "daily-new-high-refresh",
   "new-high-bootstrap",
   "history-contribution-bootstrap",
   "history-backfill",
@@ -204,6 +205,7 @@ export function buildSidebarProgress(
   const briefStatus = normalizeJobStatus(brief);
   const etfStatus = marketSession ? normalizeJobStatus(etf) : "closed";
   const newHighCheckpoint = health.jobs["new-high-bootstrap"];
+  const dailyNewHighCheckpoint = health.jobs["daily-new-high-refresh"];
   const normalizedNewHighCheckpoint = normalizeJobStatus(newHighCheckpoint);
   const newHighStatus: SidebarProgressStatus = normalizedNewHighCheckpoint !== "pending"
     ? normalizedNewHighCheckpoint
@@ -326,7 +328,7 @@ export function buildSidebarProgress(
         value: `${newHighProgress.completed}/${newHighProgress.target}`,
         detail: `历史覆盖 ${newHighProgress.coveragePct.toFixed(2)}% · ${newHighDaily.detail}`,
         updatedAt: newHighProgress.updatedAt,
-        nextRetryAt: newHighCheckpoint?.nextRetryAt ?? null,
+        nextRetryAt: dailyNewHighCheckpoint?.nextRetryAt ?? newHighCheckpoint?.nextRetryAt ?? null,
       },
       {
         key: "history-contribution",

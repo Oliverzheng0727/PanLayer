@@ -25,6 +25,15 @@ const checkpoint = (
   resultJson: "{}",
 });
 
+const completedCheckpoint = (
+  key: DailyJobKey,
+  expectedAt: string,
+): JobCheckpoint => ({
+  ...checkpoint(key, expectedAt),
+  status: "complete",
+  nextRetryAt: null,
+});
+
 describe("remote scheduler", () => {
   it("accepts only the configured bearer secret", () => {
     expect(isValidSchedulerAuthorization("Bearer scheduler-secret", "scheduler-secret")).toBe(true);
@@ -112,9 +121,34 @@ describe("remote scheduler", () => {
     expect(jobs).toContainEqual({ type: "breadth", time: "09:25" });
   });
 
+  it("runs the 16:15 daily new-high refresh and prioritizes its five-minute continuation", () => {
+    const exact = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:15:00.000Z"),
+      checkpoints: [],
+    });
+    expect(exact).toContainEqual({ type: "daily-new-high-refresh" });
+
+    const partialRefresh: JobCheckpoint = {
+      ...checkpoint("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
+      nextRetryAt: "2026-07-24T08:20:00.000Z",
+    };
+    const jobs = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:20:00.000Z"),
+      checkpoints: [
+        partialRefresh,
+        checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+        checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
+      ],
+    });
+    expect(jobs).toContainEqual({ type: "daily-new-high-refresh" });
+    expect(jobs).not.toContainEqual({ type: "new-high-bootstrap" });
+    expect(jobs).not.toContainEqual({ type: "history-contribution-bootstrap" });
+  });
+
   it("rotates continuous background work while a close retry remains due", () => {
     const checkpoints = [
       checkpoint("close-review", "2026-07-24T16:10:00+08:00"),
+      completedCheckpoint("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
       checkpoint("etf-metrics-refresh", "2026-07-24T15:30:00+08:00"),
       checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
       checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
@@ -167,6 +201,7 @@ describe("remote scheduler", () => {
       completed("breadth-14:00", "2026-07-24T14:00:00+08:00"),
       completed("breadth-15:00", "2026-07-24T15:00:00+08:00"),
       completed("close-review", "2026-07-24T16:10:00+08:00"),
+      completed("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
     ];
     const selected = [20, 25, 30].map((minute) => planRemoteSchedulerJobs({
       now: new Date(`2026-07-24T08:${minute}:00.000Z`),
@@ -201,7 +236,13 @@ describe("remote scheduler", () => {
     };
     const jobs = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T08:17:00.000Z"),
-      checkpoints: [main, historyMetrics, newHighComplete, contributionComplete],
+      checkpoints: [
+        main,
+        historyMetrics,
+        newHighComplete,
+        contributionComplete,
+        completedCheckpoint("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
+      ],
     });
 
     expect(jobs).toContainEqual({ type: "etf-metrics-refresh" });

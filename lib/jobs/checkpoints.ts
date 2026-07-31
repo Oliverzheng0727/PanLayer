@@ -7,6 +7,7 @@ export type DailyJobKey =
   | "morning-brief"
   | `breadth-${BreadthCheckpointTime}`
   | "close-review"
+  | "daily-new-high-refresh"
   | "new-high-bootstrap"
   | "history-contribution-bootstrap"
   | "etf-metrics-refresh"
@@ -136,6 +137,7 @@ const MARKET_SESSION_TIMES: Array<[Exclude<DailyJobKey,
   ["breadth-15:00", "15:00"],
   ["etf-metrics-refresh", "15:30"],
   ["close-review", "16:10"],
+  ["daily-new-high-refresh", "16:15"],
 ];
 
 export function expectedDailyJobs(
@@ -278,6 +280,7 @@ export function nextRetryAtForCheckpoint(
     status === "partial"
     && (
       key === "new-high-bootstrap"
+      || key === "daily-new-high-refresh"
       || key === "history-contribution-bootstrap"
       || key === "etf-metrics-refresh"
       || key === "history-backfill"

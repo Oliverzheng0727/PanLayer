@@ -18,6 +18,7 @@ const CATCH_UP_MINUTES: Record<DailyJobKey, number> = {
   "breadth-14:00": 20,
   "breadth-15:00": 20,
   "close-review": 470,
+  "daily-new-high-refresh": 24 * 60,
   "new-high-bootstrap": 24 * 60,
   "history-contribution-bootstrap": 24 * 60,
   "etf-metrics-refresh": 510,
@@ -34,6 +35,7 @@ function keyToJob(key: DailyJobKey): ScheduledJob | null {
     || key === "tier2-news-prefetch"
     || key === "morning-brief"
     || key === "close-review"
+    || key === "daily-new-high-refresh"
     || key === "new-high-bootstrap"
     || key === "history-contribution-bootstrap"
     || key === "etf-metrics-refresh"

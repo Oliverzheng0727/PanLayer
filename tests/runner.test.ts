@@ -159,6 +159,7 @@ describe("close review aggregation", () => {
   it("assigns every scheduled job a stable lease label", () => {
     expect(leaseLabelForJob({ type: "breadth", time: "10:00" })).toBe("breadth-10:00");
     expect(leaseLabelForJob({ type: "close-review" })).toBe("close-review");
+    expect(leaseLabelForJob({ type: "daily-new-high-refresh" })).toBe("daily-new-high-refresh");
     expect(leaseLabelForJob({ type: "history-backfill", days: 120 })).toBe("history-backfill");
     expect(leaseLabelForJob({ type: "history-contribution-bootstrap" })).toBe("history-contribution-bootstrap");
   });
