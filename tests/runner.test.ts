@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BRIEF_SECTION_DEFINITIONS, BRIEF_SECTION_DEFINITIONS_V3, type BriefSectionKey } from "../lib/ai/morning-brief-contract";
-import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, prepareMorningBriefRegeneration, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldFinalizeEvidenceTemplate, shouldSkipMorningBrief } from "../lib/jobs/runner";
+import { acquireJobLease, buildDailyReview, createDeadlineAwareBufferedFetcher, dailyNewHighNoProgressRetryAt, leaseLabelForJob, loadMorningBriefMarketContext, persistGlobalPoints, persistSourceAudits, prepareMorningBriefRegeneration, releaseJobLease, renewJobLease, resolveMorningBriefProvider, runPanLayerJob, shouldFinalizeEvidenceTemplate, shouldSkipMorningBrief } from "../lib/jobs/runner";
 import * as runnerModule from "../lib/jobs/runner";
 import { loadGlobalOvernightSnapshot } from "../lib/data/global/overnight";
 import type { Quote } from "../lib/domain/types";
@@ -162,6 +162,12 @@ describe("close review aggregation", () => {
     expect(leaseLabelForJob({ type: "daily-new-high-refresh" })).toBe("daily-new-high-refresh");
     expect(leaseLabelForJob({ type: "history-backfill", days: 120 })).toBe("history-backfill");
     expect(leaseLabelForJob({ type: "history-contribution-bootstrap" })).toBe("history-contribution-bootstrap");
+  });
+
+  it("aligns a no-progress daily new-high retry to an actual scheduler tick", () => {
+    expect(dailyNewHighNoProgressRetryAt(
+      new Date("2026-07-24T11:16:21.000Z"),
+    )).toBe("2026-07-24T12:00:00.000Z");
   });
 
   it("runs one resumable history-backfill batch and reports progress", async () => {

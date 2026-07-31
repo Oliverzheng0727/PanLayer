@@ -86,9 +86,9 @@ export async function executeRemoteSchedulerTick({
   });
   const checkpoints = await loadCheckpoints(db, date).catch(() => []);
   const planned = planRemoteSchedulerJobs({ now, checkpoints });
-  const [hour, minute] = time.split(":").map(Number);
-  const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
-  const exactJob = jobForBeijingTime(scheduledTime);
+  // Recovery ticks such as 19:17 must not be rounded down and mistaken for
+  // the deliberately assigned 19:15 history-contribution slot.
+  const exactJob = jobForBeijingTime(time);
   const exactKey = exactJob ? scheduledJobKey(exactJob) : null;
   const results: Array<{
     job: string;
@@ -167,8 +167,7 @@ export function planRemoteSchedulerJobs({
   const { date, time } = beijingDateParts(now);
   const marketSession = isChinaTradingWeekday(now);
   const [hour, minute] = time.split(":").map(Number);
-  const scheduledTime = `${String(hour).padStart(2, "0")}:${String(Math.floor(minute / 5) * 5).padStart(2, "0")}`;
-  const scheduledJob = jobForBeijingTime(scheduledTime);
+  const scheduledJob = jobForBeijingTime(time);
   const exactJob = marketSession
     || (scheduledJob && [
       "tier1-rss-prefetch",
@@ -222,8 +221,18 @@ export function planRemoteSchedulerJobs({
   );
   const critical = candidates.filter((job) => !isContinuous(job));
   if (!exactJob) {
-    const priority = (job: ScheduledJob) =>
-      job.type === "close-review" ? 2 : job.type === "morning-brief" ? 1 : 0;
+    const currentMinute = hour * 60 + minute;
+    const priority = (job: ScheduledJob) => {
+      if (job.type === "close-review") return 3;
+      if (job.type === "breadth") {
+        const [jobHour, jobMinute] = job.time.split(":").map(Number);
+        const ageMinutes = currentMinute - (jobHour * 60 + jobMinute);
+        // Dedicated +1/+2 minute recovery calls should preserve their market
+        // snapshot, but an old 09:25 retry must not starve the morning brief.
+        return ageMinutes >= 0 && ageMinutes <= 5 ? 2 : 0;
+      }
+      return job.type === "morning-brief" ? 1 : 0;
+    };
     critical.sort((left, right) => priority(right) - priority(left));
   }
   const continuous = candidates
@@ -237,13 +246,18 @@ export function planRemoteSchedulerJobs({
   if (exactContinuous) {
     return critical.length > 0 ? [critical[0], exactContinuous] : [exactContinuous];
   }
-  // Once the 16:15 daily refresh starts, advance it on every five-minute
-  // scheduler tick until the verified coverage threshold is reached. The
-  // historical baseline and other background work resume automatically after
-  // this finite, checkpointed job completes.
+  // A partial daily refresh can move stale states into the rebuild queue. If
+  // it then owns every recovery tick, the bootstrap job that repairs those
+  // states never runs and daily coverage remains stuck at zero. Alternate the
+  // two finite batches while both are due; exact evening background slots are
+  // still preserved above.
   const dailyNewHighRefresh = continuous.find((job) => job.type === "daily-new-high-refresh");
   if (dailyNewHighRefresh) {
-    return critical.length > 0 ? [critical[0], dailyNewHighRefresh] : [dailyNewHighRefresh];
+    const newHighBootstrap = continuous.find((job) => job.type === "new-high-bootstrap");
+    const selected = newHighBootstrap && Math.floor(minute / 5) % 2 === 0
+      ? newHighBootstrap
+      : dailyNewHighRefresh;
+    return critical.length > 0 ? [critical[0], selected] : [selected];
   }
   if (continuous.length === 0) return critical.slice(0, 2);
   const tick = Math.floor(now.getTime() / (5 * 60_000));

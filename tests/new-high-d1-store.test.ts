@@ -208,31 +208,33 @@ describe("D1 new-high state serialization", () => {
                 status: "complete",
               };
             }
-            if (normalized.includes("MAX(last_date) AS last_date")) {
-              const dates = [...states.values()]
-                .filter((state) => state.status === "active" && state.last_date < String(statement.args[0]))
-                .map((state) => state.last_date);
-              return { last_date: dates.toSorted().at(-1) ?? null };
-            }
             return null;
           },
           async all() {
-            if (normalized.includes("FROM history_daily_contributions d")) {
+            if (normalized.includes("FROM new_high_states h")) {
               const limit = Number(statement.args.at(-1));
               return {
                 results: [...states.values()]
                   .filter((state) => state.status === "active" && state.last_date < targetDate)
                   .toSorted((left, right) => left.symbol.localeCompare(right.symbol))
-                  .slice(0, limit)
-                  .flatMap((state) => {
-                    const contribution = contributions.get(state.symbol);
-                    return contribution ? [{
-                      ...state,
-                      contribution_name: contribution.name,
-                      pct_change: contribution.pctChange,
-                      amount: contribution.amount,
-                    }] : [];
-                  }),
+                  .slice(0, limit),
+              };
+            }
+            if (normalized.includes("FROM daily_reviews")) {
+              return { results: [{ trade_date: targetDate }] };
+            }
+            if (normalized.includes("FROM history_daily_contributions d")) {
+              const symbols = new Set(JSON.parse(String(statement.args[0])) as string[]);
+              return {
+                results: [...contributions]
+                  .filter(([symbol]) => symbols.has(symbol))
+                  .map(([symbol, contribution]) => ({
+                    trade_date: targetDate,
+                    symbol,
+                    contribution_name: contribution.name,
+                    pct_change: contribution.pctChange,
+                    amount: contribution.amount,
+                  })),
               };
             }
             if (normalized.includes("FROM new_high_details")) {
@@ -256,9 +258,17 @@ describe("D1 new-high state serialization", () => {
         batchCalls += 1;
         for (const statement of statements) {
           if (statement.sql.startsWith("DELETE FROM new_high_details")) {
-            const symbols = new Set(JSON.parse(String(statement.args[1])) as string[]);
+            const windows = JSON.parse(String(statement.args[1])) as Array<{
+              symbol: string;
+              afterDate: string;
+            }>;
             for (const [key, detail] of details) {
-              if (detail.trade_date === statement.args[0] && symbols.has(String(detail.symbol))) details.delete(key);
+              const window = windows.find((item) => item.symbol === detail.symbol);
+              if (
+                window
+                && String(detail.trade_date) > window.afterDate
+                && String(detail.trade_date) <= String(statement.args[0])
+              ) details.delete(key);
             }
           } else if (statement.sql.startsWith("INSERT INTO new_high_states")) {
             for (const state of JSON.parse(String(statement.args[0])) as Array<Record<string, unknown>>) {
@@ -311,6 +321,183 @@ describe("D1 new-high state serialization", () => {
     expect(third).toMatchObject({ dailyCompleted: 3, processed: 0, status: "complete" });
     expect(details.size).toBe(3);
     expect(batchCalls).toBe(2);
+  });
+
+  it("catches up each state from its own last date and rebuilds only a symbol with a missing day", async () => {
+    const targetDate = "2026-07-31";
+    const states = new Map([
+      ["000001.SZ", {
+        ...encodeNewHighState({
+          symbol: "000001.SZ",
+          name: "跨三日样本",
+          sector: "电子",
+          lastDate: "2026-07-28",
+          lastClose: 10,
+          closes: [9.8, 10],
+          allTimeHigh: 10,
+          allTimeHighDate: "2026-07-28",
+          firstClose: 5,
+          initializedThrough: "2026-07-28",
+        }),
+        status: "active",
+      }],
+      ["000002.SZ", {
+        ...encodeNewHighState({
+          symbol: "000002.SZ",
+          name: "单日样本",
+          sector: "汽车",
+          lastDate: "2026-07-30",
+          lastClose: 20,
+          closes: [19, 20],
+          allTimeHigh: 20,
+          allTimeHighDate: "2026-07-30",
+          firstClose: 10,
+          initializedThrough: "2026-07-30",
+        }),
+        status: "active",
+      }],
+      ["000003.SZ", {
+        ...encodeNewHighState({
+          symbol: "000003.SZ",
+          name: "缺中间日样本",
+          sector: "医药",
+          lastDate: "2026-07-28",
+          lastClose: 30,
+          closes: [29, 30],
+          allTimeHigh: 30,
+          allTimeHighDate: "2026-07-28",
+          firstClose: 15,
+          initializedThrough: "2026-07-28",
+        }),
+        status: "active",
+      }],
+    ]);
+    const expectedDates = ["2026-07-29", "2026-07-30", targetDate];
+    const contributions = [
+      ["000001.SZ", "2026-07-29", 1],
+      ["000001.SZ", "2026-07-30", 1],
+      ["000001.SZ", targetDate, 1],
+      ["000002.SZ", targetDate, 2],
+      ["000003.SZ", "2026-07-29", 1],
+      // 000003.SZ deliberately has no 2026-07-30 row.
+      ["000003.SZ", targetDate, 1],
+    ] as const;
+
+    const db = {
+      prepare(sql: string) {
+        const normalized = sql.replace(/\s+/g, " ").trim();
+        const statement = {
+          sql: normalized,
+          args: [] as unknown[],
+          bind(...args: unknown[]) {
+            statement.args = args;
+            return statement;
+          },
+          async first() {
+            if (normalized.includes("COUNT(*) AS count FROM stocks WHERE")) return { count: states.size };
+            if (normalized.includes("h.last_date >= ?")) {
+              return {
+                count: [...states.values()].filter((state) =>
+                  state.status === "active" && state.last_date >= String(statement.args[0])
+                ).length,
+              };
+            }
+            if (normalized.includes("FROM history_daily_contribution_meta")) {
+              return {
+                expected_count: 3,
+                valid_count: 3,
+                non_st_count: 3,
+                coverage_pct: 100,
+                source: "fixture",
+                received_at: "2026-07-31T07:00:00.000Z",
+                status: "complete",
+              };
+            }
+            return null;
+          },
+          async all() {
+            if (normalized.includes("FROM new_high_states h")) {
+              return {
+                results: [...states.values()]
+                  .filter((state) => state.status === "active" && state.last_date < targetDate)
+                  .toSorted((left, right) => left.symbol.localeCompare(right.symbol))
+                  .slice(0, Number(statement.args.at(-1))),
+              };
+            }
+            if (normalized.includes("FROM daily_reviews")) {
+              return { results: expectedDates.map((trade_date) => ({ trade_date })) };
+            }
+            if (normalized.includes("FROM history_daily_contributions d")) {
+              const symbols = new Set(JSON.parse(String(statement.args[0])) as string[]);
+              return {
+                results: contributions.flatMap(([symbol, tradeDate, pctChange]) =>
+                  symbols.has(symbol)
+                    ? [{
+                        trade_date: tradeDate,
+                        symbol,
+                        contribution_name: states.get(symbol)?.name ?? symbol,
+                        pct_change: pctChange,
+                        amount: 300_000_000,
+                      }]
+                    : []
+                ),
+              };
+            }
+            return { results: [] };
+          },
+          async run() { return { success: true }; },
+        };
+        return statement;
+      },
+      async batch(statements: Array<{ sql: string; args: unknown[] }>) {
+        for (const statement of statements) {
+          if (statement.sql.startsWith("INSERT INTO new_high_states")) {
+            for (const state of JSON.parse(String(statement.args[0])) as Array<Record<string, unknown>>) {
+              states.set(String(state.symbol), { ...state, status: "active" } as never);
+            }
+          } else if (statement.sql.startsWith("UPDATE new_high_states")) {
+            for (const symbol of JSON.parse(String(statement.args[1])) as string[]) {
+              const state = states.get(symbol);
+              if (state) state.status = "rebuild";
+            }
+          }
+        }
+        return statements.map(() => ({ success: true }));
+      },
+    } as unknown as D1Database;
+
+    const result = await runD1DailyNewHighRefreshBatch({
+      db,
+      targetDate,
+      batchSize: 3,
+    });
+
+    expect(result).toMatchObject({
+      target: 3,
+      dailyCompleted: 2,
+      dailyCoveragePct: 66.67,
+      remaining: 1,
+      processed: 3,
+      rebuild: 1,
+      status: "partial",
+      error: null,
+    });
+    expect(states.get("000001.SZ")).toMatchObject({
+      status: "active",
+      last_date: targetDate,
+      initialized_through: targetDate,
+    });
+    expect(Number(states.get("000001.SZ")?.last_close)).toBeCloseTo(10 * 1.01 ** 3, 8);
+    expect(states.get("000002.SZ")).toMatchObject({
+      status: "active",
+      last_date: targetDate,
+    });
+    expect(Number(states.get("000002.SZ")?.last_close)).toBeCloseTo(20.4, 8);
+    expect(states.get("000003.SZ")).toMatchObject({
+      status: "rebuild",
+      last_date: "2026-07-28",
+      last_close: 30,
+    });
   });
 
   it("does not advance states without a verified immutable close snapshot", async () => {

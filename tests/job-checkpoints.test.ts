@@ -101,6 +101,29 @@ describe("daily job checkpoints", () => {
     )).toBe("2026-07-24T08:05:00.000Z");
   });
 
+  it("aligns background retries to deployed Cloudflare cron ticks", () => {
+    expect(nextRetryAtForCheckpoint(
+      "daily-new-high-refresh",
+      "partial",
+      new Date("2026-07-24T11:16:21.000Z"), // 19:16:21 Beijing
+      1,
+    )).toBe("2026-07-24T11:30:00.000Z"); // 19:30 Beijing
+
+    expect(nextRetryAtForCheckpoint(
+      "new-high-bootstrap",
+      "partial",
+      new Date("2026-07-24T09:05:00.000Z"), // 17:05 Beijing
+      1,
+    )).toBe("2026-07-24T09:17:00.000Z"); // hourly recovery tick
+
+    expect(nextRetryAtForCheckpoint(
+      "daily-new-high-refresh",
+      "failed",
+      new Date("2026-07-24T11:16:21.000Z"),
+      2,
+    )).toBe("2026-07-24T11:45:00.000Z");
+  });
+
   it("retries failed breadth captures within the following minute", () => {
     const now = new Date("2026-07-24T01:25:10.000Z");
     expect(nextRetryAtForCheckpoint(

@@ -253,6 +253,51 @@ export function retryAtForAttempt(now: Date, attempt: number): string {
   return new Date(now.getTime() + delayMinutes * 60_000).toISOString();
 }
 
+function isPrimarySchedulerTick(date: Date): boolean {
+  // Cloudflare cron expressions are fixed in UTC while all product schedules
+  // are expressed in Beijing time. Shift once so UTC accessors below describe
+  // the Beijing clock without depending on the machine timezone.
+  const beijing = new Date(date.getTime() + 8 * 60 * 60_000);
+  const weekday = beijing.getUTCDay();
+  const hour = beijing.getUTCHours();
+  const minute = beijing.getUTCMinutes();
+  const isWeekday = weekday >= 1 && weekday <= 5;
+
+  // Low-frequency recovery tick: `17 * * * *`.
+  if (minute === 17) return true;
+  // Overnight research window: `*/5 17-23 * * *` UTC.
+  if (hour >= 1 && hour <= 7 && minute % 5 === 0) return true;
+  // Trading-day primary window: `*/5 0-8 * * MON-FRI` UTC.
+  if (isWeekday && hour >= 8 && hour <= 16 && minute % 5 === 0) return true;
+  // Evening background window: `0,15,30,45 10-15 * * *` UTC.
+  return hour >= 18 && hour <= 23 && minute % 15 === 0;
+}
+
+/**
+ * Return the first real Cloudflare scheduler tick at or after `earliest`.
+ * Checkpoints use this instead of displaying arbitrary +5 minute timestamps
+ * that the deployed cron cannot actually invoke (for example 19:21 Beijing).
+ */
+export function nextSchedulerTickAtOrAfter(earliest: Date): Date {
+  const candidate = new Date(earliest);
+  candidate.setUTCSeconds(0, 0);
+  if (candidate.getTime() < earliest.getTime()) {
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  }
+  for (let offset = 0; offset <= 24 * 60; offset += 1) {
+    if (isPrimarySchedulerTick(candidate)) return candidate;
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  }
+  // The cron has at least one hourly recovery tick, so this is defensive only.
+  return new Date(earliest.getTime() + 60 * 60_000);
+}
+
+function alignedRetryAt(now: Date, delayMinutes: number): string {
+  return nextSchedulerTickAtOrAfter(
+    new Date(now.getTime() + delayMinutes * 60_000),
+  ).toISOString();
+}
+
 function breadthRetryAtForAttempt(now: Date, attempt: number): string {
   const delays = [30, 60, 120];
   const delaySeconds = delays[Math.min(Math.max(attempt - 1, 0), delays.length - 1)];
@@ -274,19 +319,19 @@ export function nextRetryAtForCheckpoint(
   // Keep morning-brief retries aligned with them; the runner only regenerates
   // failed or missing modules, so completed content is never charged twice.
   if (key === "morning-brief") {
-    return new Date(now.getTime() + 5 * 60_000).toISOString();
+    return alignedRetryAt(now, 5);
   }
   if (
-    status === "partial"
-    && (
-      key === "new-high-bootstrap"
-      || key === "daily-new-high-refresh"
-      || key === "history-contribution-bootstrap"
-      || key === "etf-metrics-refresh"
-      || key === "history-backfill"
-    )
+    key === "new-high-bootstrap"
+    || key === "daily-new-high-refresh"
+    || key === "history-contribution-bootstrap"
+    || key === "etf-metrics-refresh"
+    || key === "history-backfill"
   ) {
-    return new Date(now.getTime() + 5 * 60_000).toISOString();
+    const delayMinutes = status === "partial"
+      ? 5
+      : [5, 15, 30][Math.min(Math.max(attempt - 1, 0), 2)];
+    return alignedRetryAt(now, delayMinutes);
   }
   return retryAtForAttempt(now, attempt);
 }

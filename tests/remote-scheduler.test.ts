@@ -60,13 +60,14 @@ describe("remote scheduler", () => {
     expect(jobs.length).toBeLessThanOrEqual(2);
   });
 
-  it("still plans the intended batch when GitHub starts a few minutes late", () => {
+  it("treats the hourly :17 recovery call as a recovery tick instead of rounding it to :15", () => {
     const jobs = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T13:17:00.000Z"),
       checkpoints: [],
     });
 
-    expect(jobs.some((job) => job.type === "history-contribution-bootstrap")).toBe(true);
+    expect(jobs).toContainEqual({ type: "daily-new-high-refresh" });
+    expect(jobs).not.toContainEqual({ type: "history-contribution-bootstrap" });
   });
 
   it("alternates new-high and history contributions instead of running them together", () => {
@@ -121,7 +122,7 @@ describe("remote scheduler", () => {
     expect(jobs).toContainEqual({ type: "breadth", time: "09:25" });
   });
 
-  it("runs the 16:15 daily new-high refresh and prioritizes its five-minute continuation", () => {
+  it("runs the 16:15 daily refresh then alternates it with baseline rebuild batches", () => {
     const exact = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T08:15:00.000Z"),
       checkpoints: [],
@@ -132,7 +133,7 @@ describe("remote scheduler", () => {
       ...checkpoint("daily-new-high-refresh", "2026-07-24T16:15:00+08:00"),
       nextRetryAt: "2026-07-24T08:20:00.000Z",
     };
-    const jobs = planRemoteSchedulerJobs({
+    const rebuildTick = planRemoteSchedulerJobs({
       now: new Date("2026-07-24T08:20:00.000Z"),
       checkpoints: [
         partialRefresh,
@@ -140,9 +141,19 @@ describe("remote scheduler", () => {
         checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
       ],
     });
-    expect(jobs).toContainEqual({ type: "daily-new-high-refresh" });
-    expect(jobs).not.toContainEqual({ type: "new-high-bootstrap" });
-    expect(jobs).not.toContainEqual({ type: "history-contribution-bootstrap" });
+    const refreshTick = planRemoteSchedulerJobs({
+      now: new Date("2026-07-24T08:25:00.000Z"),
+      checkpoints: [
+        partialRefresh,
+        checkpoint("new-high-bootstrap", "2026-07-24T08:30:00+08:00"),
+        checkpoint("history-contribution-bootstrap", "2026-07-24T02:00:00+08:00"),
+      ],
+    });
+
+    expect(rebuildTick).toContainEqual({ type: "new-high-bootstrap" });
+    expect(rebuildTick).not.toContainEqual({ type: "daily-new-high-refresh" });
+    expect(refreshTick).toContainEqual({ type: "daily-new-high-refresh" });
+    expect(refreshTick).not.toContainEqual({ type: "new-high-bootstrap" });
   });
 
   it("rotates continuous background work while a close retry remains due", () => {

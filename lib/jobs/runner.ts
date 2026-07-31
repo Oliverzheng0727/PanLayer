@@ -94,6 +94,7 @@ import {
 import {
   buildJobExecutionMetadata,
   expectedAtForJob,
+  nextSchedulerTickAtOrAfter,
   nextRetryAtForCheckpoint,
   readJobExecutionMetadata,
   recordJobCheckpoint,
@@ -886,6 +887,12 @@ export function leaseLabelForJob(job: ScheduledJob): string {
   return job.type === "breadth" ? `breadth-${job.time}` : job.type;
 }
 
+export function dailyNewHighNoProgressRetryAt(now = new Date()): string {
+  return nextSchedulerTickAtOrAfter(
+    new Date(now.getTime() + 30 * 60_000),
+  ).toISOString();
+}
+
 async function persistOpeningBreadthBackfill({
   db,
   date,
@@ -1043,7 +1050,32 @@ async function publishVerifiedDailyNewHighCounts(
   return true;
 }
 
-async function publishHistoricalNewHighCountsWhenReady(
+const NEW_HIGH_HISTORY_PUBLICATION_VERSION = "v2";
+
+async function readHistoricalNewHighReviewState(
+  db: D1Database,
+  throughDate: string,
+): Promise<{ total: number; missing: number }> {
+  const rows = await db.prepare(
+    "SELECT trade_date, payload FROM daily_reviews WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120",
+  ).bind(throughDate).all<{ trade_date: string; payload: string }>();
+  let missing = 0;
+  for (const row of rows.results ?? []) {
+    try {
+      const review = JSON.parse(row.payload) as DailyReview;
+      if (
+        !Number.isFinite(review.metrics.high20)
+        || !Number.isFinite(review.metrics.high120)
+        || !Number.isFinite(review.metrics.allTimeHigh)
+      ) missing += 1;
+    } catch {
+      missing += 1;
+    }
+  }
+  return { total: rows.results?.length ?? 0, missing };
+}
+
+export async function publishHistoricalNewHighCountsWhenReady(
   db: D1Database,
   targetDate: string,
   baselineCompleted: number,
@@ -1061,13 +1093,17 @@ async function publishHistoricalNewHighCountsWhenReady(
       ).bind(targetDate).first<{ trade_date: string | null }>())?.trade_date ?? null;
   if (!throughDate) return 0;
   const markerKey = `new-high-history-published:${throughDate}`;
-  const markerValue = `${baselineCompleted}/${baselineTarget}`;
+  const markerValue = `${NEW_HIGH_HISTORY_PUBLICATION_VERSION}:${baselineCompleted}/${baselineTarget}`;
   const marker = await db.prepare("SELECT value FROM bootstrap_state WHERE key = ?")
     .bind(markerKey).first<{ value: string }>();
-  if (marker?.value === markerValue) return 0;
+  const before = await readHistoricalNewHighReviewState(db, throughDate);
+  if (marker?.value === markerValue && before.total > 0 && before.missing === 0) return 0;
   const patched = await patchBackfilledReviewHighCounts(db, throughDate, {
     coveragePct: baselineCoveragePct,
   });
+  if (patched <= 0) return 0;
+  const verified = await readHistoricalNewHighReviewState(db, throughDate);
+  if (verified.total === 0 || verified.missing > 0) return patched;
   const updatedAt = new Date().toISOString();
   await db.prepare(
     `INSERT INTO bootstrap_state (key, value, updated_at) VALUES (?, ?, ?)
@@ -1443,6 +1479,17 @@ export async function runPanLayerJob(
         targetDate,
         batchSize: 200,
       });
+      const snapshot = await refreshNewHighProgressSnapshot(db, targetDate);
+      const dailyCoveragePct = snapshot.target > 0
+        ? Number((snapshot.dailyCompleted / snapshot.target * 100).toFixed(2))
+        : 0;
+      const historyPatched = await publishHistoricalNewHighCountsWhenReady(
+        db,
+        targetDate,
+        snapshot.completed,
+        snapshot.target,
+        dailyCoveragePct,
+      );
       if (result.status === "failed") {
         throw new Error(result.error ?? "daily new-high refresh failed");
       }
@@ -1455,6 +1502,7 @@ export async function runPanLayerJob(
         `daily-new-high ${result.dailyCompleted}/${result.target} ` +
         `(${result.dailyCoveragePct}%)；本批 ${result.processed}；` +
         `剩余 ${result.remaining}；重建 ${result.rebuild}；` +
+        `历史回写 ${historyPatched} 日；` +
         `${published ? "正式数据已发布" : "未达正式发布门槛"}`;
       if (run?.id) {
         await db.prepare(
@@ -1462,9 +1510,9 @@ export async function runPanLayerJob(
         ).bind(status, message, new Date().toISOString(), run.id).run();
       }
       const noProgressRetryAt = !terminal && result.processed === 0
-        ? new Date(Date.now() + 30 * 60_000).toISOString()
+        ? dailyNewHighNoProgressRetryAt(now)
         : undefined;
-      await finishCheckpoint(status, message, { ...result }, terminal, noProgressRetryAt);
+      await finishCheckpoint(status, message, { ...result, historyPatched }, terminal, noProgressRetryAt);
       return { ok: true, status, message };
     } else if (job.type === "history-contribution-bootstrap") {
       const targetDate = await newHighBootstrapTargetDate(db, date);
