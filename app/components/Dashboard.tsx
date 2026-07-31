@@ -165,6 +165,18 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     ?? null;
   const selectedHistoricalOverview = selectedHistoryRow ? historyRowToOverview(selectedHistoryRow) : null;
   const isViewingCurrentReview = selectedHistoricalOverview === null || selectedHistoricalOverview.date === review.date;
+  // Keep the latest verified close visible while today's independent new-high
+  // refresh is still running.  A pending current-day snapshot must not erase
+  // the last usable historical value (especially over weekends/holidays).
+  const latestVerifiedNewHighRow = isViewingCurrentReview
+    ? [...currentHistory]
+      .filter((row) => row.status !== "demo"
+        && row.date <= review.date
+        && row.high20 !== null
+        && row.high120 !== null
+        && row.allTimeHigh !== null)
+      .sort((left, right) => right.date.localeCompare(left.date))[0] ?? null
+    : null;
   const overviewDate = isViewingCurrentReview ? review.date : selectedHistoricalOverview.date;
   const overviewStatus = isViewingCurrentReview ? effectiveStatus : selectedHistoricalOverview.status;
   const overviewStatusView = statusViews[overviewStatus];
@@ -178,9 +190,15 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     ? structureStatus === "failed" ? null : review.metrics.consecutive
     : selectedHistoricalOverview.consecutive;
   const overviewMaxStreak = isViewingCurrentReview ? ladderHeight : selectedHistoricalOverview.maxStreak;
-  const overviewAllTimeHigh = isViewingCurrentReview ? review.metrics.allTimeHigh : selectedHistoricalOverview.allTimeHigh;
-  const overviewHigh20 = isViewingCurrentReview ? review.metrics.high20 ?? null : selectedHistoricalOverview.high20;
-  const overviewHigh120 = isViewingCurrentReview ? review.metrics.high120 : selectedHistoricalOverview.high120;
+  const overviewAllTimeHigh = isViewingCurrentReview
+    ? review.metrics.allTimeHigh ?? latestVerifiedNewHighRow?.allTimeHigh ?? null
+    : selectedHistoricalOverview.allTimeHigh;
+  const overviewHigh20 = isViewingCurrentReview
+    ? review.metrics.high20 ?? latestVerifiedNewHighRow?.high20 ?? null
+    : selectedHistoricalOverview.high20;
+  const overviewHigh120 = isViewingCurrentReview
+    ? review.metrics.high120 ?? latestVerifiedNewHighRow?.high120 ?? null
+    : selectedHistoricalOverview.high120;
   const overviewClosePremium = isViewingCurrentReview ? review.premium.closePct : selectedHistoricalOverview.closePremium;
   const overviewOpenPremium = isViewingCurrentReview ? review.premium.openPct : selectedHistoricalOverview.openPremium;
   const overviewMarginBalance = isViewingCurrentReview ? review.metrics.marginBalance : selectedHistoricalOverview.marginBalance;
@@ -195,7 +213,12 @@ export function Dashboard({ review, brief, etfs, history, newHighProgress, dataH
     && overviewHigh120 === null
     && overviewAllTimeHigh === null
     ? `20日新高 / 120日新高 / 历史新高暂缺 · ${formatNewHighProgress(currentNewHighProgress, { includeDaily: false })}`
-    : `20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`;
+    : `${latestVerifiedNewHighRow
+      && (review.metrics.high20 === null
+        || review.metrics.high120 === null
+        || review.metrics.allTimeHigh === null)
+      ? `最新已核验 ${latestVerifiedNewHighRow.date} · `
+      : ""}20日新高 ${overviewHigh20 ?? "暂缺"} · 120日新高 ${overviewHigh120 ?? "暂缺"}`;
   const selectHistoryRow = useCallback((row: HistoryRow) => setSelectedHistoryDate(row.date), []);
   const selectTrendDate = useCallback((date: string) => {
     setSelectedHistoryDate(date);

@@ -1171,7 +1171,25 @@ export async function publishHistoricalNewHighCountsWithDiagnostics(
       baselineCoveragePct,
     });
   }
-  const requestedThroughDate = dailyCoveragePct >= NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT
+  // A close review is a completed market snapshot even when its independent
+  // new-high refresh is still running.  Do not hide that day's historical
+  // counts behind the next trading day's refresh (which made Friday/weekend
+  // pages appear empty until Tuesday).  Only fall back to the previous review
+  // when the target review itself has not reached the assembled close stage.
+  const targetReview = await db.prepare(
+    "SELECT trade_date FROM daily_reviews WHERE trade_date = ?",
+  ).bind(targetDate).first<{ trade_date: string | null }>();
+  const targetAssembled = await db.prepare(
+    `SELECT status FROM job_checkpoints
+       WHERE trade_date = ? AND job_key = 'close-review' AND stage = 'assemble'
+       ORDER BY updated_at DESC LIMIT 1`,
+  ).bind(targetDate).first<{ status: string | null }>();
+  const targetIsClosed = Boolean(
+    targetReview?.trade_date
+      && (dailyCoveragePct >= NEW_HIGH_HISTORY_MINIMUM_COVERAGE_PCT
+        || targetAssembled?.status === "complete"),
+  );
+  const requestedThroughDate = targetIsClosed
     ? targetDate
     : (await db.prepare(
         "SELECT MAX(trade_date) AS trade_date FROM daily_reviews WHERE trade_date < ?",

@@ -15,6 +15,7 @@ interface FakeD1Options {
   applyUpdates?: boolean;
   verifiedStateThroughDate?: string | null;
   historicalCompleted?: number;
+  assembledDates?: string[];
 }
 
 function reviewFor(date: string): DailyReview {
@@ -34,6 +35,7 @@ function fakeD1(options: FakeD1Options = {}) {
   const details = new Map(Object.entries(options.details ?? {}));
   const markers = new Map(Object.entries(options.markers ?? {}));
   const applyUpdates = options.applyUpdates ?? true;
+  const assembledDates = new Set(options.assembledDates ?? []);
 
   function prepare(sql: string) {
     const normalized = sql.replace(/\s+/g, " ").trim();
@@ -59,6 +61,14 @@ function fakeD1(options: FakeD1Options = {}) {
           return { last_date: options.verifiedStateThroughDate === undefined
             ? fallback
             : options.verifiedStateThroughDate } as T;
+        }
+        if (normalized.startsWith("SELECT trade_date FROM daily_reviews WHERE trade_date = ?")) {
+          const date = String(statement.args[0]);
+          return (reviews.has(date) ? { trade_date: date } : null) as T;
+        }
+        if (normalized.startsWith("SELECT status FROM job_checkpoints")) {
+          const date = String(statement.args[0]);
+          return (assembledDates.has(date) ? { status: "complete" } : null) as T;
         }
         if (
           normalized.startsWith("SELECT COUNT(*) AS count FROM stocks s")
@@ -249,6 +259,38 @@ describe("historical new-high publication", () => {
     });
     expect(harness.readReview("2026-07-29").metrics.high20).toBe(18);
     expect(harness.readReview("2026-07-30").metrics.high20).toBeNull();
+  });
+
+  it("publishes the assembled latest close without waiting for the next trading day", async () => {
+    const harness = fakeD1({
+      reviews: {
+        "2026-07-31": reviewFor("2026-07-31"),
+      },
+      details: {
+        "2026-07-31": { high20: 24, high120: 15, allTimeHigh: 7 },
+      },
+      assembledDates: ["2026-07-31"],
+    });
+
+    const result = await publishHistoricalNewHighCountsWithDiagnostics(
+      harness.db,
+      "2026-07-31",
+      99,
+      100,
+      0,
+    );
+
+    expect(result).toMatchObject({
+      patched: 1,
+      reason: "published",
+      requestedThroughDate: "2026-07-31",
+      throughDate: "2026-07-31",
+    });
+    expect(harness.readReview("2026-07-31").metrics).toMatchObject({
+      high20: 24,
+      high120: 15,
+      allTimeHigh: 7,
+    });
   });
 
   it("reports the exact readiness gate instead of an unexplained zero", async () => {
