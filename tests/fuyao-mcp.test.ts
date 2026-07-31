@@ -149,6 +149,35 @@ describe("Fuyao REST adapter", () => {
     expect(snapshotSizes.toSorted((left, right) => right - left)).toEqual([100, 100, 5]);
   });
 
+  it("paginates the Fuyao ticker catalogue instead of truncating at 10,000", async () => {
+    const firstPage = Array.from({ length: 10_000 }, (_, index) => ({
+      thscode: `${String(600000 + index).padStart(6, "0")}.SH`,
+      ticker: String(600000 + index).padStart(6, "0"),
+      name: `测试${index}`,
+      exchange: "SH",
+      asset_type: "a-share",
+    }));
+    const secondPage = [{
+      thscode: "000001.SZ",
+      ticker: "000001",
+      name: "平安银行",
+      exchange: "SZ",
+      asset_type: "a-share",
+    }];
+    const offsets: number[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname !== "/api/meta/tickers/list") return new Response("unexpected", { status: 500 });
+      const offset = Number(url.searchParams.get("offset"));
+      offsets.push(offset);
+      return restResult({ item: offset === 0 ? firstPage : secondPage });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.listTickers("a-share")).resolves.toHaveLength(10_001);
+    expect(offsets).toEqual([0, 10_000]);
+  });
+
   it("splits full-history adjusted bars into official ten-year windows", async () => {
     const windows: Array<{ start: number; end: number }> = [];
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -176,6 +205,27 @@ describe("Fuyao REST adapter", () => {
     expect(windows.length).toBeGreaterThan(1);
     expect(windows.every((window) => window.end - window.start <= 10 * 365 * 86_400_000)).toBe(true);
     expect(bars.length).toBe(windows.length);
+  });
+
+  it("rejects inconsistent adjusted closes across overlapping windows", async () => {
+    let calls = 0;
+    const fetcher = vi.fn(async () => {
+      calls += 1;
+      return restResult({
+        item: [{
+          date_ms: Date.parse("2016-01-04T00:00:00+08:00"),
+          close_price: calls === 1 ? 10 : 11,
+        }],
+      });
+    });
+    const client = createFuyaoMcpClient({ apiKey: "secret", fetcher: fetcher as typeof fetch });
+
+    await expect(client.fetchAShareAdjustedBars(
+      "600000.SH",
+      new Date("2026-07-28T00:00:00Z"),
+      { fullHistory: true },
+    )).rejects.toThrow("forward-adjusted history mismatch");
+    expect(calls).toBeGreaterThan(1);
   });
 
   it("uses an explicit narrow range for daily contribution increments", async () => {
