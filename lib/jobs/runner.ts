@@ -43,7 +43,7 @@ import {
   createFuyaoMcpClient,
   mergeVerifiedIndexSnapshots,
 } from "../data/fuyao-mcp";
-import type { BoardPools, IndexSnapshot, MarketAggregate } from "../data/provider";
+import type { AdjustedBar, BoardPools, IndexSnapshot, MarketAggregate } from "../data/provider";
 import { loadGlobalOvernightSnapshot } from "../data/global/overnight";
 import type { GlobalPoint } from "../data/global/types";
 import { runDomesticPipeline } from "../data/market-pipeline";
@@ -1503,13 +1503,24 @@ export async function runPanLayerJob(
     };
     const createAdjustedBarProvider = () => ({
       getAdjustedBars: async (symbol: string) => {
+        let fuyaoError: unknown;
         if (fuyao) {
-          const bars = await fuyao
-            .fetchAShareAdjustedBars(symbol, now, { fullHistory: true })
-            .catch(() => []);
-          if (bars.length > 0) return bars;
+          try {
+            const bars = await fuyao.fetchAShareAdjustedBars(symbol, now, { fullHistory: true });
+            if (bars.length > 0) return bars;
+            fuyaoError = new Error("扶摇返回空的前复权日K");
+          } catch (error) {
+            fuyaoError = error;
+          }
         }
-        const fallback = await provider.getAdjustedBars(symbol);
+        let fallback: AdjustedBar[];
+        try {
+          fallback = await provider.getAdjustedBars(symbol);
+        } catch (error) {
+          const primary = fuyaoError instanceof Error ? fuyaoError.message : fuyaoError ? String(fuyaoError) : "未配置扶摇";
+          const backup = error instanceof Error ? error.message : String(error);
+          throw new Error(`前复权历史日K不可用；扶摇：${primary}；备用源：${backup}`);
+        }
         if (fallback.length === 0) throw new Error("前复权历史日K暂缺");
         return fallback;
       },
@@ -1521,14 +1532,27 @@ export async function runPanLayerJob(
         startDate: string,
         endDate: string,
       ) => {
+        let fuyaoError: unknown;
         if (fuyao) {
-          const bars = await fuyao.fetchAShareAdjustedBars(symbol, now, {
-            startAt: `${startDate}T00:00:00+08:00`,
-            endAt: `${endDate}T23:59:59+08:00`,
-          }).catch(() => []);
-          if (bars.length > 0) return bars;
+          try {
+            const bars = await fuyao.fetchAShareAdjustedBars(symbol, now, {
+              startAt: `${startDate}T00:00:00+08:00`,
+              endAt: `${endDate}T23:59:59+08:00`,
+            });
+            if (bars.length > 0) return bars;
+            fuyaoError = new Error("扶摇返回空的增量前复权日K");
+          } catch (error) {
+            fuyaoError = error;
+          }
         }
-        const fallback = await provider.getAdjustedBars(symbol);
+        let fallback: AdjustedBar[];
+        try {
+          fallback = await provider.getAdjustedBars(symbol);
+        } catch (error) {
+          const primary = fuyaoError instanceof Error ? fuyaoError.message : fuyaoError ? String(fuyaoError) : "未配置扶摇";
+          const backup = error instanceof Error ? error.message : String(error);
+          throw new Error(`增量前复权日K不可用；扶摇：${primary}；备用源：${backup}`);
+        }
         const ranged = fallback.filter((bar) => bar.date >= startDate && bar.date <= endDate);
         if (ranged.length === 0) throw new Error("增量前复权日K暂缺");
         return ranged;

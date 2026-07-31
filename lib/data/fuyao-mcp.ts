@@ -421,11 +421,16 @@ class FuyaoRestTransportError extends Error {
 
 class FuyaoBusinessError extends Error {
   readonly code: number;
+  readonly requestId?: string;
 
-  constructor(tool: string, code: number, message: string) {
-    super(`Fuyao ${tool} code ${code}: ${message || "request failed"}`);
+  constructor(tool: string, code: number, message: string, requestId?: string) {
+    super(
+      `Fuyao ${tool} code ${code}: ${message || "request failed"}` +
+      (requestId ? ` (request_id=${requestId})` : ""),
+    );
     this.name = "FuyaoBusinessError";
     this.code = code;
+    this.requestId = requestId;
   }
 }
 
@@ -543,7 +548,7 @@ export class FuyaoMcpClient {
     if (!response.ok) throw new Error(`Fuyao MCP ${tool} ${response.status}`);
     const envelope = parseToolPayload(await response.json() as FuyaoMcpResponse<T>);
     if (envelope.code !== 0) {
-      throw new FuyaoBusinessError(tool, envelope.code, envelope.message);
+      throw new FuyaoBusinessError(tool, envelope.code, envelope.message, envelope.request_id);
     }
     return envelope;
   }
@@ -586,7 +591,7 @@ export class FuyaoMcpClient {
       throw new FuyaoRestTransportError(`Fuyao REST ${tool} returned an invalid envelope`);
     }
     if (envelope.code !== 0) {
-      throw new FuyaoBusinessError(tool, envelope.code, envelope.message);
+      throw new FuyaoBusinessError(tool, envelope.code, envelope.message, envelope.request_id);
     }
     return envelope;
   }
@@ -624,11 +629,36 @@ export class FuyaoMcpClient {
   async listTickers(assetType: "a-share" | "fund-etf"): Promise<FuyaoTicker[]> {
     let cached = this.tickerCache.get(assetType);
     if (!cached) {
-      cached = this.call<FuyaoSnapshotData<FuyaoTicker>>(
-        "meta",
-        "get_meta_tickers_list",
-        { asset_type: assetType, limit: 10_000, offset: 0 },
-      ).then((data) => data.item ?? []).catch((error) => {
+      cached = (async () => {
+        // Fuyao documents `limit` as the page size and requires callers to
+        // advance `offset` until a page is shorter than the requested limit.
+        // Keeping this loop here prevents a silently truncated universe when
+        // the catalogue grows beyond 10,000 records.
+        const limit = 10_000;
+        const rows: FuyaoTicker[] = [];
+        const seen = new Set<string>();
+        for (let offset = 0; offset <= 1_000_000; offset += limit) {
+          const data = await this.call<FuyaoSnapshotData<FuyaoTicker>>(
+            "meta",
+            "get_meta_tickers_list",
+            { asset_type: assetType, limit, offset },
+          );
+          const page = data.item ?? [];
+          let added = 0;
+          for (const ticker of page) {
+            const key = ticker.thscode || ticker.ticker;
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            rows.push(ticker);
+            added += 1;
+          }
+          if (page.length < limit) break;
+          if (added === 0) {
+            throw new Error(`Fuyao ${assetType} ticker pagination did not advance at offset ${offset}`);
+          }
+        }
+        return rows;
+      })().catch((error) => {
         this.tickerCache.delete(assetType);
         throw error;
       });
@@ -688,17 +718,18 @@ export class FuyaoMcpClient {
       }
     };
     await Promise.all(Array.from({ length: Math.min(3, batches.length) }, worker));
-    const coverage = rows.length / Math.max(1, requested.length);
-    if (coverage < MINIMUM_FUYAO_QUOTE_COVERAGE) {
-      throw new Error(`Fuyao A-share coverage ${(coverage * 100).toFixed(2)}%`);
-    }
     const names = new Map((await tickersPromise).map((item) => [securityMeta(item.thscode).symbol, item.name]));
-    return rows.flatMap((row) => {
+    const quotes = rows.flatMap((row) => {
       const meta = securityMeta(row.thscode);
       const name = names.get(meta.symbol) ?? row.ticker ?? meta.code;
       const quote = quoteFromPriceRow(row, name);
       return quote ? [quote] : [];
-    }).filter((item) => options.includeST || !item.isST);
+    });
+    const coverage = quotes.length / Math.max(1, requested.length);
+    if (coverage < MINIMUM_FUYAO_QUOTE_COVERAGE) {
+      throw new Error(`Fuyao A-share valid quote coverage ${(coverage * 100).toFixed(2)}%`);
+    }
+    return quotes.filter((item) => options.includeST || !item.isST);
   }
 
   async fetchMarketAggregate(
@@ -763,8 +794,14 @@ export class FuyaoMcpClient {
     }
     const maximumWindowMs = 10 * 365 * 24 * 60 * 60 * 1_000;
     const windows: Array<{ start: number; end: number }> = [];
-    for (let cursor = start; cursor < end; cursor += maximumWindowMs + 1) {
-      windows.push({ start: cursor, end: Math.min(end, cursor + maximumWindowMs) });
+    const overlapMs = 7 * 24 * 60 * 60 * 1_000;
+    for (let cursor = start; cursor < end;) {
+      const windowEnd = Math.min(end, cursor + maximumWindowMs);
+      windows.push({ start: cursor, end: windowEnd });
+      if (windowEnd >= end) break;
+      // Overlap adjacent windows so an adjusted-price anchor change cannot
+      // go unnoticed at a hard ten-year boundary.
+      cursor = Math.max(cursor + 1, windowEnd - overlapMs);
     }
     const rows: FuyaoHistoricalRow[] = [];
     for (const window of windows) {
@@ -789,17 +826,29 @@ export class FuyaoMcpClient {
         throw error;
       }
     }
-    const bars = [...new Map(rows.flatMap((row) => {
+    const barsByDate = new Map<string, AdjustedBar>();
+    for (const row of rows) {
       const close = finiteNumber(row.close_price);
-      if (!row.date_ms || close <= 0) return [];
+      if (!row.date_ms || close <= 0) continue;
       const date = dateFromMilliseconds(row.date_ms);
-      return [[date, {
+      const existing = barsByDate.get(date);
+      if (existing) {
+        const relativeDifference = Math.abs(existing.close - close) / Math.max(existing.close, close, 0.01);
+        if (relativeDifference > 0.0015) {
+          throw new Error(
+            `Fuyao forward-adjusted history mismatch for ${securityMeta(symbol).symbol} on ${date}`,
+          );
+        }
+        continue;
+      }
+      barsByDate.set(date, {
         date,
         close,
         volume: row.volume === undefined ? undefined : finiteNumber(row.volume),
         amount: row.turnover === undefined ? undefined : finiteNumber(row.turnover),
-      }] as const];
-    })).values()].toSorted((left, right) => left.date.localeCompare(right.date));
+      });
+    }
+    const bars = [...barsByDate.values()].toSorted((left, right) => left.date.localeCompare(right.date));
     return bars.map((bar, index) => ({
       ...bar,
       pctChange: index > 0 && bars[index - 1].close > 0
