@@ -1427,6 +1427,13 @@ export async function runPanLayerJob(
     ).bind(date, checkpointKey).first<{ attempt: number; result_json: string }>();
     checkpointAttempt = Number(previousCheckpoint?.attempt ?? 0) + 1;
     previousExecution = readJobExecutionMetadata(previousCheckpoint?.result_json);
+    if (options.force && job.type === "daily-new-high-refresh") {
+      await reopenDailyNewHighRefreshCheckpoint(db, {
+        tradeDate: date,
+        nextRetryAt: now.toISOString(),
+        message: "protected daily new-high continuation started",
+      });
+    }
     await recordJobCheckpoint(db, {
       tradeDate: date,
       key: checkpointKey,
@@ -1711,7 +1718,7 @@ export async function runPanLayerJob(
         : false;
       if (result.rebuild > 0) {
         const rebuildRetryAt = nextSchedulerTickAtOrAfter(
-          new Date(Date.now() + 60_000),
+          new Date(Math.max(Date.now(), now.getTime()) + 60_000),
         ).toISOString();
         await reopenNewHighBootstrapCheckpoint(db, {
           tradeDate: date,
@@ -1719,7 +1726,9 @@ export async function runPanLayerJob(
           message: `daily refresh queued ${result.rebuild} states for baseline rebuild`,
         });
       }
-      const terminal = result.remaining === 0 && result.rebuild === 0;
+      const latestTargetDate = await newHighBootstrapTargetDate(db, date);
+      const targetAdvanced = latestTargetDate > targetDate;
+      const terminal = result.remaining === 0 && result.rebuild === 0 && !targetAdvanced;
       const status = terminal ? "complete" : "partial";
       const message =
         `daily-new-high ${result.dailyCompleted}/${result.target} ` +
@@ -1729,6 +1738,7 @@ export async function runPanLayerJob(
         `${historyPublication.throughDate ? `，截至 ${historyPublication.throughDate}` : ""}` +
         `${historyPublication.reviewTotal > 0 ? `，记录 ${historyPublication.reviewTotal}` : ""}` +
         `${historyPublication.missingBefore > 0 ? `，写前缺失 ${historyPublication.missingBefore}` : ""}）；` +
+        `${targetAdvanced ? `收盘目标已推进至 ${latestTargetDate}，已排队继续；` : ""}` +
         `${published ? "正式数据已发布" : "未达正式发布门槛"}`;
       if (run?.id) {
         await db.prepare(
@@ -1740,7 +1750,7 @@ export async function runPanLayerJob(
         : undefined;
       if (!terminal) {
         const dailyRetryAt = noProgressRetryAt ?? nextSchedulerTickAtOrAfter(
-          new Date(Date.now() + 60_000),
+          new Date(Math.max(Date.now(), now.getTime()) + 60_000),
         ).toISOString();
         await reopenDailyNewHighRefreshCheckpoint(db, {
           tradeDate: date,
@@ -2400,6 +2410,13 @@ export async function runPanLayerJob(
       });
       const review = mergeCloseReviewWithExisting(existingReview, nextReview);
       await db.prepare(`INSERT INTO daily_reviews (trade_date, payload, source, status, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(trade_date) DO UPDATE SET payload=excluded.payload, source=excluded.source, status=excluded.status, updated_at=excluded.updated_at`).bind(date, JSON.stringify(review), review.source, review.status, new Date().toISOString()).run();
+      await reopenDailyNewHighRefreshCheckpoint(db, {
+        tradeDate: date,
+        nextRetryAt: nextSchedulerTickAtOrAfter(
+          new Date(Math.max(Date.now(), now.getTime()) + 60_000),
+        ).toISOString(),
+        message: `close review ${date} persisted; daily new-high target must be reconciled`,
+      });
       if (dailyContribution.status === "complete") {
         await patchHistoricalReviewsFromContributions({
           db,
