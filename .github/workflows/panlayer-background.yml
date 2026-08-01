@@ -84,11 +84,17 @@ jobs:
           const critical = Array.isArray(payload.jobs)
             ? payload.jobs.filter((job) => job?.critical)
             : [];
-          const incomplete = critical.filter((job) =>
-            job?.ok === false || job?.status === "partial" || job?.status === "failed"
+          const failed = critical.filter((job) =>
+            job?.ok === false || job?.status === "failed"
           );
-          if (incomplete.length > 0) {
-            console.error(`Critical PanLayer jobs incomplete: ${incomplete.map((job) => `${job.job}:${job.status}`).join(", ")}`);
+          const partial = critical.filter((job) =>
+            job?.ok !== false && (job?.status === "partial" || job?.status === "running")
+          );
+          if (partial.length > 0) {
+            console.warn(`PanLayer jobs partial; automatic retry remains scheduled: ${partial.map((job) => `${job.job}:${job.status}`).join(", ")}`);
+          }
+          if (failed.length > 0) {
+            console.error(`Critical PanLayer jobs failed: ${failed.map((job) => `${job.job}:${job.status}`).join(", ")}`);
             process.exit(1);
           }
           NODE

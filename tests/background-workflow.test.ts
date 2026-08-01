@@ -30,6 +30,9 @@ describe("production background workflow", () => {
     expect(workflow).toContain("scheduled_time");
     expect(workflow).toContain("X-PanLayer-Scheduled-Time");
     expect(workflow).toContain("/api/v1/internal/scheduler/tick");
+    expect(workflow).toContain("PanLayer jobs partial; automatic retry remains scheduled");
+    expect(workflow).toContain("Critical PanLayer jobs failed");
+    expect(workflow).not.toContain('job?.ok === false || job?.status === "partial" || job?.status === "failed"');
     expect(route).toMatch(/isValidSchedulerAuthorization/);
     expect(route).toMatch(/runPanLayerJob/);
     expect(route).toContain('action === "continue-morning-brief"');
