@@ -14,6 +14,7 @@
 
 - Use the MIT License with copyright holder `lihaozheng567-dot`.
 - Keep `package.json` `private: true` so the package cannot be published to npm accidentally.
+- Upgrade Next.js from `16.2.6` to the audited fixed version `16.3.4` and require a clean high-severity production dependency audit.
 - Do not add, delete, or modify the user's untracked `.audit/`, `Vibe-Research/`, design notes, screenshots, or `tsconfig.tsbuildinfo`.
 - Keep production secrets only in GitHub Secrets and Sites environment variables.
 - Do not rewrite Git history unless the audit finds a confirmed secret or private-data leak.
@@ -75,7 +76,7 @@ Run:
 jq 'length' "$panlayer_audit_dir/gitleaks.json"
 ```
 
-Expected: exit 0 and finding count `0`. If findings exist, inspect only redacted metadata. Stop the public release for any confirmed secret; rotate the secret and design a history rewrite before continuing.
+Expected: the initial scan reports exactly two reviewed false positives: a source identifier in `lib/jobs/reconcile.ts` and a test fixture in an historical implementation plan. If any additional finding or confirmed secret exists, stop the public release; rotate the secret and design a history rewrite before continuing.
 
 - [ ] **Step 4: Verify sensitive filenames and current tracked content**
 
@@ -103,6 +104,7 @@ Expected: both commands exit 0. If a dependency fails, stop and replace or expli
 
 **Files:**
 - Create: `LICENSE`
+- Create: `.gitleaksignore`
 - Modify: `README.md`
 - Modify: `package.json`
 - Modify: `package-lock.json`
@@ -140,7 +142,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-- [ ] **Step 2: Update package metadata and refresh the lockfile**
+- [ ] **Step 2: Record the exact reviewed Gitleaks false positives**
+
+Create `.gitleaksignore` with only these exact reviewed fingerprints:
+
+```text
+fbbeda4454e83b54ec20e957fbdfcae4ad806b66:lib/jobs/reconcile.ts:generic-api-key:32
+df3f4dbc19dd23a627f6066dd12580281c634f65:docs/superpowers/plans/2026-07-23-etf-history-domestic-implementation.md:generic-api-key:412
+lib/jobs/reconcile.ts:generic-api-key:35
+docs/superpowers/plans/2026-07-23-etf-history-domestic-implementation.md:generic-api-key:412
+```
+
+Run both `gitleaks git --redact .` and `gitleaks dir --redact .` again and require exit 0. Do not add rule-wide or path-wide exclusions.
+
+- [ ] **Step 3: Update package metadata, security dependencies, and the lockfile**
 
 Set the root metadata in `package.json` to:
 
@@ -165,13 +180,15 @@ Set the root metadata in `package.json` to:
 Preserve all existing engines, scripts, dependencies, devDependencies, and `type` fields. Then run:
 
 ```bash
-npm install --package-lock-only
+npm install --save-exact next@16.3.4
+npm update nanoid
+npm audit --omit=dev --audit-level=high
 node -e 'const p=require("./package.json"); if(p.name!=="panlayer"||p.license!=="MIT"||p.private!==true) process.exit(1)'
 ```
 
-Expected: lockfile root metadata matches `package.json` and the assertion exits 0.
+Expected: Next.js is `16.3.4`, the production audit reports zero high-severity vulnerabilities, lockfile root metadata matches `package.json`, and the assertion exits 0.
 
-- [ ] **Step 3: Replace the README with a public-project entry point**
+- [ ] **Step 4: Replace the README with a public-project entry point**
 
 The README must contain, in this order:
 
@@ -188,7 +205,7 @@ The README must contain, in this order:
 
 The risk section must say that the software is for research and market review, is not investment advice, and that public or commercial operation requires properly licensed market data.
 
-- [ ] **Step 4: Extend ignore rules without touching local artifacts**
+- [ ] **Step 5: Extend ignore rules without touching local artifacts**
 
 Append:
 
@@ -211,18 +228,18 @@ git check-ignore -v .audit Vibe-Research design-qa.md history-design-comparison.
 
 Expected: the known artifacts are ignored and none is staged or deleted.
 
-- [ ] **Step 5: Verify and commit the public project identity**
+- [ ] **Step 6: Verify and commit the public project identity**
 
 Run:
 
 ```bash
 git diff --check
 npm run lint
-git add LICENSE README.md package.json package-lock.json .gitignore
+git add LICENSE .gitleaksignore README.md package.json package-lock.json .gitignore docs/superpowers/specs/2026-09-02-panlayer-open-source-design.md docs/superpowers/plans/2026-09-02-panlayer-open-source.md
 git commit -m "docs: prepare PanLayer for open source"
 ```
 
-Expected: Lint exits 0 and the commit contains only the five listed files.
+Expected: Lint exits 0 and the commit contains only the listed public-release files.
 
 ### Task 3: Community health and contribution surface
 
@@ -315,6 +332,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run lint
       - run: npm run test:render
@@ -331,6 +349,7 @@ npm test
 npm run lint
 npm run test:render
 npm run build
+npm audit --omit=dev --audit-level=high
 ```
 
 Expected: every command exits 0. Treat any failure as blocking; do not commit or publish until fixed and the complete sequence passes again.
@@ -450,6 +469,7 @@ npm test
 npm run lint
 npm run test:render
 npm run build
+npm audit --omit=dev --audit-level=high
 panlayer_gitleaks_bin=$(find /tmp/panlayer-open-source-audit-* -type f -name gitleaks -perm +111 -print -quit)
 test -n "$panlayer_gitleaks_bin"
 "$panlayer_gitleaks_bin" git --redact .

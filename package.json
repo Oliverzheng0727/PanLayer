@@ -1,7 +1,17 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "panlayer",
   "version": "0.1.0",
+  "description": "Open-source A-share market review dashboard with market breadth, themes, ETF charts, history, and sourced morning briefs.",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://panlayer.online",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lihaozheng567-dot/PanLayer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lihaozheng567-dot/PanLayer/issues"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
@@ -18,7 +28,7 @@
     "drizzle-orm": "0.45.2",
     "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.25.0",
-    "next": "16.2.6",
+    "next": "16.3.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "recharts": "^3.10.0"
@@ -33,7 +43,7 @@
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.3.4",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",

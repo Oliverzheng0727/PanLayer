@@ -45,3 +45,11 @@ next-env.d.ts
 /.superpowers/
 /.worktrees/
 /.firecrawl/
+
+# local review and design artifacts
+/.audit/
+/Vibe-Research/
+/design-qa.md
+/history-design-comparison.png
+/history-implementation.png
+/tsconfig.tsbuildinfo
